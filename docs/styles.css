@@ -2517,3 +2517,45 @@ footer strong { color: var(--green); }
     animation: none !important;
   }
 }
+
+/* ───────── PWA 追加 ─────────
+   原專案沒有、但單機版一定要有的四個東西：
+   1) StatusToast（原本寫在 app/status-toast.tsx 的 inline style，一比一搬過來）
+   2) toast 上的「去看／更新」按鈕（搬 stamps 的雲端提示時需要，原 StatusToast 沒有這一顆）
+   3) 加到主畫面的提示條（照 stamps #installHint）
+   4) 用 modal 做的確認框（單機版不用 window.confirm）
+   除此之外沒有動上面任何一行。 */
+.status-toast {
+  position: fixed;
+  left: 50%;
+  /* --kb 是 app.js 用 visualViewport 量出來的鍵盤高度：iOS 打字時吐司不會躲到鍵盤後面 */
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 20px + var(--kb, 0px));
+  transform: translateX(-50%);
+  z-index: 10000;
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  min-height: 56px;
+  padding: 10px 10px 10px 16px;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 14px 38px rgba(19, 64, 59, .22);
+}
+.status-toast.is-success { background: #174f49; color: #fffdf7; }
+.status-toast.is-waiting { background: #fff0ba; color: #59430b; border: 1px solid #e8cb6f; }
+.status-toast.is-error { background: #8f3650; color: #fffafc; }
+.status-toast-icon { flex: 0 0 32px; height: 32px; border-radius: 999px; background: rgba(255,255,255,.2); display: inline-flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 800; }
+.status-toast strong { flex: 1; font-size: 15px; line-height: 1.45; }
+.status-toast-action { min-height: 44px; padding: 0 13px; border: 0; border-radius: 999px; background: rgba(255,255,255,.22); color: inherit; font-size: 13px; font-weight: 900; cursor: pointer; }
+.status-toast-close { flex: 0 0 44px; height: 44px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: inherit; display: inline-flex; align-items: center; justify-content: center; font-size: 24px; cursor: pointer; }
+
+#install-hint { padding: 6px 12px 0; }
+#install-hint[hidden] { display: none; }
+.install-hint-body { display: flex; align-items: center; gap: 6px; padding: 10px 4px 10px 14px; border-radius: 14px; background: #333; color: #fff; font-size: 13px; line-height: 1.45; }
+.install-hint-body span { flex: 1; }
+.install-hint-body button { flex: 0 0 44px; height: 44px; padding: 0; border: 0; background: none; color: #fff; font-size: 20px; opacity: .85; cursor: pointer; }
+
+.confirm-dialog-copy { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.confirm-dialog-actions { margin-top: 24px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.confirm-dialog-actions .primary-button { margin-top: 0; }

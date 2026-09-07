@@ -195,6 +195,44 @@ export async function shareOrDownload(json, filename) // 照 stamps 3858–3879�
 | savedStatus() 的後綴 | ；雲端備份稍後重試／；雲端副本會在背景完成 | Gist 開啟且同步失敗時「；雲端備份稍後重試」，否則不加後綴 |
 | history／dreams 的 401 導向 | window.location.replace("/family-access") | 刪除，單機版沒有登入 |
 
+## 15. 頁面模組能用的東西（ui/common.js 與 ctx）
+
+頁面模組只准 import：`../util.js`、`./common.js`、`../store.js`、`../state.js`、`../pin.js`、`../backup.js`、`../quotes.js`、`../gist.js`。不要自己寫 toast、modal、avatar、nav。
+
+```js
+// ui/common.js
+export function primaryNav(active)                         // "home"|"dreams"|"history"|"parent"；href 是 #/、#/dreams、#/history、#/parent
+export function showStatus(message, tone = "success")      // tone: success | waiting | error；自動消失（error 7 秒，其餘 4.5 秒）
+export function dismissStatus()
+export function openModal(htmlString, { labelledBy, onClose, closeOnBackdrop = true })   // 渲染進 #modal-root；回傳 modal 根節點，之後自己在上面綁事件
+export function closeModal()
+export function profileAvatar(avatar, name)                // 回傳 html 片段
+export function infoTip(content, { label = "查看說明", align = "left" } = {})
+export function profileChips(profiles, selectedId)         // topbar 的 profile-chip 列；按鈕帶 data-choose-profile="<id>"
+export function profileRow(profiles, selectedId, subtitleOf) // parent-profile 列；按鈕帶 data-choose-profile；subtitleOf(profile, isActive) 回小字
+export function stateGate(error, onRetry)
+export function backupStatusText(state)
+export function savedStatus(state, message)                // 回 { message, tone }
+export async function confirmDialog(message)               // 回 Promise<boolean>，取代 window.confirm
+
+// ctx（app.js 傳給 render/mount）
+ctx.state        // store.getState()
+ctx.view         // derive(state)：profiles 已補 rewardClaimedThisMonth、futurePrincipal、gardenSpecies、shortDreamBalance
+ctx.profile      // 目前選中的孩子（view.profiles 裡的那個）；沒有任何孩子時為 null
+ctx.profiles     // view.profiles
+ctx.unlocked     // pin.isUnlocked()
+ctx.pinStatus    // pin.status()："setup" | "locked" | "unlocked"
+ctx.navigate(hash)         // 例如 ctx.navigate("#/dreams")
+ctx.refresh()              // 立刻整頁重繪（store.commit 之後 app.js 會自動呼叫，一般不必手動）
+ctx.chooseProfile(id)      // 寫入 state.meta.selectedProfileId 並重繪
+```
+
+慣例：
+- 事件綁在 root 上用委派：`root.addEventListener("click", (event) => { const button = event.target.closest("[data-action]"); … })`。按鈕用 `data-action="claim-project" data-id="…"` 這種屬性，不要 inline onclick。
+- 呼叫 store 時包 try/catch：成功用 `showStatus(savedStatus(state, "…").message, tone)`，失敗用 `showStatus(errorMessage(error, "儲存失敗"), "error")` 並把文案塞進該表單的 `.form-error`。busy 狀態：送出前把按鈕 disabled 並換文案（照原本的「正在儲存…」），完成後 store.commit 會觸發重繪，所以不必手動還原。
+- 家長操作碼：頁面上的解鎖表單呼叫 `pin.status()` 決定要顯示 setup 還是 locked；送出時 `await pin.setup(value)` 或 `await pin.assert(value)`，成功後 `ctx.refresh()`。之後呼叫 store 時把同一個 pin 字串當 `parentPin` 傳進去（store 會再 assert 一次，已解鎖時會直接通過）。
+- 家長區的「資料與備份」面板：Gist 部分由 gist.js 提供 `renderGistPanel()` 與 `mountGistPanel(root)`，parent.js 直接嵌入；備份檔的下載、上傳檢查與還原用 backup.js；快照列表用 db.js 的 listSnapshots/restoreSnapshot。
+
 ## 13. 不做的東西
 
 家庭代碼與密碼、信任裝置、離線救援碼、用孩子名字找回、legacy family claim、多家庭。`app/chatgpt-auth.ts`、`worker/`、`build/` 不搬。

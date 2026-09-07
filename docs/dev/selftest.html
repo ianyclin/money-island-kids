@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>小小理財島：引擎自我測試</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; padding: 24px 16px 64px; font: 16px/1.6 system-ui, -apple-system, "Noto Sans TC", sans-serif; background: #fffdf8; color: #224e45; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.hint { margin: 0 0 16px; color: #765b19; font-size: 14px; }
+  ol { margin: 0; padding: 0; list-style: none; }
+  li { padding: 4px 8px; border-radius: 6px; font-size: 14px; word-break: break-word; }
+  li.pass::before { content: "PASS "; color: #2a8584; font-weight: 700; }
+  li.fail { background: #f7e1e6; }
+  li.fail::before { content: "FAIL "; color: #9b4561; font-weight: 700; }
+  li.summary { margin-top: 16px; font-size: 18px; font-weight: 700; border-top: 2px solid #dcd6c8; padding-top: 12px; }
+  li.summary.pass::before, li.summary.fail::before { content: ""; }
+  li.summary.pass { color: #2a8584; }
+  li.summary.fail { color: #9b4561; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "../js/db.js": "./db-mock.js"
+  }
+}
+</script>
+</head>
+<body>
+<h1>小小理財島：引擎自我測試</h1>
+<p class="hint">store.js 的 db.js 已換成 db-mock.js，這一頁不會動到真正的帳本；只有家長操作碼會暫時寫進 localStorage，跑完會清掉。</p>
+<ol id="results"></ol>
+<script type="module">
+  import { runSelfTest } from "./selftest.js";
+
+  const results = document.getElementById("results");
+  function report(ok, text, summary) {
+    const item = document.createElement("li");
+    item.className = `${ok ? "pass" : "fail"}${summary ? " summary" : ""}`;
+    item.textContent = text;
+    results.append(item);
+  }
+
+  runSelfTest(report).then(({ fail }) => {
+    document.title = `${fail ? "FAIL" : "PASS"}：小小理財島引擎自我測試`;
+  });
+</script>
+</body>
+</html>
