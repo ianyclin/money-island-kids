@@ -41,3 +41,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# 真實家庭資料的測試符號連結，永遠不要提交
+docs/dev/real-*.json
