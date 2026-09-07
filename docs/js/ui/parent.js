@@ -9,6 +9,11 @@ import * as backup from "../backup.js";
 import * as db from "../db.js";
 import * as gist from "../gist.js";
 
+// 原本 readInvestmentPresets 只回 active = 1（money-store.ts L1398–1402）
+function activePresets(state) {
+  return (state.investmentPresets || []).filter((item) => item.active !== false);
+}
+
 // ---------- 頁面暫存（重繪後還原） ----------
 const ui = {
   parentPin: "",
@@ -157,14 +162,14 @@ export function render(ctx) {
 
       <section class="parent-hero">
         <div>
-          <div class="heading-help"><span class="parent-kicker">所有家長功能集中在這裡</span>${raw(common.infoTip("先解鎖一次，再依序處理撲滿、家庭小專案、真實投資與裝置信任。"))}</div>
+          <div class="heading-help"><span class="parent-kicker">所有家長功能集中在這裡</span>${raw(common.infoTip("先解鎖一次，再依序處理撲滿、家庭小專案、真實投資與資料備份。"))}</div>
           <h1>管理帳本、專案與投資，<br /><em>孩子頁面保持簡單。</em></h1>
         </div>
       </section>
 
       <section class="${unlocked ? "parent-lock-card is-unlocked" : "parent-lock-card"}">
         <span class="lock-icon" aria-hidden="true">${unlocked ? "✓" : "🔒"}</span>
-        <div><b>${pinStatus === "setup" ? "第一次使用：設定家長操作碼" : unlocked ? "家長區已解鎖" : "輸入家長操作碼"}</b><small>${pinStatus === "setup" ? "使用 4–8 位數字；操作碼不會顯示在孩子頁面。" : unlocked ? "現在可以使用本頁所有家長功能。" : "編輯帳本、專案、投資與裝置信任都需要驗證。"}</small></div>
+        <div><b>${pinStatus === "setup" ? "第一次使用：設定家長操作碼" : unlocked ? "家長區已解鎖" : "輸入家長操作碼"}</b><small>${pinStatus === "setup" ? "使用 4–8 位數字；操作碼不會顯示在孩子頁面。" : unlocked ? "現在可以使用本頁所有家長功能。" : "編輯帳本、專案、投資與資料備份都需要驗證。"}</small></div>
         ${!unlocked ? html`<form data-form="pin"><input type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits placeholder="4–8 位數字" required /><button data-busy-label="驗證中…">${pinStatus === "setup" ? "設定並解鎖" : "解鎖"}</button></form>` : ""}
         ${unlocked ? html`<button class="pin-change-trigger" type="button" aria-expanded="${ui.pinChangeOpen ? "true" : "false"}" data-action="toggle-pin-change">變更操作碼 ${ui.pinChangeOpen ? "−" : "＋"}</button>` : ""}
         ${unlocked && ui.pinChangeOpen ? html`<form class="pin-change-form" data-form="pin-change">
@@ -250,13 +255,13 @@ export function render(ctx) {
           <div class="panel-help">${raw(common.infoTip("請依照券商成交結果填寫；總成本包含手續費，會最容易和真實帳戶對得上。", { align: "right" }))}</div>
 
           <div class="preset-row" aria-label="常用標的">
-            ${state.investmentPresets.map((preset) => html`<button type="button" data-action="choose-preset" data-symbol="${preset.symbol}" data-name="${preset.name}" data-category="${preset.category}">${preset.symbol}</button>`)}
+            ${activePresets(state).map((preset) => html`<button type="button" data-action="choose-preset" data-symbol="${preset.symbol}" data-name="${preset.name}" data-category="${preset.category}">${preset.symbol}</button>`)}
             <span>也可以輸入其他標的</span>
           </div>
 
           <details class="preset-admin" data-open-key="preset-admin" ${isOpen("preset-admin") ? raw("open") : ""}>
             <summary>調整常用標的</summary>
-            <div class="preset-list">${state.investmentPresets.map((preset) => html`<div><span><b>${preset.symbol}</b><small>${preset.name} · ${preset.category}</small></span><button type="button" data-action="edit-preset" data-id="${preset.id}" ${!unlocked ? raw("disabled") : ""}>編輯</button><button type="button" data-action="delete-preset" data-id="${preset.id}" data-busy-label="停用中…" ${!unlocked ? raw("disabled") : ""}>停用</button></div>`)}</div>
+            <div class="preset-list">${activePresets(state).map((preset) => html`<div><span><b>${preset.symbol}</b><small>${preset.name} · ${preset.category}</small></span><button type="button" data-action="edit-preset" data-id="${preset.id}" ${!unlocked ? raw("disabled") : ""}>編輯</button><button type="button" data-action="delete-preset" data-id="${preset.id}" data-busy-label="停用中…" ${!unlocked ? raw("disabled") : ""}>停用</button></div>`)}</div>
             <form data-form="preset"><div class="form-two-columns"><label><span>標的代號</span><input data-draft="preset-symbol" data-uppercase value="${draft("preset-symbol")}" placeholder="例如 VT" required maxlength="12" /></label><label><span>類型</span><select data-draft="preset-category"><option ${draft("preset-category", "ETF") === "ETF" ? raw("selected") : ""}>ETF</option><option ${draft("preset-category", "ETF") === "股票" ? raw("selected") : ""}>股票</option></select></label></div><label><span>顯示名稱</span><input data-draft="preset-name" value="${draft("preset-name")}" placeholder="例如 Vanguard Total World" required maxlength="40" /></label><label><span>排序</span><input type="number" min="0" max="100" data-draft="preset-sort" value="${draft("preset-sort")}" placeholder="數字越小越前面" /></label><button class="primary-button full-width" data-busy-label="儲存中…" ${!unlocked ? raw("disabled") : ""}>${ui.presetId ? "儲存常用標的修改" : "新增常用標的"}</button>${ui.presetId ? html`<button class="cancel-preset" type="button" data-action="cancel-preset-edit">取消編輯</button>` : ""}</form>
           </details>
 
@@ -535,7 +540,7 @@ function dataPanelMarkup(state, unlocked) {
   return html`<section class="parent-device-panel" id="devices">
       <div class="parent-device-heading"><div><span class="parent-kicker">裝置與資料</span><h2>資料與備份</h2></div><span class="${healthy ? "device-status is-trusted" : "device-status"}">${common.backupStatusText(state)}</span></div>
       <div class="parent-device-grid">
-        <details data-open-key="backup-file" ${isOpen("backup-file") ? raw("open") : ""}><summary>下載或上傳資料副本</summary><p>平時可下載帳本；搬到另一個部署時，請下載包含孩子照片的完整可攜備份。兩種備份都不含密碼、家長操作碼或裝置信任。</p><div class="backup-download-actions"><button data-action="download-backup" data-kind="account" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載帳本備份</button><button data-action="download-backup" data-kind="portable" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載完整可攜備份</button></div><label class="backup-file-label">選擇備份檔<input type="file" accept="application/json,.json" data-input="backup-file" ${!unlocked ? raw("disabled") : ""} /></label>${ui.restoreSummary ? restoreSummaryMarkup(ui.restoreSummary, unlocked) : ""}</details>
+        <details data-open-key="backup-file" ${isOpen("backup-file") ? raw("open") : ""}><summary>下載或上傳資料副本</summary><p>平時可下載帳本；換手機或搬到別的地方時，請下載包含孩子照片的完整可攜備份。兩種備份都不含家長操作碼。</p><div class="backup-download-actions"><button data-action="download-backup" data-kind="account" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載帳本備份</button><button data-action="download-backup" data-kind="portable" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載完整可攜備份</button></div><label class="backup-file-label">選擇備份檔<input type="file" accept="application/json,.json" data-input="backup-file" ${!unlocked ? raw("disabled") : ""} /></label>${ui.restoreSummary ? restoreSummaryMarkup(ui.restoreSummary, unlocked) : ""}</details>
         <details data-open-key="snapshots" ${isOpen("snapshots") ? raw("open") : ""}><summary>本機快照</summary><p>每次記帳或修改，app 都會自動另外存一份完整快照，保留最近 20 份與每天最後一份（60 天）。誤刪、誤扣、資料出問題都可以從這裡救回來。</p><div class="device-list" data-snapshot-list>${snapshotListMarkup(unlocked)}</div></details>
         <details data-open-key="gist" ${isOpen("gist") ? raw("open") : ""}><summary>GitHub 雲端備份</summary><div data-gist-root>${raw(gist.renderGistPanel())}</div></details>
       </div>
@@ -543,7 +548,7 @@ function dataPanelMarkup(state, unlocked) {
 }
 
 function restoreSummaryMarkup(summary, unlocked) {
-  return html`<div class="restore-summary"><b>${summary.family.name} · ${formatDateTime(summary.exportedAt)}</b><small>${summary.portable ? `完整可攜備份${summary.photoCount ? `，包含 ${summary.photoCount} 張照片` : ""}` : "同家庭帳本備份"}</small><small>${summary.counts.profiles} 位孩子、${summary.counts.activities} 筆紀錄、${summary.counts.dreams} 個夢想、${summary.counts.holdings} 個投資標的</small><button class="restore-button" data-action="restore-backup" data-busy-label="還原中…" ${!unlocked ? raw("disabled") : ""}>確認覆蓋並還原</button><small>確認後會先自動保存目前帳本，再以備份內容取代。</small></div>`;
+  return html`<div class="restore-summary"><b>${summary.family.name} · ${formatDateTime(summary.exportedAt)}</b><small>${summary.portable ? `完整可攜備份${summary.photoCount ? `，包含 ${summary.photoCount} 張照片` : ""}` : "帳本備份"}</small><small>${summary.counts.profiles} 位孩子、${summary.counts.activities} 筆紀錄、${summary.counts.dreams} 個夢想、${summary.counts.holdings} 個投資標的</small><button class="restore-button" data-action="restore-backup" data-busy-label="還原中…" ${!unlocked ? raw("disabled") : ""}>確認覆蓋並還原</button><small>確認後會先自動保存目前帳本，再以備份內容取代。</small></div>`;
 }
 
 function snapshotSubtitle(record) {
@@ -985,7 +990,7 @@ async function handleSubmit(root, ctx, form) {
       symbol: fieldValue(form, "preset-symbol"),
       name: fieldValue(form, "preset-name"),
       category: fieldValue(form, "preset-category"),
-      sortOrder: Number(sort || ctx.state.investmentPresets.length + 1),
+      sortOrder: Number(sort || activePresets(ctx.state).length + 1),
       parentPin: ui.parentPin,
     }));
     if (ok) {
@@ -1235,9 +1240,9 @@ async function handleClick(root, ctx, button) {
         };
         const updated = result?.updatedSymbols ?? [];
         const unavailable = result?.unavailableSymbols ?? [];
-        let message = updated.length ? `最新可用收盤價已更新：${updated.join("、")}` : "最新可用收盤價已更新";
-        if (unavailable.length) message += `；${unavailable.join("、")} 沒有可用收盤價，仍可由家長手動輸入市值`;
-        announce(root, message);
+        // 文案照 app/parent/page.tsx L401；哪些標的沒更新到，留在持有清單的小字裡。
+        announce(root, "最新可用收盤價已更新");
+        void updated; void unavailable;
         ctx.refresh();
       } catch (caught) {
         endBusy();
@@ -1330,8 +1335,8 @@ async function handleClick(root, ctx, button) {
       startBusy(root, button);
       clearOperationError(root, "backup");
       try {
-        const restored = await backup.restore(ui.restoreEnvelope);
-        if (restored && Array.isArray(restored.profiles)) store.setState(restored, "還原備份檔");
+        // backup.restore 內部已經 setState 並存檔，這裡不再寫第二次。
+        await backup.restore(ui.restoreEnvelope);
         ui.restoreEnvelope = null;
         ui.restoreSummary = null;
         ui.snapshots = null;

@@ -38,10 +38,10 @@ function previousMonthParam(param) {
   return `${previous.year}${String(previous.month).padStart(2, "0")}01`;
 }
 
-// title 形如「115年09月 0050 元大台灣50 日均價」；抓不到名稱就退回代號。
+// title 形如「115年09月 0050 元大台灣50 日收盤價及月平均收盤價」；抓不到名稱就退回代號。
 function quoteNameFromTitle(title, symbol) {
   const text = String(title ?? "").replace(/\s+/g, " ").trim();
-  const match = new RegExp(`${symbol}\\s+(.+?)\\s*(?:日均價|個股日均價|$)`).exec(text);
+  const match = new RegExp(`${symbol}\\s+(.+?)\\s*(?:日收盤價及月平均收盤價|日均價|個股日均價|$)`).exec(text);
   const name = match?.[1]?.trim();
   return name || symbol;
 }

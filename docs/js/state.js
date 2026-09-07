@@ -319,7 +319,9 @@ export function validateBackupEnvelope(value) {
     const id = backupId(profile.id, "孩子 ID");
     addBackupUnique(profileIds, id, "孩子 ID");
     backupString(profile.name, "孩子名字", 1, 30);
-    backupString(profile.avatar, "孩子頭像", 1, 2048);
+    // 原本上限 2048（舊站頭像是短網址）；單機版照片直接存 data URL，放寬到 200,000 字（壓縮後約 60,000 以內）。
+    const avatarIsDataUrl = typeof profile.avatar === "string" && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(profile.avatar);
+    backupString(profile.avatar, "孩子頭像", 1, avatarIsDataUrl ? 200000 : 2048);
     backupString(profile.accent, "孩子色彩", 1, 64);
     backupNumber(profile.spendingBalance, "撲滿金額", { min: 0, max: 1000000000000, integer: true });
     backupNumber(profile.bankBalance, "爸媽銀行金額", { min: 0, max: 1000000000000, integer: true });

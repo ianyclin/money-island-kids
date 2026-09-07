@@ -1300,6 +1300,10 @@ export async function updateInvestmentPreset(input) {
     } else {
       if (!input.presetId) throw new Error("找不到這個常用標的");
       const preset = next.investmentPresets.find((item) => item.id === input.presetId);
+      // 原本靠 idx_investment_presets_family_symbol 唯一索引擋撞名；單機版先查。
+      if (preset && next.investmentPresets.some((item) => item.id !== preset.id && item.symbol === symbol)) {
+        throw new Error("這個標的代號已經在常用清單裡");
+      }
       if (preset) {
         preset.symbol = symbol;
         preset.name = name;

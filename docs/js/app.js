@@ -33,20 +33,28 @@ function readState() {
   try { return store.getState(); } catch (e) { return null; }
 }
 
-function selectedProfile(state) {
-  const profiles = state.profiles || [];
-  const wanted = state.meta && state.meta.selectedProfileId;
+const PROFILE_STORAGE_KEY = "money-island-profile";   // 照 app/money-state-cache.tsx
+
+function storedProfileId(state) {
+  let stored = "";
+  try { stored = localStorage.getItem(PROFILE_STORAGE_KEY) || ""; } catch (e) {}
+  return stored || (state.meta && state.meta.selectedProfileId) || "";
+}
+
+function selectedProfile(profiles, state) {
+  const wanted = storedProfileId(state);
   return profiles.find((item) => item.id === wanted) || profiles[0] || null;
 }
 
-// 選中的孩子存在 state.meta.selectedProfileId（原本在 localStorage "money-island-profile"）
+// 切換小朋友只是畫面狀態：寫 localStorage（照原本）與 state.meta，不走 commit——
+// 不然每切一次都會存檔、排快照、排 Gist 同步，頂端還會寫「剛剛已儲存」。
 export function chooseProfile(id) {
   const state = readState();
   if (!state || !(state.profiles || []).some((item) => item.id === id)) return;
-  if (state.meta && state.meta.selectedProfileId === id) return;
   if (!state.meta) state.meta = {};
   state.meta.selectedProfileId = id;
-  store.commit("切換小朋友");
+  try { localStorage.setItem(PROFILE_STORAGE_KEY, id); } catch (e) {}
+  void render();
 }
 
 export function navigate(hash) {
@@ -111,12 +119,14 @@ async function render() {
 }
 
 function buildContext(state) {
-  const profiles = state ? state.profiles || [] : [];
-  const profile = state ? selectedProfile(state) : null;
   let view = null;
   if (state) {
     try { view = derive(state); } catch (e) { view = null; }
   }
+  // 契約第 15 節：profile／profiles 一律拿 derive 過的（有 futurePrincipal、rewardClaimedThisMonth、
+  // 只含 active 的常用標的）；derive 失敗才退回 raw。
+  const profiles = view ? view.profiles : (state ? state.profiles || [] : []);
+  const profile = state ? selectedProfile(profiles, state) : null;
   return {
     state,
     view,

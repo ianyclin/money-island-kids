@@ -21,6 +21,7 @@ let labelText = "";
 let transactionOperationId = uuid();
 let saving = false;
 let notice = "";
+let noticeAt = 0;   // 原本元件卸載就清掉；單機版用時間戳，6 秒後回到儲存狀態
 let error = "";
 let projectBusy = "";
 let projectError = "";
@@ -286,7 +287,7 @@ export function render(ctx) {
         </a>
         ${profileChips(ctx.profiles, profile.id)}
         <div class="top-actions">
-          <span class="backup-status"><i aria-hidden="true"></i>${notice || backupStatusText(state)}</span>
+          <span class="backup-status"><i aria-hidden="true"></i>${notice && Date.now() - noticeAt < 6000 ? notice : backupStatusText(state)}</span>
           ${primaryNav("home")}
         </div>
       </header>
@@ -441,7 +442,6 @@ function transactionModalBody(ctx) {
   const investPreview = allowance ? Math.round(allowance * savingsRate / 100) : 0;
   const spendPreview = allowance - investPreview;
   return html`
-      <button class="modal-close" aria-label="關閉" data-action="close-modal">×</button>
       <span class="modal-avatar">${profileAvatar(profile.avatar, profile.name)}</span>
       <p class="section-kicker">${profile.name}的紀錄</p>
       <h2 id="money-dialog-title">${action === "allowance" ? "收到多少零用錢？" : "這次花了多少錢？"}</h2>
@@ -473,7 +473,6 @@ function saveMoreModalBody(ctx) {
   const saveMoreValue = saveMoreValueOf();
   const saveMorePreview = Math.min(saveMoreValue, savingAvailable);
   return html`
-      <button class="modal-close" aria-label="關閉" data-action="close-modal">×</button>
       <span class="modal-avatar">${profileAvatar(profile.avatar, profile.name)}</span>
       <p class="section-kicker">把現在的一點自由留給未來</p>
       <h2 id="save-more-dialog-title">想多存多少到爸媽銀行？</h2>
@@ -525,6 +524,7 @@ function openDialog(body, { labelledBy, extraClass, onClose }) {
 // ---------- 提示與錯誤 ----------
 function announce(message, tone = "success") {
   notice = message;
+  noticeAt = Date.now();
   showStatus(message, tone);
   const status = document.querySelector(".backup-status");
   if (status) {

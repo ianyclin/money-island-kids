@@ -9,7 +9,7 @@
    帳本資料都在 localStorage 與 IndexedDB，不經過這裡。 */
 'use strict';
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 const PREFIX = 'money-island-';
 const CACHE = `${PREFIX}${VERSION}`;
 /* 核心：缺一個就不准啟用新版——網路不穩時，寧可繼續用完整的舊版，

@@ -180,9 +180,8 @@ async function restoreLedger(form, ctx) {
     busy = "restore";
     ctx.refresh();
     if (parentPin) await pin.setup(parentPin);
-    const restored = await backup.restore(parsed);
-    // backup.restore 若已經自己套用（回傳 undefined），這裡就不重複寫一次。
-    if (restored) store.setState(restored, "從備份檔還原");
+    // backup.restore 內部已經 setState 並存檔。
+    await backup.restore(parsed);
     busy = "";
     summary = null;
     parsed = null;

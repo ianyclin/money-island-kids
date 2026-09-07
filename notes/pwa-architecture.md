@@ -197,7 +197,7 @@ export async function shareOrDownload(json, filename) // 照 stamps 3858–3879�
 
 ## 15. 頁面模組能用的東西（ui/common.js 與 ctx）
 
-頁面模組只准 import：`../util.js`、`./common.js`、`../store.js`、`../state.js`、`../pin.js`、`../backup.js`、`../quotes.js`、`../gist.js`。不要自己寫 toast、modal、avatar、nav。
+頁面模組只准 import：`../util.js`、`./common.js`、`../store.js`、`../state.js`、`../pin.js`、`../backup.js`、`../quotes.js`、`../gist.js`、`../db.js`（只准用 listSnapshots／restoreSnapshot）。不要自己寫 toast、modal、avatar、nav。
 
 ```js
 // ui/common.js
