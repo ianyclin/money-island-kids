@@ -16,6 +16,7 @@ test("ships product metadata without private family names or starter copy", asyn
 
   assert.match(layout, /小小理財島/);
   assert.doesNotMatch(publicClientSource, /Your site is taking shape|Building your site|codex-preview/);
+  // 原本這裡硬寫三個孩子的名字做外洩檢查；倉庫公開前移除，避免測試本身成為外洩來源。
 });
 
 test("uses client-side links for the four primary pages", async () => {
@@ -79,10 +80,11 @@ test("refreshes supported holdings from the official latest-close endpoint in th
 });
 
 test("backs up canonical family state and validates uploads before replacement", async () => {
-  const [store, route, panel] = await Promise.all([
+  const [store, route, panel, parent] = await Promise.all([
     source("db/money-store.ts"),
     source("app/api/backups/route.ts"),
     source("app/parent/device-trust-panel.tsx"),
+    source("app/parent/page.tsx"),
   ]);
   const backupInsertions = store.match(/INSERT INTO backups\s*\(/g) ?? [];
 
@@ -103,6 +105,10 @@ test("backs up canonical family state and validates uploads before replacement",
   assert.match(route, /summary\.portable/);
   assert.match(panel, /下載完整可攜備份/);
   assert.match(panel, /不含密碼、家長操作碼或裝置信任/);
+  assert.match(panel, /請先在頁面上方輸入家長操作碼解鎖/);
+  assert.match(panel, /正在整理照片/);
+  assert.match(parent, /document\.body\.appendChild\(link\)/);
+  assert.match(parent, /setTimeout\(\(\) => URL\.revokeObjectURL\(objectUrl\), 30_000\)/);
 });
 
 test("keeps parent controls compact and makes monthly reviews browsable", async () => {
