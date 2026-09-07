@@ -607,6 +607,8 @@ function openTransactionModal(ctx) {
   });
   dialog.querySelector("form").addEventListener("submit", (event) => {
     event.preventDefault();
+    // 送出前再從表單讀一次：自動填入或貼上不一定會觸發 input 事件。
+    syncTransactionPreview(dialog);
     void submitTransaction(currentCtx, event.currentTarget);
   });
 
