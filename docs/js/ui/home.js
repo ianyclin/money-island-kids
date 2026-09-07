@@ -1,16 +1,20 @@
 // 小小理財島 PWA：孩子首頁。內容、class、aria 與文案全部照 app/page.tsx；只把資料來源換成本機 store。
+// 手機優先重新設計（notes/mobile-redesign/spec.md，第 9 節「主線拍板」為準）：迷你頂欄、貼底記帳列、
+// 錢包三格小磚、折線圖與家庭小專案收合。既有的 store 呼叫、operationId、錯誤處理、busy 狀態、
+// 事件委派模式一律保留；這裡只改結構、順序、收合與入口。
 
 import { html, raw, money, formatShortDate, taipeiMonth, uuid, errorMessage } from "../util.js";
 import {
   primaryNav,
+  miniTopbar,
+  lockIconButton,
   showStatus,
   openModal,
   closeModal,
   profileAvatar,
-  profileChips,
   stateGate,
-  backupStatusText,
   savedStatus,
+  backupStatusText,
 } from "./common.js";
 import * as store from "../store.js";
 
@@ -20,8 +24,6 @@ let amount = "";
 let labelText = "";
 let transactionOperationId = uuid();
 let saving = false;
-let notice = "";
-let noticeAt = 0;   // 原本元件卸載就清掉；單機版用時間戳，6 秒後回到儲存狀態
 let error = "";
 let projectBusy = "";
 let projectError = "";
@@ -33,6 +35,13 @@ let saveMoreNote = "";
 let saveMoreBusy = false;
 let saveMoreError = "";
 let savingsOperationId = uuid();
+
+// 規格第 5 節新增：折線圖摘要／家庭小專案兩個 <details> 的展開狀態，重繪後要還原。
+// projectsPanelOpen 初始為 null，render() 第一次算出預設值（是否有 open/claimed/waiting 的專案）
+// 就寫回明確的 true/false；使用者手動切換後 mount() 的 toggle 監聽也會寫回明確值，
+// 之後不再被資料變動覆蓋。chartPanelOpen 沒有這種「依資料算預設」的規則，單純預設收合。
+let projectsPanelOpen = null;
+let chartPanelOpen = false;
 
 let openModalKind = "";         // "" | "transaction" | "saveMore"
 let currentCtx = null;
@@ -79,6 +88,42 @@ function assetTimeline(profile, activities) {
   if (all.length <= 10) return all;
   const sampled = Array.from({ length: 10 }, (_, index) => all[Math.round(index * (all.length - 1) / 9)]);
   return sampled.filter((item, index) => index === 0 || item.month !== sampled[index - 1].month);
+}
+
+// 規格 2.1 第5項：較上月百分比＝取樣陣列最後兩個點比較；長度 < 2（帳號剛開始用）不顯示百分比；
+// 前一個點是 0 時同樣不顯示（避免除以零／無意義的暴衝百分比），純屬對既有取樣結果的防呆，
+// 不是新增的運算邏輯。
+function chartPercentChange(points) {
+  if (!Array.isArray(points) || points.length < 2) return null;
+  const prev = points[points.length - 2].value;
+  const curr = points[points.length - 1].value;
+  if (!prev) return null;
+  return ((curr - prev) / prev) * 100;
+}
+
+function growthSummaryText(current, percent) {
+  if (percent === null) return `目前總資產 ${money(current)}`;
+  const rounded = Math.round(percent);
+  return `目前總資產 ${money(current)}，較上月 ${rounded > 0 ? "+" : ""}${rounded}%`;
+}
+
+// 規格第 4 節「本輪新增」：折線圖卡內原本重複的夢想罐進度小清單拿掉，改成一行連結；
+// 依 activeDreams.length 動態換文案，零夢想時保留原本 growth-dream-empty 的鼓勵語氣。
+function dreamLinkMarkup(dreamsCount) {
+  return dreamsCount > 0
+    ? html`<a class="growth-dream-link" href="#/dreams">查看夢想進度 →</a>`
+    : html`<a class="growth-dream-link" href="#/dreams">還沒有夢想，去放進一個 →</a>`;
+}
+
+// 規格 2.1 第6項：取最近 limit 筆；若當月有一筆 kind==="reward" 的紀錄但不在這 limit 筆裡，
+// 把它換進最後一格（原本最後一筆往下讓路，不會整個消失，因為「查看全部紀錄→」本來就在）。
+function recentActivities(list, limit) {
+  const top = list.slice(0, limit);
+  if (top.some((item) => item.kind === "reward")) return top;
+  const month = taipeiMonth();
+  const reward = list.find((item, index) => index >= limit && item.kind === "reward" && item.entryDate.slice(0, 7) === month);
+  if (!reward) return top;
+  return [...top.slice(0, limit - 1), reward];
 }
 
 function activityIcon(kind) {
@@ -197,7 +242,9 @@ function islandGarden({ avatar, name, value, futureValue, futurePrincipal, speci
         </div>`;
 }
 
-function assetGrowthChart({ points, current, profile, dreams }) {
+// 折線圖收合摘要（規格 2.1 第5項）：這裡只回傳展開後的內容，外層 <details class="growth-card
+// growth-panel"> 由 render() 組裝，summary 才是收合時看到的一行摘要。
+function assetGrowthChart({ points, current, dreamsCount }) {
   const maximum = Math.max(100, ...points.map((item) => item.value));
   const ceiling = Math.max(1000, Math.ceil(maximum / 1000) * 1000);
   const chartPoints = points.map((point, index) => {
@@ -213,7 +260,6 @@ function assetGrowthChart({ points, current, profile, dreams }) {
   const lastYear = Number(chartPoints[chartPoints.length - 1]?.month.slice(0, 4) ?? firstYear);
   const yearsAccumulating = Math.max(1, lastYear - firstYear + 1);
   return html`
-        <article class="growth-card">
           <div class="section-heading">
             <div><span class="section-kicker">資產成長</span><h2>總資產折線圖</h2><small class="chart-year-count">從 ${firstYear} 年開始 · 累積第 ${yearsAccumulating} 年</small></div>
             <strong>${money(current)}</strong>
@@ -234,22 +280,7 @@ function assetGrowthChart({ points, current, profile, dreams }) {
               <div class="chart-x-axis">${chartPoints.map((point) => html`<span><b>${point.label}</b><small>${point.month.slice(0, 4)}</small></span>`)}</div>
             </div>
           </div>
-          ${dreams.length ? html`
-          <div class="growth-dreams">
-            <div><span>夢想罐進度</span><a href="#/dreams">查看夢想 →</a></div>
-            ${dreams.map((dream) => {
-              const saved = dream.kind === "short" ? profile.spendingBalance : profile.bankBalance + profile.marketValue;
-              const percent = Math.min(100, dream.targetAmount ? saved / dream.targetAmount * 100 : 0);
-              return html`
-            <a href="#/dreams" class="growth-dream kind-${dream.kind}">
-              <span><b>${dream.title}</b><small>${dream.kind === "short" ? "短期 · 撲滿" : "長期 · 爸媽銀行＋ETF"}</small></span>
-              <i><em style="width: ${percent}%"></em></i>
-              <strong>${Math.round(percent)}%</strong>
-            </a>`;
-            })}
-          </div>` : html`
-          <a class="growth-dream-empty" href="#/dreams"><span>☁</span><b>放進一個想完成的夢想</b><small>建立夢想罐 →</small></a>`}
-        </article>`;
+          ${dreamLinkMarkup(dreamsCount)}`;
 }
 
 function rule(number, title, text) {
@@ -262,9 +293,15 @@ export function render(ctx) {
   const profile = ctx.profile;
   if (!state || !profile) return stateGate("", () => ctx.refresh());
 
-  const activities = state.activities.filter((item) => item.profileId === profile.id).slice(0, 6);
+  // 複核 shouldFix：呼叫端不能先把候選池砍到 6 筆再找 reward，不然規格 2.1 第6項「當月有一筆
+  // reward 就換進第3格」會在孩子當月記超過 6 筆之後找不到那筆 reward。這裡改傳整份當事人的
+  // 活動紀錄（已經是 state.activities 依日期新到舊排序過的，見 state.js），交給
+  // recentActivities() 自己在裡面限定「當月」，搜尋範圍不再被這裡先砍窄。
+  const profileActivities = state.activities.filter((item) => item.profileId === profile.id);
+  const recentThree = recentActivities(profileActivities, 3);
   const profileHoldings = state.holdings.filter((item) => item.profileId === profile.id);
   const assetPoints = assetTimeline(profile, state.activities);
+  const chartPercent = chartPercentChange(assetPoints);
   const activeDreams = state.dreamJars
     .filter((item) => item.profileId === profile.id && item.status === "active")
     .slice(0, 2);
@@ -275,22 +312,23 @@ export function render(ctx) {
     ? ((profile.marketValue - profile.stockCost) / profile.stockCost) * 100
     : 0;
 
+  // 規格第 5 節：projectsPanelOpen 只算一次預設值（是否有 open/claimed/waiting 的專案），
+  // 使用者手動切換過後（mount() 的 toggle 監聽寫回明確值）就不再被這行覆蓋。
+  if (projectsPanelOpen === null) {
+    projectsPanelOpen = state.projects.some((item) => ["open", "claimed", "waiting"].includes(item.status));
+  }
+  const pendingProjectCount = state.projects.filter((item) => ["open", "claimed", "waiting"].includes(item.status)).length;
+
   return html`
     <main class="site-shell" data-kid="${profile.id}" style="--kid-accent: ${profile.accent}">
-      <header class="topbar">
-        <a class="brand" href="#top" aria-label="回到小小理財島首頁">
-          <span class="brand-mark" aria-hidden="true">¢</span>
-          <span>
-            <strong>小小理財島</strong>
-            <small>先存一點，夢想長大</small>
-          </span>
-        </a>
-        ${profileChips(ctx.profiles, profile.id)}
-        <div class="top-actions">
-          <span class="backup-status"><i aria-hidden="true"></i>${notice && Date.now() - noticeAt < 6000 ? notice : backupStatusText(state)}</span>
-          ${primaryNav("home")}
-        </div>
-      </header>
+      ${miniTopbar({ active: "home", ctx, right: lockIconButton({ href: "#/parent", pinStatus: ctx.pinStatus }) })}
+      <!-- 複核 shouldFix：common.miniTopbar() 沒有插槽可以放桌機版常駐的「剛剛已儲存／雲端已同步」
+           小字（改共用層插槽超出這次只准動 home.js／home.css 的範圍），這裡先在首頁自己的 markup
+           裡補回同一份文字，沿用 styles.css 既有的 .backup-status class（含它原本就有的
+           900px/650px 隱藏規則，手機上不佔位置）。store 提交後 app.js 的 store.subscribe() 會觸發
+           整頁 refresh()，屆時 state.latestBackup 已經更新，這裡跟著重繪即可跟上，
+           不需要另外像舊版那樣手動 querySelector 去 patch DOM。 -->
+      <div class="home-save-status"><span class="backup-status"><i aria-hidden="true"></i>${backupStatusText(state)}</span></div>
 
       <section class="hero" id="top">
         <div class="hero-copy">
@@ -309,17 +347,8 @@ export function render(ctx) {
             </button>
           </div>
         </div>
-        ${islandGarden({
-          avatar: profile.avatar,
-          name: profile.name,
-          value: profile.marketValue,
-          futureValue: profile.bankBalance + profile.marketValue,
-          futurePrincipal: profile.futurePrincipal ?? 0,
-          species: profile.gardenSpecies ?? "tree",
-          busy: gardenBusy,
-        })}
-      </section>
-
+        <!-- 三格錢包搬進 hero、放在花園前面：手機第一屏就看得到三個餘額（規格 2.1 的順序：hero-copy → 錢包 → 花園）；
+             桌機由 docs/css/home.css 讓它跨兩欄排在花園下方。 -->
       <section class="wallet-grid" aria-label="錢包總覽">
         ${moneyCard({
           icon: "🐷",
@@ -352,9 +381,27 @@ export function render(ctx) {
               : "長期投資，會漲也會跌",
         })}
       </section>
+      <!-- 第9節主線拍板：撲滿卡「我想多存一點」在手機斷點移到三格下方成一整行；
+           桌機/iPad 維持原本卡片內的按鈕（上面 moneyCard() 那顆），這顆只在 ≤650px 顯示，
+           兩顆共用同一個 data-action，CSS 切換見 docs/css/home.css。 -->
+      <button type="button" class="money-card-action wallet-save-more-mobile" data-action="open-save-more">🌱 我想多存一點</button>
+        ${islandGarden({
+          avatar: profile.avatar,
+          name: profile.name,
+          value: profile.marketValue,
+          futureValue: profile.bankBalance + profile.marketValue,
+          futurePrincipal: profile.futurePrincipal ?? 0,
+          species: profile.gardenSpecies ?? "tree",
+          busy: gardenBusy,
+        })}
+      </section>
+
 
       <section class="content-grid">
-        ${assetGrowthChart({ points: assetPoints, current: totalAssets(profile), profile, dreams: activeDreams })}
+        <details class="growth-card growth-panel"${attr(chartPanelOpen, " open")}>
+          <summary>${growthSummaryText(totalAssets(profile), chartPercent)}</summary>
+          ${assetGrowthChart({ points: assetPoints, current: totalAssets(profile), dreamsCount: activeDreams.length })}
+        </details>
 
         <article class="activity-card">
           <div class="section-heading">
@@ -365,7 +412,7 @@ export function render(ctx) {
             <a class="record-count" href="#/history">查看全部 →</a>
           </div>
           <div class="timeline">
-            ${activities.map((item) => html`
+            ${recentThree.map((item) => html`
             <div class="timeline-item">
               <span class="timeline-dot kind-${item.kind}" aria-hidden="true">
                 ${activityIcon(item.kind)}
@@ -376,6 +423,7 @@ export function render(ctx) {
               </div>
               <b>${item.amount ? money(item.amount) : "開始"}</b>
             </div>`)}
+            ${recentThree.length === 0 ? html`<p class="activity-empty-note">還沒有紀錄，記第一筆看看</p>` : ""}
           </div>
         </article>
       </section>
@@ -389,27 +437,35 @@ export function render(ctx) {
           </div>
           <span class="project-principle"><b>完成後才發放</b>報酬一樣先存 ${savingsRate}%</span>
         </div>
-        <div class="project-grid">
-          ${state.projects.map((item) => {
-            const assigned = state.profiles.find((kid) => kid.id === item.assignedProfileId);
-            const isMine = item.assignedProfileId === profile.id;
-            return html`
-          <article class="project-card status-${item.status}">
-            <div class="project-card-top">
-              <span class="project-status">${projectStatus(item.status, assigned?.name)}</span>
-              <strong>${money(item.reward)}</strong>
-            </div>
-            <h3>${item.title}</h3>
-            <p>${item.description}</p>
-            ${item.status === "open" ? html`<button${attr(projectBusy === item.id, " disabled")} data-action="claim-project" data-id="${item.id}">${projectBusy === item.id ? "正在登記…" : `${profile.name}想接這個專案`}</button>` : ""}
-            ${item.status === "claimed" && isMine ? html`<button${attr(projectBusy === item.id, " disabled")} data-action="submit-project" data-id="${item.id}">${projectBusy === item.id ? "正在送出…" : "我完成了，請家長確認"}</button>` : ""}
-            ${item.status === "claimed" && !isMine ? html`<small>${assigned?.name}正在進行中</small>` : ""}
-            ${item.status === "waiting" ? html`<small class="waiting-note">⌛ 等待家長在家長專區確認</small>` : ""}
-            ${item.status === "completed" ? html`<small class="completed-note">✓ 已完成並分配報酬</small>` : ""}
-          </article>`;
-          })}
-        </div>
-        ${projectError ? html`<p class="form-error project-error">${projectError}</p>` : ""}
+        <details class="project-panel"${attr(projectsPanelOpen, " open")}>
+          <summary>${state.projects.length === 0
+            ? "目前沒有開放的小專案"
+            : pendingProjectCount > 0
+              ? `🧩 家庭小專案・${pendingProjectCount} 個待處理`
+              : "🧩 家庭小專案・目前都已完成"}</summary>
+          ${state.projects.length === 0 ? html`<p class="project-empty-note">等家長開放新的小專案吧。</p>` : html`
+          <div class="project-grid">
+            ${state.projects.map((item) => {
+              const assigned = state.profiles.find((kid) => kid.id === item.assignedProfileId);
+              const isMine = item.assignedProfileId === profile.id;
+              return html`
+            <article class="project-card status-${item.status}">
+              <div class="project-card-top">
+                <span class="project-status">${projectStatus(item.status, assigned?.name)}</span>
+                <strong>${money(item.reward)}</strong>
+              </div>
+              <h3>${item.title}</h3>
+              <p>${item.description}</p>
+              ${item.status === "open" ? html`<button${attr(projectBusy === item.id, " disabled")} data-action="claim-project" data-id="${item.id}">${projectBusy === item.id ? "正在登記…" : `${profile.name}想接這個專案`}</button>` : ""}
+              ${item.status === "claimed" && isMine ? html`<button${attr(projectBusy === item.id, " disabled")} data-action="submit-project" data-id="${item.id}">${projectBusy === item.id ? "正在送出…" : "我完成了，請家長確認"}</button>` : ""}
+              ${item.status === "claimed" && !isMine ? html`<small>${assigned?.name}正在進行中</small>` : ""}
+              ${item.status === "waiting" ? html`<small class="waiting-note">⌛ 等待家長在家長專區確認</small>` : ""}
+              ${item.status === "completed" ? html`<small class="completed-note">✓ 已完成並分配報酬</small>` : ""}
+            </article>`;
+            })}
+          </div>`}
+          ${projectError ? html`<p class="form-error project-error">${projectError}</p>` : ""}
+        </details>
       </section>
 
       <section class="rules-section" id="rules">
@@ -430,6 +486,16 @@ export function render(ctx) {
         <strong>小小理財島 · 讓好習慣慢慢長大</strong>
         <span class="footer-credit">著作注記 · <a href="https://www.facebook.com/profile.php?id=100084000897269" target="_blank" rel="noreferrer">fb/指數三寶飯</a></span>
       </footer>
+
+      <div class="record-bar" aria-label="快速記帳">
+        <button class="primary-button" data-action="open-allowance">
+          <span aria-hidden="true">＋</span> 記一筆零用錢
+        </button>
+        <button class="secondary-button" data-action="open-spend">
+          記一筆花費
+        </button>
+      </div>
+      ${primaryNav("home")}
     </main>`;
 }
 
@@ -523,15 +589,7 @@ function openDialog(body, { labelledBy, extraClass, onClose }) {
 
 // ---------- 提示與錯誤 ----------
 function announce(message, tone = "success") {
-  notice = message;
-  noticeAt = Date.now();
   showStatus(message, tone);
-  const status = document.querySelector(".backup-status");
-  if (status) {
-    const icon = status.querySelector("i");
-    status.textContent = message;
-    if (icon) status.prepend(icon);
-  }
 }
 
 function setFormError(form, message) {
@@ -581,10 +639,10 @@ function openAction(ctx, kind) {
 function openTransactionModal(ctx) {
   const dialog = openDialog(transactionModalBody(ctx), {
     labelledBy: "money-dialog-title",
-    onClose: () => {
+    onClose: (reason) => {
       if (openModalKind !== "transaction") return;
       openModalKind = "";
-      action = null;
+      if (reason !== "rerender") action = null;   // 背景重繪留著 action，mount() 會補開並回填
     },
   });
   openModalKind = "transaction";
@@ -689,10 +747,10 @@ function openSaveMoreModal(ctx) {
   const dialog = openDialog(saveMoreModalBody(ctx), {
     labelledBy: "save-more-dialog-title",
     extraClass: "savings-transfer-modal",
-    onClose: () => {
+    onClose: (reason) => {
       if (openModalKind !== "saveMore") return;
       openModalKind = "";
-      saveMoreOpen = false;
+      if (reason !== "rerender") saveMoreOpen = false;
     },
   });
   openModalKind = "saveMore";
@@ -812,8 +870,11 @@ export function mount(root, ctx) {
     boundRoots.add(root);
     root.addEventListener("click", onRootClick);
     root.addEventListener("toggle", (event) => {
-      const details = event.target.closest?.(".garden-picker");
-      if (details) gardenPickerOpen = details.open;
+      const target = event.target;
+      if (!target || typeof target.matches !== "function") return;
+      if (target.matches(".garden-picker")) { gardenPickerOpen = target.open; return; }
+      if (target.matches(".project-panel")) { projectsPanelOpen = target.open; return; }
+      if (target.matches(".growth-panel")) { chartPanelOpen = target.open; return; }
     }, true);
   }
 

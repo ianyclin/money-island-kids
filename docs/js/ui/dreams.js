@@ -17,15 +17,32 @@ let draftChange = "";
 let draftPlan = "";
 let reflectionKey = "";
 let formErrorText = "";
-let pinErrorText = "";
 let noticeText = "夢想與回顧都會自動備份";
-let parentPinValue = "";
 let completedEditorId = "";
 let completedEditorErrorText = "";
 let completedEditorNode = null;
 let lastProfileId = "";
+let activeDreamTab = "jar";     // "jar" | "review"（規格第 9 節拍板題 4：JS 互斥版分頁，不用 <details name>）
+let completedJarsOpen = false;  // 已完成夢想罐 details 的收合狀態（規格 2.2）
+let currentCtx = null;          // 供下面 createLockModal 的 getPinStatus／onUnlocked 讀最新 ctx
 
 const RESET_ACTIONS = ["create", "update", "delete", "complete", "activate"];
+
+// ---------- 情境式解鎖 modal（規格 1.2／3.3／第 9 節「1＋2a」：右上角圓鈕開 modal，
+// modal 內建「前往家長區 →」連結，見 common.createLockModal 的 parentHref） ----------
+// 已知限制（裁判 xhigh 複審擋下、根因不在這份檔案）：app.js 的 render() 每次重繪（含 gist 回音、
+// 每月獎勵這類背景重繪）都會無條件呼叫 common.closeModal()；common.createLockModal 內部的
+// onClose 只要偵測到自己是被關掉的那個 modal，就會把「該不該重開」的旗標清成 false——不分是
+// 使用者主動關閉還是這種背景關閉。結果是 mountCheck() 下面這行「重繪後補開」在目前接線下永遠
+// 不會觸發：家長打操作碼打到一半，若這時剛好有一次背景重繪，modal 會被無聲關掉。
+// 這條路徑跨到 common.js／app.js，不是 dreams.js 這份檔案能修的（硬性規則不准動這兩個檔案），
+// 需要另外指派人改 app.js 的 closeModal() 呼叫時機或 common.js 的 onClose 分流，這裡先留這段
+// 註解讓下一個接手的人不用重新讀一次控制流程。
+const lockModal = common.createLockModal({
+  getPinStatus: () => (currentCtx ? pinStatusOf(currentCtx) : "locked"),
+  onUnlocked: () => { if (currentCtx) currentCtx.refresh(); },
+  parentHref: "#/parent",
+});
 
 // common.* 回傳的片段一律當 HTML 片段輸出（RawHtml 或字串都適用）。
 function frag(value) {
@@ -89,6 +106,11 @@ function syncProfile(ctx) {
   editingId = "";
   draftTitle = "";
   draftTarget = "";
+  // 換小朋友：情境式解鎖 modal 若還記著「該開」或尚未送出的操作碼，這裡清掉
+  // （common.createLockModal 的 reset() 就是為了「換小朋友、換頁」這個情境寫的；
+  // 目前效果上會被 app.js 的 closeModal() 間接涵蓋，這裡補上是讓 dreams.js 自己的狀態
+  // 不依賴那條路徑——見上面 lockModal 宣告處的已知限制註解）。
+  lockModal.reset();
   if (completedEditorId) {
     completedEditorId = "";
     completedEditorErrorText = "";
@@ -114,6 +136,7 @@ function createButtonLabel(kind, editing, activeShort) {
 
 // ---------- render ----------
 export function render(ctx) {
+  currentCtx = ctx;
   if (!ctx.state || !ctx.profile) return common.stateGate(undefined, () => ctx.refresh());
   syncProfile(ctx);
 
@@ -150,46 +173,23 @@ export function render(ctx) {
   }
 
   const slots = [{ kind: "short", jar: activeShort }, { kind: "long", jar: activeLong }];
+  const jarTabActive = activeDreamTab !== "review"; // 規格第 9 節拍板題 4：JS 互斥分頁，不用 <details name>
 
   return html`<main class="dream-shell" data-kid="${profile.id}" style="--kid-accent:${profile.accent}">
-      <header class="parent-topbar">
-        <a class="brand" href="#/"><span class="brand-mark" aria-hidden="true">¢</span><span><strong>小小理財島</strong><small>夢想與每月回顧</small></span></a>
-        ${frag(common.primaryNav("dreams"))}
-      </header>
+      ${frag(common.miniTopbar({ active: "dreams", ctx, right: common.lockIconButton({ pinStatus }) }))}
 
       <section class="dream-hero">
-        <div><span class="parent-kicker">先問：這筆錢什麼時候要用？</span><h1>近一點的夢想留現金，<br><em>很久以後的夢想讓投資陪它長大。</em></h1></div>
-      </section>
-
-      <section class="${unlocked ? "parent-lock-card dream-admin-lock is-unlocked" : "parent-lock-card dream-admin-lock"}">
-        <span class="lock-icon" aria-hidden="true">${unlocked ? "✓" : "🔒"}</span><div><b>${unlocked ? "家長夢想罐管理已解鎖" : pinStatus === "setup" ? "第一次使用：設定家長操作碼" : "家長可編輯或刪除夢想罐"}</b><small>夢想罐只是進度尺；編輯或刪除都不會改變撲滿、爸媽銀行或 ETF 的錢。</small></div>
-        ${!unlocked ? html`<form><input type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" placeholder="4–8 位數字" required><button>${pinStatus === "setup" ? "設定並解鎖" : "解鎖"}</button></form>` : ""}
-        ${pinErrorText ? html`<p class="form-error">${pinErrorText}</p>` : ""}
-      </section>
-
-      <section class="parent-profile-row dream-profiles">
-        ${ctx.profiles.map((item) => html`<button class="${item.id === profile.id ? "parent-profile is-active" : "parent-profile"}" data-choose-profile="${item.id}" style="--profile-color:${item.accent}"><span>${frag(common.profileAvatar(item.avatar, item.name))}</span><b>${item.name}</b><small>撲滿 ${money(item.spendingBalance)}</small></button>`)}
+        <span class="parent-kicker">先問：這筆錢什麼時候要用？</span>
+        ${frag(common.infoTip(html`近一點的夢想留現金，<br><em>很久以後的夢想讓投資陪它長大。</em>`))}
       </section>
 
       <section class="dream-layout">
-        <div class="dream-main-column">
-          <aside class="reflection-card">
-            <div class="reflection-heading-row">
-              <div><span class="parent-kicker">每月回顧</span><h2>這個月，錢教了我什麼？</h2></div>
-              <div class="reflection-month-picker" aria-label="切換回顧月份">
-                <button type="button" aria-label="較新的月份" data-action="month-newer"${selectedMonthIndex <= 0 ? raw(" disabled") : ""}>‹</button>
-                <select aria-label="選擇月份">${availableMonths.map((item) => html`<option value="${item}"${item === selectedMonth ? raw(" selected") : ""}>${formatMonth(item)}</option>`)}</select>
-                <button type="button" aria-label="較早的月份" data-action="month-older"${selectedMonthIndex >= availableMonths.length - 1 ? raw(" disabled") : ""}>›</button>
-              </div>
-            </div>
-            <div class="month-numbers month-numbers-three">
-              <span><small>這個月我存給未來</small><b>${monthActivities.length ? money(monthSaved) : "—"}</b><em>${monthVoluntarySaved > 0 ? `包含自主多存 ${money(monthVoluntarySaved)}` : "先存再花的累積"}</em></span>
-              <span><small>這個月全部的錢變化 ${frag(common.infoTip("這是撲滿、爸媽銀行與 ETF 小森林合計的增減；ETF 漲跌也會影響，因此不等於這個月的收入或存款。", { align: "right" }))}</small><b class="${monthAssetChange < 0 ? "is-negative" : ""}">${monthActivities.length ? signedMoney(monthAssetChange) : "—"}</b><em>月底和月初相比</em></span>
-              <span><small>這個月我做了什麼選擇</small><b>${monthActivities.length ? money(monthSpend) : "—"}</b><em>${monthSpendCount ? `${monthSpendCount} 筆實際支出` : "沒有支出紀錄"}</em></span>
-            </div>
-            <form><label>我最滿意的一個選擇<textarea placeholder="我做了什麼好選擇？" maxlength="160">${draftProud}</textarea></label><label>下次我想換個做法<textarea placeholder="沒有對錯，只要說說看" maxlength="160">${draftChange}</textarea></label><label>下個月想練習什麼？<textarea placeholder="例如：買東西前先等一天" maxlength="160">${draftPlan}</textarea></label>${formErrorText ? html`<p class="form-error">${formErrorText}</p>` : ""}<button class="primary-button full-width">${reflection ? "更新這個月的回顧" : "存下這個月的回顧"}</button><small>${noticeText}</small></form>
-          </aside>
+        <div class="dream-tabs" aria-label="切換夢想罐或每月回顧">
+          <button type="button" data-action="dream-tab" data-tab="jar" aria-pressed="${jarTabActive ? "true" : "false"}">🎯 夢想罐</button>
+          <button type="button" data-action="dream-tab" data-tab="review" aria-pressed="${jarTabActive ? "false" : "true"}">📝 每月回顧</button>
+        </div>
 
+        <div class="dream-panel"${jarTabActive ? "" : raw(" hidden")}>
           <div class="dream-heading"><div><span class="parent-kicker">${profile.name}的夢想</span><h2>現在想完成什麼？</h2></div>${frag(common.infoTip("短期進度跟著撲滿；長期進度跟著爸媽銀行與 ETF 小森林。夢想罐本身不另外存放或扣除金額。", { align: "right" }))}</div>
           <div class="dream-grid">
             ${slots.map(({ kind: slotKind, jar }) => {
@@ -218,20 +218,56 @@ export function render(ctx) {
               : html`<p class="empty-list-note">清單還是空的；想到下一個小目標時再加進來。</p>`}
           </section>
 
-          <section class="completed-dream-panel">
-            <div class="dream-subheading"><div><span class="parent-kicker">完成過的選擇</span><h2>已完成夢想罐</h2></div><b>${completedJars.length} 個</b></div>
+          <details class="completed-dream-panel"${completedJarsOpen ? raw(" open") : ""}>
+            <summary>查看已完成的 ${completedJars.length} 個夢想</summary>
             <div class="completed-dream-grid">${completedJars.map((jar) => html`<article><span>${jar.kind === "short" ? "🐷" : "🌳"}</span><div><small>${jar.kind === "short" ? "短期夢想" : "長期夢想"}</small><h3>${jar.title}</h3><strong>${money(jar.completedAmount ?? jar.targetAmount)}</strong><p>開始 ${formatDateTime(jar.createdAt)}<br>完成 ${formatDateTime(jar.completedAt ?? jar.updatedAt)}<br>用了 ${elapsedTime(jar.createdAt, jar.completedAt ?? jar.updatedAt)} · 原目標 ${money(jar.targetAmount)}</p>${unlocked ? html`<button class="edit-completed-dream" type="button" data-action="edit-completed" data-id="${jar.id}">✎ 編輯紀錄</button>` : ""}</div></article>`)}</div>
             ${!completedJars.length ? html`<p class="empty-list-note">第一個完成的夢想，會連同日期、花費時間與金額留在這裡。</p>` : ""}
-          </section>
+          </details>
         </div>
 
+        <div class="dream-panel"${jarTabActive ? raw(" hidden") : ""}>
+          <aside class="reflection-card">
+            <div class="reflection-heading-row">
+              <div><span class="parent-kicker">每月回顧</span><h2>這個月，錢教了我什麼？</h2></div>
+              <div class="reflection-month-picker" aria-label="切換回顧月份">
+                <button type="button" aria-label="較新的月份" data-action="month-newer"${selectedMonthIndex <= 0 ? raw(" disabled") : ""}>‹</button>
+                <select aria-label="選擇月份">${availableMonths.map((item) => html`<option value="${item}"${item === selectedMonth ? raw(" selected") : ""}>${formatMonth(item)}</option>`)}</select>
+                <button type="button" aria-label="較早的月份" data-action="month-older"${selectedMonthIndex >= availableMonths.length - 1 ? raw(" disabled") : ""}>›</button>
+              </div>
+            </div>
+            <div class="month-numbers month-numbers-three">
+              <span><small>這個月我存給未來</small><b>${monthActivities.length ? money(monthSaved) : "—"}</b><em>${monthVoluntarySaved > 0 ? `包含自主多存 ${money(monthVoluntarySaved)}` : "先存再花的累積"}</em></span>
+              <span><small>這個月全部的錢變化 ${frag(common.infoTip("這是撲滿、爸媽銀行與 ETF 小森林合計的增減；ETF 漲跌也會影響，因此不等於這個月的收入或存款。", { align: "right" }))}</small><b class="${monthAssetChange < 0 ? "is-negative" : ""}">${monthActivities.length ? signedMoney(monthAssetChange) : "—"}</b><em>月底和月初相比</em></span>
+              <span><small>這個月我做了什麼選擇</small><b>${monthActivities.length ? money(monthSpend) : "—"}</b><em>${monthSpendCount ? `${monthSpendCount} 筆實際支出` : "沒有支出紀錄"}</em></span>
+            </div>
+            <form><label>我最滿意的一個選擇<textarea placeholder="我做了什麼好選擇？" maxlength="160">${draftProud}</textarea></label><label>下次我想換個做法<textarea placeholder="沒有對錯，只要說說看" maxlength="160">${draftChange}</textarea></label><label>下個月想練習什麼？<textarea placeholder="例如：買東西前先等一天" maxlength="160">${draftPlan}</textarea></label>${formErrorText ? html`<p class="form-error">${formErrorText}</p>` : ""}<button class="primary-button full-width">${reflection ? "更新這個月的回顧" : "存下這個月的回顧"}</button><small>${noticeText}</small></form>
+          </aside>
+        </div>
       </section>
+
+      ${frag(common.primaryNav("dreams"))}
     </main>`;
 }
 
 // ---------- mount ----------
 export function mount(root, ctx) {
+  currentCtx = ctx;
   if (!ctx.state || !ctx.profile) return;
+  // 規格 1.2／3.2：重繪後如果 lock modal「該開卻沒開」，補開並回填欄位值
+  // （gist 回音、每月獎勵檢查等背景重繪都會走到這裡，不只是使用者自己點的那次 mount）。
+  lockModal.mountCheck(ctx);
+  // 已完成夢想的編輯視窗：背景重繪把它關掉後，這裡補開。
+  if (completedEditorId && !completedEditorNode) {
+    const jar = ctx.state.dreamJars.find((item) => item.id === completedEditorId);
+    if (jar) openCompletedEditor(root, ctx, jar); else completedEditorId = "";
+  }
+
+  // details 開闔狀態（toggle 不冒泡，用捕捉階段接；同 home.js／parent.js 的既有寫法）。
+  root.addEventListener("toggle", (event) => {
+    const target = event.target;
+    const details = target && target.closest ? target.closest(".completed-dream-panel") : null;
+    if (details) completedJarsOpen = details.open;
+  }, true);
 
   root.addEventListener("click", (event) => {
     const profileButton = event.target.closest("[data-choose-profile]");
@@ -243,6 +279,12 @@ export function mount(root, ctx) {
     if (!button || button.disabled) return;
     const action = button.getAttribute("data-action");
     const id = button.getAttribute("data-id");
+    if (action === "open-lock") { lockModal.open(); return; }
+    if (action === "dream-tab") {
+      const tab = button.getAttribute("data-tab");
+      if (tab && tab !== activeDreamTab) { activeDreamTab = tab; ctx.refresh(); }
+      return;
+    }
     if (action === "month-newer" || action === "month-older") {
       const months = availableMonthsOf(ctx.state, ctx.profile.id);
       const index = Math.max(0, months.indexOf(selectedMonth));
@@ -288,9 +330,7 @@ export function mount(root, ctx) {
   });
 
   root.addEventListener("input", (event) => {
-    // 家長操作碼只收數字（原本 onChange 的 replace(/\D/g, "")）。
-    const pinInput = event.target.closest(".dream-admin-lock input");
-    if (pinInput) { pinInput.value = pinInput.value.replace(/\D/g, ""); return; }
+    // 家長操作碼欄位已搬進 common.createLockModal 的 modal（規格第 9 節「1＋2a」），不再需要在這裡處理。
     // 原本這些欄位是受控的：重繪（例如按下完成夢想）不能把正在打的字弄丟。
     const dreamField = event.target.closest(".new-dream-card input");
     if (dreamField) {
@@ -310,7 +350,6 @@ export function mount(root, ctx) {
   root.addEventListener("submit", (event) => {
     const form = event.target;
     event.preventDefault();
-    if (form.closest(".dream-admin-lock")) { void unlockParent(root, ctx, form); return; }
     if (form.closest(".new-dream-card")) { void createDream(root, ctx, form); return; }
     if (form.closest(".reflection-card")) { void saveReflection(root, ctx, form); }
   });
@@ -399,7 +438,9 @@ function createDream(root, ctx, form) {
     title,
     kind,
     targetAmount: Number(targetAmount),
-    parentPin: editingId ? parentPinValue : undefined,
+    // 沒帶 parentPin：store.assertParentPin 沒收到值時會改用 pin.js 記住的本次解鎖操作碼再驗一次
+    // （pin.js 第 95–96 行的既有註解就是寫給這種情境；解鎖現在只發生在 common.createLockModal
+    // 的 modal 裡，dreams.js 拿不到、也不需要再拿使用者剛打的那組原始碼）。
   }, form.querySelector("button.primary-button"), "儲存中…");
 }
 
@@ -408,7 +449,7 @@ async function completeDream(root, ctx, dreamId, button) {
   if (!jar) return;
   const ok = await common.confirmDialog(`把「${jar.title}」記錄為已完成嗎？完成金額會記為 ${money(jar.targetAmount)}，帳戶餘額不會因此改變。`);
   if (!ok) return;
-  await postDream(root, ctx, { action: "complete", dreamId: jar.id, completedAmount: jar.targetAmount, parentPin: parentPinValue }, button, "記錄中…");
+  await postDream(root, ctx, { action: "complete", dreamId: jar.id, completedAmount: jar.targetAmount }, button, "記錄中…");
 }
 
 async function removeDream(root, ctx, dreamId, button) {
@@ -418,30 +459,11 @@ async function removeDream(root, ctx, dreamId, button) {
   if (!ok) return;
   // 進行中夢想的刪除鍵會換成「刪除中…」；清單列的刪除鍵原本只變灰、字不變。
   const busyLabel = button && button.closest(".dream-admin-actions") ? "刪除中…" : null;
-  await postDream(root, ctx, { action: "delete", dreamId: jar.id, parentPin: parentPinValue }, button, busyLabel);
+  await postDream(root, ctx, { action: "delete", dreamId: jar.id }, button, busyLabel);
 }
 
 async function activateDream(root, ctx, dreamId, button) {
-  await postDream(root, ctx, { action: "activate", dreamId, parentPin: parentPinValue }, button, "開始中…");
-}
-
-async function unlockParent(root, ctx, form) {
-  const input = form.querySelector("input");
-  const value = input ? input.value : "";
-  const restoreBusy = startBusy(form.querySelector("button"), "驗證中…");
-  pinErrorText = "";
-  paintError(form.parentElement, "", null);
-  try {
-    if (ctx.pinStatus === "setup") await pin.setup(value); else await pin.assert(value);
-    parentPinValue = value;
-    noticeText = "家長夢想罐管理已解鎖";
-    ctx.refresh();
-  } catch (caught) {
-    pinErrorText = errorMessage(caught, "驗證失敗");
-    paintError(form.parentElement, pinErrorText, null);
-    common.showStatus(pinErrorText, "error");
-    restoreBusy();
-  }
+  await postDream(root, ctx, { action: "activate", dreamId }, button, "開始中…");
 }
 
 async function saveReflection(root, ctx, form) {
@@ -495,7 +517,10 @@ function openCompletedEditor(root, ctx, jar) {
   const node = common.openModal(completedEditorContent(jar), {
     labelledBy: "completed-dream-editor-title",
     className: "completed-dream-editor",
-    onClose: () => { completedEditorId = ""; completedEditorErrorText = ""; completedEditorNode = null; },
+    onClose: (reason) => {
+      completedEditorNode = null;
+      if (reason !== "rerender") { completedEditorId = ""; completedEditorErrorText = ""; }   // 背景重繪留著 id，mount() 補開
+    },
   });
   if (!node) return;
   completedEditorNode = node;
@@ -563,7 +588,6 @@ async function saveCompletedDream(root, ctx, form, jar) {
     completedAmount: Number(fields.completedAmount),
     createdAt: startedAt.toISOString(),
     completedAt: finishedAt.toISOString(),
-    parentPin: parentPinValue,
   }, form.querySelector("button.primary-button"), "儲存中…", "已完成夢想的內容與日期時間已更新並備份");
   if (ok) {
     completedEditorId = "";

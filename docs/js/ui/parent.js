@@ -1,18 +1,20 @@
 // 家長區（移植自 app/parent/page.tsx ＋ app/parent/device-trust-panel.tsx 的備份段落）。
 // 骨架換成 render/mount，內容、class 與文案照原專案；只有架構契約第 12 節列出的句子改寫成單機版。
+//
+// 手機優先重新設計（notes/mobile-redesign/spec.md 第 2.4／9 節，第 9 節「主線拍板」優先於前文）：
+// 投資整段（真實買入／持股／買入紀錄／過年收成）已搬到新路由 #/parent/investments
+// （docs/js/ui/parent-investments.js，自己的模組作用域）；這裡只剩 Hub 本身：
+// 迷你頂欄 → 待辦收件匣 → 快速動作 → 預先儲蓄比例 → 孩子資料 → 投資入口卡 →
+// 家庭小專案（管理）→ 資料與備份 → 理念與操作指南 → footer。
+// 未解鎖時只顯示 .parent-lock-card（不動），其餘 Hub 內容整段不渲染。
 
-import { html, raw, money, taipeiDate, formatDate, formatDateTime, errorMessage, uuid } from "../util.js";
+import { html, raw, money, formatDate, formatDateTime, errorMessage, uuid } from "../util.js";
 import * as common from "./common.js";
 import * as store from "../store.js";
 import * as pin from "../pin.js";
 import * as backup from "../backup.js";
 import * as db from "../db.js";
 import * as gist from "../gist.js";
-
-// 原本 readInvestmentPresets 只回 active = 1（money-store.ts L1398–1402）
-function activePresets(state) {
-  return (state.investmentPresets || []).filter((item) => item.active !== false);
-}
 
 // ---------- 頁面暫存（重繪後還原） ----------
 const ui = {
@@ -21,48 +23,35 @@ const ui = {
   operationError: null,          // { scope, message }
   pinError: "",
   pinChangeOpen: false,
-  profileEditorOpen: false,
   addProfileOpen: false,
-  projectEditorOpen: false,
   projectId: "",
-  presetId: "",
-  editingPurchaseId: "",
-  editingHarvestId: "",
-  harvestHoldingId: "",
-  destinationDreamId: "",
-  purchaseOperationId: "",
   savingsRate: null,
   savingsRateBase: null,
-  quoteMeta: null,               // { updatedAt, source }
   profilePhoto: "",              // 新選的照片（已壓縮的 data URL）
   profilePreview: "",
   restoreSummary: null,
   restoreEnvelope: null,
   snapshots: null,               // null=尚未讀取、[]=沒有、false=不支援
-  openDetails: new Set(),
+  openDetails: new Set(),        // "profile-editor" | "project-editor" | "guide" | "backup-file" | "snapshots" | "gist"
   drafts: Object.create(null),
-  profileKey: "",
   piggyKey: "",
   identityKey: "",
+  guideTouched: false,           // 使用者手動切換過指南 details 後，不再被 pinStatus==="setup" 蓋回
+  correctionOpen: false,         // 校正撲滿 modal：是否「應該」開著（規格 1.2／3.2／2.4 第 3 項的存活模式）
+  correctionModalKind: "",       // "" | "correction"
 };
 
 const ERROR_ANCHORS = {
   pin: { selector: ".parent-lock-card", position: "beforeend" },
   profile: { selector: ".profile-editor-forms", position: "beforeend" },
   accounts: { selector: ".profile-editor-forms", position: "beforeend" },
+  inbox: { selector: ".parent-inbox", position: "beforeend" },
   projects: { selector: ".parent-project-panel", position: "beforeend" },
-  purchase: { selector: "[data-purchase-submit]", position: "beforebegin" },
-  holdings: { selector: ".holding-panel", position: "beforeend" },
-  harvest: { selector: ".harvest-content", position: "beforeend" },
   backup: { selector: ".parent-device-panel", position: "beforeend" },
 };
 
 function draft(key, fallback = "") {
   return Object.prototype.hasOwnProperty.call(ui.drafts, key) ? ui.drafts[key] : fallback;
-}
-
-function draftChecked(key) {
-  return ui.drafts[key] === true;
 }
 
 function clearDrafts(...keys) {
@@ -78,35 +67,23 @@ function fieldValue(scope, key) {
   return field ? field.value : "";
 }
 
-function fieldChecked(scope, key) {
-  const field = scope && scope.querySelector(`[data-draft="${key}"]`);
-  return Boolean(field && field.checked);
-}
-
 // ---------- 衍生資料 ----------
 function scopeOf(state, profile) {
-  const holdings = state.holdings.filter((item) => item.profileId === profile.id);
-  const purchases = state.purchases.filter((item) => item.profileId === profile.id).slice(0, 8);
-  const shortDreams = state.dreamJars.filter((item) => item.profileId === profile.id && item.kind === "short" && item.status === "active");
-  const harvestHistory = state.harvests
-    .filter((item) => item.profileId === profile.id)
-    .slice()
-    .sort((a, b) => b.saleDate.localeCompare(a.saleDate) || b.createdAt.localeCompare(a.createdAt));
-  return { holdings, purchases, shortDreams, harvestHistory };
+  return { holdings: state.holdings.filter((item) => item.profileId === profile.id) };
 }
 
 // 原本用 useEffect 在 profile／餘額變動時重設表單；這裡在 render 時比對 key 做同一件事。
-function syncKeys(state, profile, holdings, shortDreams) {
-  if (ui.profileKey !== profile.id) {
-    ui.profileKey = profile.id;
-    clearDrafts("harvest-sold-units", "harvest-net-proceeds", "harvest-note", "harvest-confirm");
-    ui.editingPurchaseId = "";
-    ui.editingHarvestId = "";
-  }
+function syncKeys(state, profile) {
   const piggyKey = `${profile.id}:${profile.spendingBalance}`;
   if (ui.piggyKey !== piggyKey) {
+    // 只有「換了孩子」才把校正 modal 收掉；同一個孩子的餘額被背景異動（Gist 同步、每月獎勵）
+    // 改變時，modal 與輸入到一半的金額都要留著（規格 1.2／3.2 存活機制）。
+    const previousId = ui.piggyKey ? ui.piggyKey.split(":")[0] : "";
     ui.piggyKey = piggyKey;
-    clearDrafts("piggy-balance", "piggy-note");
+    if (previousId !== profile.id) {
+      clearDrafts("piggy-balance", "piggy-note");
+      ui.correctionOpen = false;
+    }
   }
   const identityKey = `${profile.id}:${profile.name}:${profile.avatar}`;
   if (ui.identityKey !== identityKey) {
@@ -119,12 +96,26 @@ function syncKeys(state, profile, holdings, shortDreams) {
     ui.savingsRateBase = state.savingsRate;
     ui.savingsRate = state.savingsRate;
   }
-  if (!ui.purchaseOperationId) ui.purchaseOperationId = uuid();
+}
 
-  const validHoldingIds = new Set(holdings.map((item) => item.id));
-  if (!ui.harvestHoldingId || !validHoldingIds.has(ui.harvestHoldingId)) ui.harvestHoldingId = holdings[0]?.id ?? "";
-  const validDreamIds = new Set(shortDreams.map((item) => item.id));
-  if (ui.destinationDreamId && !validDreamIds.has(ui.destinationDreamId)) ui.destinationDreamId = shortDreams[0]?.id ?? "";
+// ---------- 校正撲滿：共用欄位（同一段 markup／邏輯同時被孩子資料編輯的撲滿表單與快速動作 modal 呼叫） ----------
+function piggyCorrectionFields(profile) {
+  return html`<label>撲滿目前金額<input type="number" min="0" max="1000000" inputmode="numeric" data-draft="piggy-balance" value="${draft("piggy-balance", String(profile.spendingBalance))}" required /></label>
+      <label>校正原因（選填）<input data-draft="piggy-note" value="${draft("piggy-note")}" placeholder="例如：和實體撲滿核對" maxlength="100" /></label>`;
+}
+
+function piggyCorrectionModalBody(profile) {
+  return html`<div class="piggy-correction-modal">
+    <h2 id="piggy-correction-title">校正撲滿金額</h2>
+    <p class="piggy-correction-context"><span>${raw(common.profileAvatar(profile.avatar))}</span><b>${profile.name}的撲滿</b></p>
+    <form data-form="piggy-correction">
+      ${piggyCorrectionFields(profile)}
+      <div class="piggy-correction-actions">
+        <button type="button" class="cancel-preset" data-action="cancel-correction">取消</button>
+        <button class="primary-button full-width" data-busy-label="儲存中…">儲存撲滿金額</button>
+      </div>
+    </form>
+  </div>`;
 }
 
 // ---------- render ----------
@@ -135,37 +126,28 @@ export function render(ctx) {
 
   const pinStatus = ctx.pinStatus;
   const unlocked = pinStatus === "unlocked";
-  const { holdings, purchases, shortDreams, harvestHistory } = scopeOf(state, profile);
-  syncKeys(state, profile, holdings, shortDreams);
+  const { holdings } = scopeOf(state, profile);
+  syncKeys(state, profile);
+
+  // 規格 2.4 第 9 項：pinStatus==="setup" 時指南預設展開，使用者手動切換過後不再被蓋回。
+  if (!ui.guideTouched && pinStatus === "setup") ui.openDetails.add("guide");
 
   const waitingProjects = state.projects.filter((item) => item.status === "waiting");
   const pendingSavingsTransfers = state.savingsTransfers.filter((item) => item.status === "pending");
-  const currentYear = Number(taipeiDate().slice(0, 4));
-  const harvestedThisYear = state.harvests.some((item) => item.profileId === profile.id && item.year === currentYear);
-  const maxHarvest = Math.floor((profile.marketValue ?? 0) * 0.05);
-  const plannedCost = Math.max(0, Math.round(Number(draft("purchase-total-cost")) || 0));
-  const purchaseReady = draftChecked("purchase-confirm")
-    && plannedCost > 0 && plannedCost <= profile.bankBalance && Number(draft("purchase-units")) > 0;
-  const harvestNetProceeds = Number(draft("harvest-net-proceeds"));
-  const harvestReady = draftChecked("harvest-confirm")
-    && harvestNetProceeds > 0 && harvestNetProceeds <= maxHarvest && Number(draft("harvest-sold-units")) > 0;
-  const latestPriceUpdatedAt = holdings.find((holding) => holding.priceUpdatedAt)?.priceUpdatedAt ?? "";
+  const hasInboxItems = waitingProjects.length > 0 || pendingSavingsTransfers.length > 0;
+  const latestHolding = holdings.find((item) => item.priceUpdatedAt) ?? holdings[0] ?? null;
+  const investmentUpdatedAt = latestHolding ? (latestHolding.priceUpdatedAt ?? latestHolding.updatedAt) : "";
+
+  // 規格第 9 節「頂欄」＋ 2.4 第 1／1.5 項：🔓 已解鎖小字＋🔍 所有紀錄連結，只在已解鎖時顯示
+  // （底部三項 tab bar 本來就一律含「所有紀錄」，這裡是錦上添花的第二入口，不是唯一入口）。
+  const topbarRight = unlocked
+    ? html`<span class="parent-topbar-unlocked">🔓 已解鎖</span><a class="history-link" href="#/history">🔍 所有紀錄</a>`
+    : "";
 
   return html`<main class="parent-shell" data-kid="${profile.id}" style="--kid-accent: ${profile.accent}">
-      <header class="parent-topbar">
-        <a class="brand" href="#/" aria-label="回到小小理財島">
-          <span class="brand-mark" aria-hidden="true">¢</span>
-          <span><strong>小小理財島</strong><small>家長專區</small></span>
-        </a>
-        ${raw(common.primaryNav("parent"))}
-      </header>
+      ${raw(common.miniTopbar({ active: "parent", ctx, right: topbarRight }))}
 
-      <section class="parent-hero">
-        <div>
-          <div class="heading-help"><span class="parent-kicker">所有家長功能集中在這裡</span>${raw(common.infoTip("先解鎖一次，再依序處理撲滿、家庭小專案、真實投資與資料備份。"))}</div>
-          <h1>管理帳本、專案與投資，<br /><em>孩子頁面保持簡單。</em></h1>
-        </div>
-      </section>
+      ${!unlocked ? html`<section class="parent-hero-line"><span class="parent-kicker">所有家長功能集中在這裡</span></section>` : ""}
 
       <section class="${unlocked ? "parent-lock-card is-unlocked" : "parent-lock-card"}">
         <span class="lock-icon" aria-hidden="true">${unlocked ? "✓" : "🔒"}</span>
@@ -180,244 +162,88 @@ export function render(ctx) {
         </form>` : ""}
       </section>
 
-      <div class="parent-settings-row">
-      ${guideMarkup()}
+      ${unlocked ? html`
+      <section class="parent-approval-strip parent-inbox">
+        <span class="parent-kicker">待辦</span>
+        <h2>今天要處理的事</h2>
+        ${hasInboxItems ? html`${pendingSavingsTransfers.map((transfer) => {
+            const kid = state.profiles.find((item) => item.id === transfer.profileId);
+            return html`<article>
+              <span>${kid ? raw(common.profileAvatar(kid.avatar)) : "🌱"}</span>
+              <div><b>${kid?.name ?? "小朋友"}想多存 ${money(transfer.amount)}</b><small>${transfer.note} · 批准後才會從撲滿轉入爸媽銀行</small></div>
+              <div class="savings-approval-actions"><button type="button" data-action="approve-transfer" data-id="${transfer.id}" data-busy-label="處理中…">確認存入</button><button class="reject-transfer" type="button" data-action="reject-transfer" data-id="${transfer.id}" data-busy-label="處理中…">不執行</button></div>
+            </article>`;
+          })}${waitingProjects.map((project) => {
+            const kid = state.profiles.find((item) => item.id === project.assignedProfileId);
+            return html`<article><span>${kid ? raw(common.profileAvatar(kid.avatar)) : ""}</span><div><b>${kid?.name} · ${project.title}</b><small>${money(project.reward)}，確認後依 ${state.savingsRate}% / ${100 - state.savingsRate}% 分配</small></div><button data-action="approve-project" data-id="${project.id}" data-busy-label="發放中…">確認完成</button></article>`;
+          })}` : html`<p class="parent-inbox-empty">這個月都核對過了 ✓</p>`}
+      </section>
+
+      <div class="parent-quick-actions">
+        <a class="parent-quick-action" href="#/parent/investments?open=purchase"><span aria-hidden="true">🌱</span><b>記買入</b></a>
+        <a class="parent-quick-action" href="#/parent/investments?open=harvest"><span aria-hidden="true">🧧</span><b>記收成</b></a>
+        <button type="button" class="parent-quick-action" data-action="open-correction"><span aria-hidden="true">🐷</span><b>校正撲滿</b></button>
+      </div>
 
       <form class="family-settings-panel savings-inline-panel" data-form="savings-rate">
         <span class="settings-panel-copy"><small>全家共用設定</small><b>預先儲蓄比例</b></span>
         <div class="savings-stepper" aria-label="調整預先儲蓄比例">
-          <button type="button" aria-label="減少 5%" data-action="savings-down" ${!unlocked || ui.savingsRate <= 0 ? raw("disabled") : ""}>−</button>
+          <button type="button" aria-label="減少 5%" data-action="savings-down" ${ui.savingsRate <= 0 ? raw("disabled") : ""}>−</button>
           <output aria-live="polite">${ui.savingsRate}%</output>
-          <button type="button" aria-label="增加 5%" data-action="savings-up" ${!unlocked || ui.savingsRate >= 100 ? raw("disabled") : ""}>＋</button>
+          <button type="button" aria-label="增加 5%" data-action="savings-up" ${ui.savingsRate >= 100 ? raw("disabled") : ""}>＋</button>
         </div>
-        <button class="savings-rate-save" data-busy-label="儲存中…" ${!unlocked || ui.savingsRate === state.savingsRate ? raw("disabled") : ""}>${ui.savingsRate === state.savingsRate ? "已儲存" : "儲存"}</button>
+        <button class="savings-rate-save" data-busy-label="儲存中…" ${ui.savingsRate === state.savingsRate ? raw("disabled") : ""}>${ui.savingsRate === state.savingsRate ? "已儲存" : "儲存"}</button>
       </form>
 
-      <button class="${ui.profileEditorOpen ? "profile-settings-trigger is-open" : "profile-settings-trigger"}" type="button" aria-expanded="${ui.profileEditorOpen ? "true" : "false"}" data-action="open-profile-editor" data-id="${profile.id}">
-        <span>${raw(common.profileAvatar(profile.avatar))}</span>
-        <span><small>孩子資料</small><b>編輯${profile.name}</b></span>
-        <strong>${ui.profileEditorOpen ? "收起 −" : "編輯 ＋"}</strong>
-      </button>
-      </div>
+      <details class="profile-editor-panel" id="profile-editor" data-open-key="profile-editor" ${isOpen("profile-editor") ? raw("open") : ""}>
+        <summary class="profile-editor-summary">
+          <span>${raw(common.profileAvatar(profile.avatar))}</span>
+          <span><small>孩子資料</small><b>編輯${profile.name}</b></span>
+          <strong><i class="profile-editor-closed-label">編輯 ＋</i><i class="profile-editor-open-label">收起 −</i></strong>
+        </summary>
+        ${profileEditorMarkup(state, profile)}
+      </details>
 
-      ${ui.profileEditorOpen ? profileEditorMarkup(state, profile, unlocked) : ""}
-
-      ${pendingSavingsTransfers.length > 0 ? html`<section class="parent-approval-strip savings-approval-strip">
-        <span class="parent-kicker">等待家長確認</span>
-        <h2>🌱 自主多存申請</h2>
-        ${pendingSavingsTransfers.map((transfer) => {
-          const kid = state.profiles.find((item) => item.id === transfer.profileId);
-          return html`<article>
-            <span>${kid ? raw(common.profileAvatar(kid.avatar)) : "🌱"}</span>
-            <div><b>${kid?.name ?? "小朋友"}想多存 ${money(transfer.amount)}</b><small>${transfer.note} · 批准後才會從撲滿轉入爸媽銀行</small></div>
-            <div class="savings-approval-actions"><button type="button" data-action="approve-transfer" data-id="${transfer.id}" data-busy-label="處理中…" ${!unlocked ? raw("disabled") : ""}>確認存入</button><button class="reject-transfer" type="button" data-action="reject-transfer" data-id="${transfer.id}" data-busy-label="處理中…" ${!unlocked ? raw("disabled") : ""}>不執行</button></div>
-          </article>`;
-        })}
-      </section>` : ""}
+      <a class="parent-investment-entry" href="#/parent/investments">
+        <span aria-hidden="true">📈</span>
+        <div><b>投資</b><small>${holdings.length ? `${holdings.length} 檔持股 · 上次更新${investmentUpdatedAt ? formatDate(investmentUpdatedAt) : "尚未更新"}` : "尚未記錄任何持股"}</small></div>
+        <strong>前往投資管理 →</strong>
+      </a>
 
       <section class="parent-project-panel" id="projects">
         <div class="parent-project-heading">
           <div class="parent-project-copy"><div class="heading-help"><span class="parent-kicker">家庭小專案</span>${raw(common.infoTip("只替額外、完整且事前約定的任務設定報酬；日常責任不標價。"))}</div><h2>專案與確認</h2></div>
-          <button
-            class="project-editor-trigger"
-            type="button"
-            aria-expanded="${ui.projectEditorOpen ? "true" : "false"}"
-            data-action="toggle-project-editor"
-            ${!unlocked ? raw("disabled") : ""}
-          >${!unlocked ? "解鎖後新增" : ui.projectEditorOpen ? "收起編輯 −" : "新增專案 ＋"}</button>
         </div>
-        <div class="${ui.projectEditorOpen ? "parent-project-layout is-editor-open" : "parent-project-layout"}">
-          ${ui.projectEditorOpen ? html`<form class="parent-project-form" id="project-editor" data-form="project">
+        <details class="project-editor-panel" id="project-editor-panel" data-open-key="project-editor" ${isOpen("project-editor") ? raw("open") : ""}>
+          <summary class="project-editor-trigger">
+            <i class="project-editor-closed-label">新增專案 ＋</i>
+            <i class="project-editor-open-label">收起編輯 −</i>
+          </summary>
+          <form class="parent-project-form" id="project-editor" data-form="project">
             <h3>${ui.projectId ? "編輯尚未被接下的專案" : "新增一個小專案"}</h3>
             <label>專案名稱<input data-draft="project-title" value="${draft("project-title")}" placeholder="例如：整理一箱舊玩具" required minlength="2" maxlength="40" /></label>
             <label>完成條件<textarea data-draft="project-description" placeholder="清楚寫出範圍與成果" required minlength="4" maxlength="180">${draft("project-description")}</textarea></label>
-            <label>完成報酬<input type="number" inputmode="numeric" min="10" max="500" step="10" data-draft="project-reward" value="${draft("project-reward")}" required /></label>
-            <button class="primary-button full-width" data-busy-label="儲存中…" ${!unlocked ? raw("disabled") : ""}>${ui.projectId ? "儲存修改" : "發布小專案"}</button>
+            <label>完成報酬<input type="number" inputmode="numeric" min="10" max="500" step="10" data-draft="project-reward" value="${draft("project-reward", ui.projectId ? "" : "50")}" required /></label>
+            <button class="primary-button full-width" data-busy-label="儲存中…">${ui.projectId ? "儲存修改" : "發布小專案"}</button>
             ${ui.projectId ? html`<button class="cancel-preset" type="button" data-action="cancel-project-edit">取消編輯</button>` : ""}
-          </form>` : ""}
-          <div class="parent-project-list">
-            ${waitingProjects.length > 0 ? html`<div class="project-waiting-group"><b>等待家長確認</b>${waitingProjects.map((project) => {
-              const kid = state.profiles.find((item) => item.id === project.assignedProfileId);
-              return html`<article><span>${kid ? raw(common.profileAvatar(kid.avatar)) : ""}</span><div><strong>${kid?.name} · ${project.title}</strong><small>${money(project.reward)}，確認後依 ${state.savingsRate}% / ${100 - state.savingsRate}% 分配</small></div><button data-action="approve-project" data-id="${project.id}" data-busy-label="發放中…" ${!unlocked ? raw("disabled") : ""}>確認完成</button></article>`;
-            })}</div>` : ""}
-            <div class="project-manage-group"><b>目前專案</b>${state.projects.length ? state.projects.map((project) => html`<article><div><strong>${project.title}</strong><small>${project.status === "open" ? "尚未接下" : project.status === "claimed" ? "進行中" : project.status === "waiting" ? "等待確認" : "已完成"} · ${money(project.reward)}</small></div>${project.status === "open" ? html`<button data-action="edit-project" data-id="${project.id}" ${!unlocked ? raw("disabled") : ""}>編輯</button>` : ""}</article>`) : html`<p class="project-empty-state">目前沒有家庭小專案，需要時再新增即可。</p>`}</div>
-          </div>
-        </div>
-      </section>
-
-      <section class="investment-layout" id="investments">
-        <details class="investment-form-card" data-open-key="investment" ${isOpen("investment") ? raw("open") : ""}>
-          <summary class="investment-summary">
-            <div><span class="parent-kicker">新增一筆真實買入</span><h2>🌱 爸媽已經買好了嗎？</h2><small>需要記錄券商買入時再展開</small></div>
-            <span class="investment-summary-action"><b>記錄買入</b><small class="investment-closed-label">查看或操作 ＋</small><small class="investment-open-label">收起細節 −</small></span>
-          </summary>
-          <div class="investment-form-content">
-          <div class="panel-help">${raw(common.infoTip("請依照券商成交結果填寫；總成本包含手續費，會最容易和真實帳戶對得上。", { align: "right" }))}</div>
-
-          <div class="preset-row" aria-label="常用標的">
-            ${activePresets(state).map((preset) => html`<button type="button" data-action="choose-preset" data-symbol="${preset.symbol}" data-name="${preset.name}" data-category="${preset.category}">${preset.symbol}</button>`)}
-            <span>也可以輸入其他標的</span>
-          </div>
-
-          <details class="preset-admin" data-open-key="preset-admin" ${isOpen("preset-admin") ? raw("open") : ""}>
-            <summary>調整常用標的</summary>
-            <div class="preset-list">${activePresets(state).map((preset) => html`<div><span><b>${preset.symbol}</b><small>${preset.name} · ${preset.category}</small></span><button type="button" data-action="edit-preset" data-id="${preset.id}" ${!unlocked ? raw("disabled") : ""}>編輯</button><button type="button" data-action="delete-preset" data-id="${preset.id}" data-busy-label="停用中…" ${!unlocked ? raw("disabled") : ""}>停用</button></div>`)}</div>
-            <form data-form="preset"><div class="form-two-columns"><label><span>標的代號</span><input data-draft="preset-symbol" data-uppercase value="${draft("preset-symbol")}" placeholder="例如 VT" required maxlength="12" /></label><label><span>類型</span><select data-draft="preset-category"><option ${draft("preset-category", "ETF") === "ETF" ? raw("selected") : ""}>ETF</option><option ${draft("preset-category", "ETF") === "股票" ? raw("selected") : ""}>股票</option></select></label></div><label><span>顯示名稱</span><input data-draft="preset-name" value="${draft("preset-name")}" placeholder="例如 Vanguard Total World" required maxlength="40" /></label><label><span>排序</span><input type="number" min="0" max="100" data-draft="preset-sort" value="${draft("preset-sort")}" placeholder="數字越小越前面" /></label><button class="primary-button full-width" data-busy-label="儲存中…" ${!unlocked ? raw("disabled") : ""}>${ui.presetId ? "儲存常用標的修改" : "新增常用標的"}</button>${ui.presetId ? html`<button class="cancel-preset" type="button" data-action="cancel-preset-edit">取消編輯</button>` : ""}</form>
-          </details>
-
-          <form data-form="purchase">
-            <div class="form-two-columns">
-              <label><span>股票代號</span><input data-draft="purchase-symbol" data-uppercase value="${draft("purchase-symbol")}" placeholder="例如 00646" required maxlength="12" /></label>
-              <label><span>類型</span><select data-draft="purchase-category"><option ${draft("purchase-category", "ETF") === "ETF" ? raw("selected") : ""}>ETF</option><option ${draft("purchase-category", "ETF") === "股票" ? raw("selected") : ""}>股票</option></select></label>
-            </div>
-            <label><span>標的名稱</span><input data-draft="purchase-name" value="${draft("purchase-name")}" placeholder="例如 元大 S&P 500" required maxlength="40" /></label>
-            <div class="form-two-columns">
-              <label><span>實際買入股數</span><input type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="purchase-units" value="${draft("purchase-units")}" placeholder="例如 10" required /></label>
-              <label><span>總成本（含費用）</span><input type="number" inputmode="numeric" min="1" max="${profile.bankBalance}" data-draft="purchase-total-cost" value="${draft("purchase-total-cost")}" placeholder="NT$" required /></label>
-            </div>
-            <label><span>買入日期</span><input type="date" data-draft="purchase-date" value="${draft("purchase-date", taipeiDate())}" required /></label>
-            <label><span>備註（選填）</span><input data-draft="purchase-note" value="${draft("purchase-note")}" placeholder="例如：用 8 月累積的存款買入" maxlength="100" /></label>
-
-            <div class="purchase-preview">
-              <span>${raw(common.profileAvatar(profile.avatar))}</span>
-              <div><b>這筆記錄完成後</b><small>爸媽銀行會扣除 <span data-planned-cost>${money(plannedCost)}</span>，同額移到 ETF 小森林；總資產不會憑空增加。</small></div>
-            </div>
-            <label class="confirm-check">
-              <input type="checkbox" data-draft="purchase-confirm" ${draftChecked("purchase-confirm") ? raw("checked") : ""} />
-              <span>我確認這筆交易已經在真實券商完成</span>
-            </label>
-            <button class="primary-button full-width" data-purchase-submit data-busy-label="正在記錄與備份…" ${!unlocked || !purchaseReady ? raw("disabled") : ""}>
-              確認記錄 ${profile.name}的買入
-            </button>
-            <small class="parent-save-note">${ui.notice}</small>
           </form>
-          </div>
         </details>
-
-        <div class="holding-column">
-          <section class="holding-panel">
-            <div class="holding-heading"><div><span class="parent-kicker">目前持有</span><h2>${profile.name}的 ETF 小森林</h2></div><b>${holdings.length} 個標的</b></div>
-            <div class="market-quote-actions">
-              <div class="market-auto-label"><b>自動更新</b>${raw(common.infoTip("打開 app 或回到前景時，系統會在背景檢查證交所最新可用收盤價；同一家庭 30 分鐘內不會重複請求。這不是盤中即時報價。", { align: "right" }))}</div>
-              <button type="button" data-action="refresh-quotes" data-busy-label="檢查中…" ${!unlocked || !holdings.length ? raw("disabled") : ""}>
-                重新檢查收盤價
-              </button>
-              ${ui.quoteMeta || latestPriceUpdatedAt ? html`<small>
-                ${ui.quoteMeta?.source ?? "最近行情"} · ${formatDateTime(ui.quoteMeta?.updatedAt ?? latestPriceUpdatedAt)}
-              </small>` : ""}
-            </div>
-            ${holdings.length ? holdings.map((holding) => {
-              const gain = holding.marketValue - holding.costBasis;
-              const rate = holding.costBasis ? gain / holding.costBasis * 100 : 0;
-              const marketDraft = draft(`market-${holding.id}`);
-              return html`
-                <div class="holding-record">
-                  <article class="holding-card">
-                    <span class="holding-symbol">${holding.symbol}</span>
-                    <div><b>${holding.name}</b><small>${holding.category} · ${holding.units} 股 · ${holding.quoteAsOf ? `${holding.quoteAsOf} 收盤價` : holding.priceUpdatedAt ? `家長更新於 ${formatDate(holding.priceUpdatedAt)}` : "尚未更新市值"}</small></div>
-                    <div class="holding-value"><b>${money(holding.marketValue)}</b><small class="${gain >= 0 ? "is-up" : "is-down"}">${gain >= 0 ? "+" : ""}${rate.toFixed(1)}%</small></div>
-                  </article>
-                  <div class="market-editor"><input type="number" min="0" inputmode="numeric" data-draft="market-${holding.id}" value="${marketDraft}" placeholder="更新市值，目前 ${holding.marketValue}" /><button data-action="update-market-value" data-id="${holding.id}" data-busy-label="更新中…" ${!unlocked || marketDraft === "" ? raw("disabled") : ""}>記錄今日市值</button></div>
-                </div>
-              `;
-            }) : html`<div class="empty-holding"><span>${raw(common.profileAvatar(profile.avatar))}</span><b>第一棵投資小樹還在等你</b><small>等爸媽完成第一次真實買入後，就會出現在這裡。</small></div>`}
-            <div class="panel-help">${raw(common.infoTip("按下更新會取得最新可用收盤價；也可以依券商畫面手動記錄今日市值。", { align: "right" }))}</div>
-          </section>
-
-          <section class="purchase-history">
-            <div class="holding-heading"><div><span class="parent-kicker">最近記錄</span><h2>爸媽協助買入</h2></div></div>
-            ${purchases.length ? purchases.map((item) => html`
-              <div class="${ui.editingPurchaseId === item.id ? "purchase-entry is-editing" : "purchase-entry"}">
-                <div class="purchase-row">
-                  <span>↗</span>
-                  <div><b>${item.symbol} · ${item.name}</b><small>${item.purchaseDate} · ${item.units} 股${item.note ? ` · ${item.note}` : ""}</small></div>
-                  <div class="purchase-row-tail">
-                    <strong>${money(item.totalCost)}</strong>
-                    ${unlocked ? html`<div class="purchase-history-actions">
-                      <button type="button" data-action="${ui.editingPurchaseId === item.id ? "close-purchase-editor" : "edit-purchase"}" data-id="${item.id}" data-busy-lock>${ui.editingPurchaseId === item.id ? "收起" : "編輯"}</button>
-                      <button type="button" class="is-danger" data-action="void-purchase" data-id="${item.id}" data-busy-label="撤銷中…" data-busy-lock>撤銷</button>
-                    </div>` : ""}
-                  </div>
-                </div>
-                ${unlocked && ui.editingPurchaseId === item.id ? html`<form class="purchase-correction-form" data-form="purchase-correct" data-id="${item.id}">
-                  <div class="purchase-correction-grid">
-                    <label><span>股數</span><input type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="edit-purchase-units" value="${draft("edit-purchase-units")}" required /></label>
-                    <label><span>總成本</span><input type="number" inputmode="numeric" min="1" step="1" data-draft="edit-purchase-cost" value="${draft("edit-purchase-cost")}" required /></label>
-                    <label><span>買入日期</span><input type="date" data-draft="edit-purchase-date" value="${draft("edit-purchase-date")}" required /></label>
-                    <label><span>備註</span><input data-draft="edit-purchase-note" value="${draft("edit-purchase-note")}" maxlength="100" placeholder="選填" /></label>
-                  </div>
-                  <div class="purchase-correction-actions">
-                    <button type="button" data-action="close-purchase-editor">取消</button>
-                    <button type="submit" class="is-primary" data-busy-label="校正中…">儲存更正</button>
-                  </div>
-                </form>` : ""}
-              </div>
-            `) : html`<p class="empty-history">新記錄會自動留在這裡。</p>`}
-          </section>
-
-          <details class="harvest-panel" id="harvest" data-open-key="harvest" ${isOpen("harvest") ? raw("open") : ""}>
-            <summary class="harvest-summary">
-              <div>
-                <span class="parent-kicker">一年一次的選擇</span>
-                <h2>🧧 過年投資收成日</h2>
-                <small>${currentYear} 年最多 ${money(maxHarvest)} · ${harvestedThisYear ? "今年已使用" : "今年尚未使用"}</small>
-              </div>
-              <span class="harvest-summary-action">
-                <b>最多 5%</b>
-                <small class="harvest-closed-label">查看或操作 ＋</small>
-                <small class="harvest-open-label">收起細節 −</small>
-              </span>
-            </summary>
-            <div class="harvest-content">
-              <div class="panel-help">${raw(common.infoTip("可以選擇完全不提領。若要使用，爸媽先在券商實際賣出，再把淨入帳金額放回撲滿；短期夢想罐的進度會自動更新。"))}</div>
-              <div class="harvest-limit"><span>${raw(common.profileAvatar(profile.avatar))}</span><div><small>${currentYear} 年最高收成額度</small><strong>${money(maxHarvest)}</strong></div><b>${harvestedThisYear ? "今年已使用" : "今年尚未使用"}</b></div>
-              <form data-form="harvest">
-                <label>實際賣出的標的<select data-draft="harvest-holding" required>${holdings.map((holding) => html`<option value="${holding.id}" ${holding.id === ui.harvestHoldingId ? raw("selected") : ""}>${holding.symbol} · ${holding.name}（${holding.units} 股）</option>`)}</select></label>
-                <div class="form-two-columns"><label>實際賣出股數<input type="number" min="0.0001" step="0.0001" data-draft="harvest-sold-units" value="${draft("harvest-sold-units")}" required /></label><label>券商淨入帳<input type="number" min="1" max="${maxHarvest}" data-draft="harvest-net-proceeds" value="${draft("harvest-net-proceeds")}" required /></label></div>
-                <label>這次收成要對應哪個短期夢想？<select data-draft="harvest-dream"><option value="" ${ui.destinationDreamId === "" ? raw("selected") : ""}>不指定（仍放回撲滿）</option>${shortDreams.map((jar) => html`<option value="${jar.id}" ${jar.id === ui.destinationDreamId ? raw("selected") : ""}>短期夢想罐：${jar.title}</option>`)}</select></label>
-                <label>實際賣出日期<input type="date" data-draft="harvest-sale-date" value="${draft("harvest-sale-date", taipeiDate())}" required /></label>
-                <label>備註（選填）<input data-draft="harvest-note" value="${draft("harvest-note")}" placeholder="例如：今年選擇收成 3%" maxlength="100" /></label>
-                <label class="confirm-check"><input type="checkbox" data-draft="harvest-confirm" ${draftChecked("harvest-confirm") ? raw("checked") : ""} /><span>我確認這筆股票已在真實券商賣出</span></label>
-                <button class="primary-button full-width" data-harvest-submit data-busy-label="記錄收成中…" ${!unlocked || harvestedThisYear || !holdings.length || !harvestReady ? raw("disabled") : ""}>${harvestedThisYear ? "今年已完成收成" : "確認過年收成"}</button>
-              </form>
-              <details class="harvest-history-panel" data-open-key="harvest-history" ${isOpen("harvest-history") ? raw("open") : ""}>
-                <summary><span>過年收成歷史</span><b>${harvestHistory.length} 筆 ＋</b></summary>
-                <div class="harvest-history-list">
-                  ${harvestHistory.length ? harvestHistory.map((item) => {
-                    const holding = state.holdings.find((candidate) => candidate.id === item.holdingId);
-                    const destination = state.dreamJars.find((candidate) => candidate.id === item.destinationDreamId);
-                    const destinationOptions = destination && !shortDreams.some((candidate) => candidate.id === destination.id)
-                      ? [destination, ...shortDreams]
-                      : shortDreams;
-                    const isEditing = ui.editingHarvestId === item.id;
-                    return html`<article class="${isEditing ? "harvest-history-entry is-editing" : "harvest-history-entry"}">
-                      <div class="harvest-history-row">
-                        <span aria-hidden="true">福</span>
-                        <div><strong>${item.year} 年 · ${money(item.netProceeds)}</strong><small>${item.saleDate} · ${holding?.symbol ?? "歷史標的"} · ${item.soldUnits} 股${destination ? ` · ${destination.title}` : ""}</small></div>
-                        ${unlocked ? html`<div class="harvest-history-actions">
-                          <button type="button" data-action="${isEditing ? "close-harvest-editor" : "edit-harvest"}" data-id="${item.id}" data-busy-lock>${isEditing ? "收起" : "編輯"}</button>
-                          <button type="button" class="is-danger" data-action="void-harvest" data-id="${item.id}" data-busy-label="撤銷中…" data-busy-lock>撤銷</button>
-                        </div>` : ""}
-                      </div>
-                      ${unlocked && isEditing ? html`<form class="harvest-correction-form" data-form="harvest-correct" data-id="${item.id}">
-                        <div class="harvest-correction-grid">
-                          <label><span>實際賣出股數</span><input type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="edit-harvest-sold-units" value="${draft("edit-harvest-sold-units")}" required /></label>
-                          <label><span>券商淨入帳</span><input type="number" inputmode="numeric" min="1" step="1" data-draft="edit-harvest-net-proceeds" value="${draft("edit-harvest-net-proceeds")}" required /></label>
-                          <label><span>短期夢想罐</span><select data-draft="edit-harvest-dream"><option value="" ${draft("edit-harvest-dream") === "" ? raw("selected") : ""}>不指定（仍放回撲滿）</option>${destinationOptions.map((jar) => html`<option value="${jar.id}" ${draft("edit-harvest-dream") === jar.id ? raw("selected") : ""}>${jar.title}${jar.status !== "active" ? "（已完成或排隊中）" : ""}</option>`)}</select></label>
-                          <label><span>實際賣出日期</span><input type="date" data-draft="edit-harvest-sale-date" value="${draft("edit-harvest-sale-date")}" required /></label>
-                          <label class="harvest-note-field"><span>備註</span><input data-draft="edit-harvest-note" value="${draft("edit-harvest-note")}" maxlength="100" placeholder="選填" /></label>
-                        </div>
-                        <div class="harvest-correction-actions"><button type="button" data-action="close-harvest-editor">取消</button><button type="submit" class="is-primary" data-busy-label="校正中…">儲存更正</button></div>
-                      </form>` : ""}
-                    </article>`;
-                  }) : html`<p class="empty-history">尚未有過年收成紀錄。</p>`}
-                </div>
-              </details>
-            </div>
-          </details>
+        <div class="parent-project-list">
+          <div class="project-manage-group"><b>目前專案</b>${state.projects.length ? state.projects.map((project) => html`<article><div><strong>${project.title}</strong><small>${project.status === "open" ? "尚未接下" : project.status === "claimed" ? "進行中" : project.status === "waiting" ? "等待確認" : "已完成"} · ${money(project.reward)}</small></div>${project.status === "open" ? html`<button data-action="edit-project" data-id="${project.id}">編輯</button>` : ""}</article>`) : html`<p class="project-empty-state">目前沒有家庭小專案，需要時再新增即可。</p>`}</div>
         </div>
       </section>
+      ` : ""}
+
       ${dataPanelMarkup(state, unlocked)}
+
+      ${unlocked ? guideMarkup() : ""}
+
+      <footer>
+        <strong>小小理財島 · 讓好習慣慢慢長大</strong>
+        <span class="footer-credit">著作注記 · <a href="https://www.facebook.com/profile.php?id=100084000897269" target="_blank" rel="noreferrer">fb/指數三寶飯</a></span>
+      </footer>
+
+      ${raw(common.primaryNav("parent"))}
     </main>`;
 }
 
@@ -485,15 +311,14 @@ function guideMarkup() {
       </details>`;
 }
 
-// ---------- 孩子資料編輯 ----------
-function profileEditorMarkup(state, profile, unlocked) {
+// ---------- 孩子資料編輯（規格 2.4 第 5 項：外層改成 <details>，內容照原樣） ----------
+function profileEditorMarkup(state, profile) {
   const canAddProfile = state.profiles.length < 5;
   const removable = state.profiles.length > 1
     && !state.activities.some((item) => item.profileId === profile.id)
     && !state.holdings.some((item) => item.profileId === profile.id)
     && !state.dreamJars.some((item) => item.profileId === profile.id);
-  return html`<section class="profile-editor-panel" id="profile-editor">
-        <div class="parent-profile-row profile-editor-switcher" aria-label="選擇要編輯的小朋友">
+  return html`<div class="parent-profile-row profile-editor-switcher" aria-label="選擇要編輯的小朋友">
           ${state.profiles.map((item) => html`<div class="parent-profile-shell" style="--profile-color: ${item.accent}">
               <button
                 class="${item.id === profile.id ? "parent-profile is-active" : "parent-profile"}"
@@ -517,21 +342,19 @@ function profileEditorMarkup(state, profile, unlocked) {
             <span class="profile-photo-preview">${raw(common.profileAvatar(ui.profilePreview || profile.avatar, draft("profile-name", profile.name) || profile.name))}</span>
             <label>顯示名字<input data-draft="profile-name" value="${draft("profile-name", profile.name)}" minlength="1" maxlength="12" required /></label>
             <label class="profile-photo-input">選擇照片<input type="file" accept="image/jpeg,image/png,image/webp" data-input="profile-photo" /></label>
-            <button data-busy-label="儲存中…" ${!unlocked ? raw("disabled") : ""}>儲存照片與名字</button>
-            ${removable ? html`<button class="cancel-preset" type="button" data-action="remove-profile" data-busy-label="移除中…" ${!unlocked ? raw("disabled") : ""}>移除這位小朋友</button>` : ""}
+            <button data-busy-label="儲存中…">儲存照片與名字</button>
+            ${removable ? html`<button class="cancel-preset" type="button" data-action="remove-profile" data-busy-label="移除中…">移除這位小朋友</button>` : ""}
           </form>
           <form class="profile-piggy-form" data-form="piggy">
-            <label>撲滿目前金額<input type="number" min="0" max="1000000" inputmode="numeric" data-draft="piggy-balance" value="${draft("piggy-balance", String(profile.spendingBalance))}" required /></label>
-            <label>校正原因（選填）<input data-draft="piggy-note" value="${draft("piggy-note")}" placeholder="例如：和實體撲滿核對" maxlength="100" /></label>
-            <button data-busy-label="儲存中…" ${!unlocked ? raw("disabled") : ""}>儲存撲滿金額</button>
+            ${piggyCorrectionFields(profile)}
+            <button data-busy-label="儲存中…">儲存撲滿金額</button>
           </form>
           ${ui.addProfileOpen && canAddProfile ? html`<form class="profile-add-form" data-form="add-profile">
             <label>新的小朋友名字<input data-draft="new-profile-name" value="${draft("new-profile-name")}" minlength="1" maxlength="12" placeholder="例如：小寶" required /></label>
-            <button data-busy-label="新增中…" ${!unlocked ? raw("disabled") : ""}>新增小朋友</button>
+            <button data-busy-label="新增中…">新增小朋友</button>
             <button class="cancel-preset" type="button" data-action="cancel-add-profile">取消</button>
           </form>` : ""}
-        </div>
-      </section>`;
+        </div>`;
 }
 
 // ---------- 資料與備份（取代 DeviceTrustPanel） ----------
@@ -654,6 +477,84 @@ async function runParentAction(root, ctx, { button, scope, fallback, message }, 
   }
 }
 
+// ---------- 校正撲滿 modal（規格 1.2／3.2 的存活模式：module-scope 旗標＋mount() 重開檢查） ----------
+function setDialogError(form, message) {
+  let node = form.querySelector(".form-error");
+  if (!message) { if (node) node.remove(); return; }
+  if (!node) {
+    node = document.createElement("p");
+    node.className = "form-error";
+    node.setAttribute("role", "alert");
+    form.appendChild(node);
+  }
+  node.textContent = message;
+}
+
+async function submitCorrectionModal(ctx, form) {
+  const button = submitButtonOf(form);
+  const idleLabel = button ? button.textContent : "";
+  if (button) { button.disabled = true; if (button.dataset.busyLabel) button.textContent = button.dataset.busyLabel; }
+  setDialogError(form, "");
+  try {
+    await store.setPiggyBankBalance({
+      profileId: ctx.profile.id,
+      balance: Number(fieldValue(form, "piggy-balance")),
+      note: fieldValue(form, "piggy-note"),
+      parentPin: ui.parentPin,
+    });
+    clearDrafts("piggy-note");
+    ui.correctionOpen = false;
+    // 只呼叫 ctx.refresh()：它觸發的 render() 裡的 closeModal() 已經會收掉這個 modal（規格 1.2 明文規定）。
+    const saved = common.savedStatus(store.getState(), "撲滿金額已經校正");
+    common.showStatus(saved.message, saved.tone);
+    ctx.refresh();
+  } catch (caught) {
+    const message = errorMessage(caught, "撲滿金額校正失敗");
+    setDialogError(form, message);
+    common.showStatus(message, "error");
+    if (button && button.isConnected) { button.disabled = false; button.textContent = idleLabel; }
+  }
+}
+
+function openCorrectionModal(ctx) {
+  const dialog = common.openModal(piggyCorrectionModalBody(ctx.profile), {
+    labelledBy: "piggy-correction-title",
+    // 只清 correctionModalKind：會不會「重開」只交給 correctionOpen，而 correctionOpen 只在使用者
+    // 明確送出成功或按下「取消」時才會變 false。這裡刻意不在 onClose 裡把它一併設回 false——
+    // app.js 的 render() 每次重繪都會無條件呼叫一次 closeModal()（跟使用者按 Esc／點背景是同一個函式，
+    // 無法從這裡分辨誰觸發的），若在這裡也把 correctionOpen 設回 false，
+    // 下面 mount() 的重開檢查就永遠等不到「該開」的訊號，背景重繪會直接把使用者輸入到一半的內容關掉，
+    // 正是規格 1.2／3.2 要修的那個洞。
+    onClose: () => {
+      if (ui.correctionModalKind !== "correction") return;
+      ui.correctionModalKind = "";
+    },
+  });
+  if (!dialog) return;
+  ui.correctionModalKind = "correction";
+  dialog.addEventListener("input", (event) => {
+    const field = event.target;
+    if (!(field instanceof HTMLElement) || !field.dataset.draft) return;
+    ui.drafts[field.dataset.draft] = field.value;
+  });
+  const cancelButton = dialog.querySelector('[data-action="cancel-correction"]');
+  if (cancelButton) {
+    cancelButton.addEventListener("click", () => {
+      ui.correctionOpen = false;
+      common.closeModal();
+    });
+  }
+  const form = dialog.querySelector("form");
+  if (form) {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void submitCorrectionModal(ctxRef, form);
+    });
+    const input = form.querySelector('[data-draft="piggy-balance"]');
+    if (input) input.focus();
+  }
+}
+
 // ---------- 照片壓縮 ----------
 async function compressPhoto(file) {
   const dataUrl = await new Promise((resolve, reject) => {
@@ -682,59 +583,19 @@ async function compressPhoto(file) {
 }
 
 // ---------- 局部更新 ----------
-function syncPurchaseForm(root, ctx) {
-  const form = root.querySelector('[data-form="purchase"]');
-  if (!form) return;
-  const profile = ctx.profile;
-  const plannedCost = Math.max(0, Math.round(Number(fieldValue(form, "purchase-total-cost")) || 0));
-  const preview = form.querySelector("[data-planned-cost]");
-  if (preview) preview.textContent = money(plannedCost);
-  const submit = form.querySelector("[data-purchase-submit]");
-  if (submit) {
-    submit.disabled = ctx.pinStatus !== "unlocked"
-      || !fieldChecked(form, "purchase-confirm")
-      || plannedCost <= 0
-      || plannedCost > profile.bankBalance
-      || Number(fieldValue(form, "purchase-units")) <= 0;
-  }
-}
-
-function syncHarvestForm(root, ctx, maxHarvest, harvestedThisYear, holdingCount) {
-  const form = root.querySelector('[data-form="harvest"]');
-  if (!form) return;
-  const submit = form.querySelector("[data-harvest-submit]");
-  if (!submit) return;
-  const netProceeds = Number(fieldValue(form, "harvest-net-proceeds"));
-  submit.disabled = ctx.pinStatus !== "unlocked"
-    || harvestedThisYear
-    || !holdingCount
-    || !fieldChecked(form, "harvest-confirm")
-    || netProceeds <= 0
-    || netProceeds > maxHarvest
-    || Number(fieldValue(form, "harvest-sold-units")) <= 0;
-}
-
-function syncMarketEditor(root, ctx, holdingId) {
-  const input = root.querySelector(`[data-draft="market-${holdingId}"]`);
-  const button = root.querySelector(`[data-action="update-market-value"][data-id="${holdingId}"]`);
-  if (!input || !button) return;
-  button.disabled = ctx.pinStatus !== "unlocked" || input.value === "";
-}
-
 function syncSavingsRate(root, ctx) {
   const panel = root.querySelector('[data-form="savings-rate"]');
   if (!panel) return;
-  const unlocked = ctx.pinStatus === "unlocked";
   const output = panel.querySelector("output");
   if (output) output.textContent = `${ui.savingsRate}%`;
   const down = panel.querySelector('[data-action="savings-down"]');
   const up = panel.querySelector('[data-action="savings-up"]');
-  if (down) down.disabled = !unlocked || ui.savingsRate <= 0;
-  if (up) up.disabled = !unlocked || ui.savingsRate >= 100;
+  if (down) down.disabled = ui.savingsRate <= 0;
+  if (up) up.disabled = ui.savingsRate >= 100;
   const save = panel.querySelector(".savings-rate-save");
   if (save) {
     const same = ui.savingsRate === ctx.state.savingsRate;
-    save.disabled = !unlocked || same;
+    save.disabled = same;
     save.textContent = same ? "已儲存" : "儲存";
   }
 }
@@ -759,22 +620,6 @@ async function loadSnapshots(root, ctx) {
 const boundRoots = new WeakSet();
 let ctxRef = null;
 
-function harvestLimits() {
-  const state = ctxRef.state;
-  const profile = ctxRef.profile;
-  const currentYear = Number(taipeiDate().slice(0, 4));
-  return {
-    maxHarvest: Math.floor((profile.marketValue ?? 0) * 0.05),
-    harvestedThisYear: state.harvests.some((item) => item.profileId === profile.id && item.year === currentYear),
-    holdingCount: state.holdings.filter((item) => item.profileId === profile.id).length,
-  };
-}
-
-function syncHarvestSubmit(root) {
-  const limits = harvestLimits();
-  syncHarvestForm(root, ctxRef, limits.maxHarvest, limits.harvestedThisYear, limits.holdingCount);
-}
-
 export function mount(root, ctx) {
   ctxRef = ctx;
   if (!ctx.state || !ctx.profile) return;
@@ -786,6 +631,9 @@ export function mount(root, ctx) {
 
   if (isOpen("snapshots") && ui.snapshots === null) void loadSnapshots(root, ctx);
 
+  // 重繪之後把原本開著的校正撲滿 modal 補回來（規格 1.2／3.2）。
+  if (ui.correctionOpen && ui.correctionModalKind !== "correction") openCorrectionModal(ctx);
+
   if (boundRoots.has(root)) return;
   boundRoots.add(root);
 
@@ -796,6 +644,7 @@ export function mount(root, ctx) {
     const key = element.dataset.openKey;
     if (element.open) ui.openDetails.add(key); else ui.openDetails.delete(key);
     if (key === "snapshots" && element.open && ui.snapshots === null) void loadSnapshots(root, ctxRef);
+    if (key === "guide") ui.guideTouched = true;
   }, true);
 
   // 草稿：所有帶 data-draft 的欄位都記在模組頂層，重繪後由 render 讀回。
@@ -808,21 +657,13 @@ export function mount(root, ctx) {
     const field = event.target;
     if (!(field instanceof HTMLElement)) return;
     if (field.dataset.digits !== undefined) field.value = field.value.replace(/\D/g, "");
-    if (field.dataset.uppercase !== undefined) field.value = field.value.toUpperCase();
     recordDraft(field);
-    if (field.dataset.draft === "purchase-total-cost" || field.dataset.draft === "purchase-units") syncPurchaseForm(root, ctxRef);
-    if (field.dataset.draft === "harvest-net-proceeds" || field.dataset.draft === "harvest-sold-units") syncHarvestSubmit(root);
-    if (field.dataset.draft?.startsWith("market-")) syncMarketEditor(root, ctxRef, field.dataset.draft.slice(7));
   });
 
   root.addEventListener("change", async (event) => {
     const field = event.target;
     if (!(field instanceof HTMLElement)) return;
     recordDraft(field);
-    if (field.dataset.draft === "purchase-confirm") syncPurchaseForm(root, ctxRef);
-    if (field.dataset.draft === "harvest-confirm") syncHarvestSubmit(root);
-    if (field.dataset.draft === "harvest-holding") ui.harvestHoldingId = field.value;
-    if (field.dataset.draft === "harvest-dream") ui.destinationDreamId = field.value;
     if (field.dataset.input === "profile-photo") {
       const file = field.files?.[0];
       if (!file) return;
@@ -979,115 +820,13 @@ async function handleSubmit(root, ctx, form) {
       parentPin: ui.parentPin,
     }));
     if (ok) resetProjectForm();
-    return;
-  }
-
-  if (kind === "preset") {
-    const sort = fieldValue(form, "preset-sort");
-    const ok = await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.updateInvestmentPreset({
-      action: ui.presetId ? "update" : "create",
-      presetId: ui.presetId || undefined,
-      symbol: fieldValue(form, "preset-symbol"),
-      name: fieldValue(form, "preset-name"),
-      category: fieldValue(form, "preset-category"),
-      sortOrder: Number(sort || activePresets(ctx.state).length + 1),
-      parentPin: ui.parentPin,
-    }));
-    if (ok) {
-      ui.presetId = "";
-      clearDrafts("preset-symbol", "preset-name", "preset-category", "preset-sort");
-    }
-    return;
-  }
-
-  if (kind === "purchase") {
-    const plannedCost = Math.max(0, Math.round(Number(fieldValue(form, "purchase-total-cost")) || 0));
-    const ok = await runParentAction(root, ctx, { button, scope: "purchase", fallback: "儲存失敗", message: `${profile.name}的買入紀錄已經存好了` }, () => store.addInvestmentPurchase({
-      profileId: profile.id,
-      symbol: fieldValue(form, "purchase-symbol"),
-      name: fieldValue(form, "purchase-name"),
-      category: fieldValue(form, "purchase-category"),
-      units: Number(fieldValue(form, "purchase-units")),
-      totalCost: plannedCost,
-      purchaseDate: fieldValue(form, "purchase-date"),
-      note: fieldValue(form, "purchase-note"),
-      operationId: ui.purchaseOperationId,
-      parentPin: ui.parentPin,
-    }));
-    if (ok) {
-      clearDrafts("purchase-units", "purchase-total-cost", "purchase-note", "purchase-confirm");
-      ui.purchaseOperationId = uuid();
-    }
-    return;
-  }
-
-  if (kind === "purchase-correct") {
-    const purchaseId = form.dataset.id;
-    const ok = await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.correctInvestmentPurchase({
-      purchaseId,
-      units: Number(fieldValue(form, "edit-purchase-units")),
-      totalCost: Number(fieldValue(form, "edit-purchase-cost")),
-      purchaseDate: fieldValue(form, "edit-purchase-date"),
-      note: fieldValue(form, "edit-purchase-note"),
-      parentPin: ui.parentPin,
-    }));
-    if (ok) {
-      closePurchaseEditor();
-      announce(root, "買入紀錄已更正，相關餘額與持股也已一起校正");
-    }
-    return;
-  }
-
-  if (kind === "harvest") {
-    const ok = await runParentAction(root, ctx, { button, scope: "harvest" }, () => store.recordAnnualHarvest({
-      profileId: profile.id,
-      holdingId: fieldValue(form, "harvest-holding"),
-      soldUnits: Number(fieldValue(form, "harvest-sold-units")),
-      netProceeds: Number(fieldValue(form, "harvest-net-proceeds")),
-      destinationDreamId: fieldValue(form, "harvest-dream") || null,
-      saleDate: fieldValue(form, "harvest-sale-date"),
-      note: fieldValue(form, "harvest-note"),
-      parentPin: ui.parentPin,
-    }));
-    if (ok) {
-      clearDrafts("harvest-sold-units", "harvest-net-proceeds", "harvest-note", "harvest-confirm");
-      announce(root, "過年投資收成已經記在帳本裡");
-    }
-    return;
-  }
-
-  if (kind === "harvest-correct") {
-    const harvestId = form.dataset.id;
-    const ok = await runParentAction(root, ctx, { button, scope: "harvest" }, () => store.correctAnnualHarvest({
-      harvestId,
-      soldUnits: Number(fieldValue(form, "edit-harvest-sold-units")),
-      netProceeds: Number(fieldValue(form, "edit-harvest-net-proceeds")),
-      destinationDreamId: fieldValue(form, "edit-harvest-dream") || null,
-      saleDate: fieldValue(form, "edit-harvest-sale-date"),
-      note: fieldValue(form, "edit-harvest-note"),
-      parentPin: ui.parentPin,
-    }));
-    if (ok) {
-      closeHarvestEditor();
-      announce(root, "過年收成已更正，撲滿、持股與投入成本也已一起校正");
-    }
   }
 }
 
 function resetProjectForm() {
   ui.projectId = "";
-  ui.projectEditorOpen = false;
+  ui.openDetails.delete("project-editor");
   clearDrafts("project-title", "project-description", "project-reward");
-}
-
-function closePurchaseEditor() {
-  ui.editingPurchaseId = "";
-  clearDrafts("edit-purchase-units", "edit-purchase-cost", "edit-purchase-date", "edit-purchase-note");
-}
-
-function closeHarvestEditor() {
-  ui.editingHarvestId = "";
-  clearDrafts("edit-harvest-sold-units", "edit-harvest-net-proceeds", "edit-harvest-dream", "edit-harvest-sale-date", "edit-harvest-note");
 }
 
 // ---------- 按鈕 ----------
@@ -1112,17 +851,15 @@ async function handleClick(root, ctx, button) {
     }
     case "open-profile-editor": {
       if (id === profile.id) {
-        ui.profileEditorOpen = !ui.profileEditorOpen;
-        ctx.refresh();
-        if (ui.profileEditorOpen) scrollTo("#profile-editor");
+        // 已經是目前正在編輯的小朋友：再按一次收起（原本按鈕的行為，details 化後改直接操作開合狀態）。
+        ui.openDetails.delete("profile-editor");
+        const details = root.querySelector("#profile-editor");
+        if (details) details.open = false;
         return;
       }
-      ui.profileEditorOpen = true;
+      ui.openDetails.add("profile-editor");
       ui.addProfileOpen = false;
-      ui.editingPurchaseId = "";
-      ui.editingHarvestId = "";
       ui.operationError = null;
-      clearDrafts("purchase-confirm", "harvest-confirm");
       ctx.chooseProfile(id);
       scrollTo("#profile-editor");
       return;
@@ -1147,18 +884,13 @@ async function handleClick(root, ctx, button) {
     case "approve-transfer":
     case "reject-transfer": {
       const transferAction = action === "approve-transfer" ? "approve" : "reject";
-      const ok = await runParentAction(root, ctx, { button, scope: "accounts" }, () => store.updateSavingsTransfer({
+      const ok = await runParentAction(root, ctx, { button, scope: "inbox" }, () => store.updateSavingsTransfer({
         action: transferAction,
         transferId: id,
         operationId: uuid(),
         parentPin: ui.parentPin,
       }));
       if (ok) announce(root, transferAction === "approve" ? "已確認存入爸媽銀行" : "這次自主多存沒有執行");
-      return;
-    }
-    case "toggle-project-editor": {
-      if (ui.projectEditorOpen) resetProjectForm(); else ui.projectEditorOpen = true;
-      ctx.refresh();
       return;
     }
     case "cancel-project-edit": {
@@ -1170,7 +902,7 @@ async function handleClick(root, ctx, button) {
       const project = state.projects.find((item) => item.id === id);
       if (!project || project.status !== "open") return;
       ui.projectId = project.id;
-      ui.projectEditorOpen = true;
+      ui.openDetails.add("project-editor");
       ui.drafts["project-title"] = project.title;
       ui.drafts["project-description"] = project.description;
       ui.drafts["project-reward"] = String(project.reward);
@@ -1179,7 +911,7 @@ async function handleClick(root, ctx, button) {
       return;
     }
     case "approve-project": {
-      await runParentAction(root, ctx, { button, scope: "projects" }, () => store.updateFamilyProject({
+      await runParentAction(root, ctx, { button, scope: "inbox" }, () => store.updateFamilyProject({
         action: "approve",
         projectId: id,
         profileId: profile.id,
@@ -1187,126 +919,9 @@ async function handleClick(root, ctx, button) {
       }));
       return;
     }
-    case "choose-preset": {
-      const form = root.querySelector('[data-form="purchase"]');
-      if (!form) return;
-      const symbolField = form.querySelector('[data-draft="purchase-symbol"]');
-      const nameField = form.querySelector('[data-draft="purchase-name"]');
-      const categoryField = form.querySelector('[data-draft="purchase-category"]');
-      symbolField.value = button.dataset.symbol;
-      nameField.value = button.dataset.name;
-      categoryField.value = button.dataset.category;
-      ui.drafts["purchase-symbol"] = symbolField.value;
-      ui.drafts["purchase-name"] = nameField.value;
-      ui.drafts["purchase-category"] = categoryField.value;
-      return;
-    }
-    case "edit-preset": {
-      const preset = state.investmentPresets.find((item) => item.id === id);
-      if (!preset) return;
-      ui.presetId = preset.id;
-      ui.drafts["preset-symbol"] = preset.symbol;
-      ui.drafts["preset-name"] = preset.name;
-      ui.drafts["preset-category"] = preset.category;
-      ui.drafts["preset-sort"] = String(preset.sortOrder);
-      ctx.refresh();
-      return;
-    }
-    case "cancel-preset-edit": {
-      ui.presetId = "";
-      clearDrafts("preset-symbol", "preset-name", "preset-sort");
-      ctx.refresh();
-      return;
-    }
-    case "delete-preset": {
-      await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.updateInvestmentPreset({ action: "delete", presetId: id, parentPin: ui.parentPin }));
-      return;
-    }
-    case "update-market-value": {
-      const input = root.querySelector(`[data-draft="market-${id}"]`);
-      const next = Math.round(Number(input?.value));
-      const ok = await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.updateHoldingMarketValue({ holdingId: id, marketValue: next, parentPin: ui.parentPin }));
-      if (ok) clearDrafts(`market-${id}`);
-      return;
-    }
-    case "refresh-quotes": {
-      startBusy(root, button);
-      clearOperationError(root, "holdings");
-      try {
-        const result = await store.refreshTwseClosingPrices({ mode: "parent", profileId: profile.id, parentPin: ui.parentPin });
-        ui.quoteMeta = {
-          updatedAt: result?.fetchedAt ?? new Date().toISOString(),
-          source: result?.source ?? "市場行情",
-        };
-        const updated = result?.updatedSymbols ?? [];
-        const unavailable = result?.unavailableSymbols ?? [];
-        // 文案照 app/parent/page.tsx L401；哪些標的沒更新到，留在持有清單的小字裡。
-        announce(root, "最新可用收盤價已更新");
-        void updated; void unavailable;
-        ctx.refresh();
-      } catch (caught) {
-        endBusy();
-        reportOperationError(root, "holdings", caught, "無法更新最新收盤價");
-      }
-      return;
-    }
-    case "edit-purchase": {
-      const item = state.purchases.find((purchase) => purchase.id === id);
-      if (!item) return;
-      ui.editingPurchaseId = item.id;
-      ui.drafts["edit-purchase-units"] = String(item.units);
-      ui.drafts["edit-purchase-cost"] = String(item.totalCost);
-      ui.drafts["edit-purchase-date"] = item.purchaseDate;
-      ui.drafts["edit-purchase-note"] = item.note;
-      ui.operationError = ui.operationError?.scope === "holdings" ? null : ui.operationError;
-      ctx.refresh();
-      return;
-    }
-    case "close-purchase-editor": {
-      closePurchaseEditor();
-      ctx.refresh();
-      return;
-    }
-    case "void-purchase": {
-      const item = state.purchases.find((purchase) => purchase.id === id);
-      if (!item) return;
-      const confirmed = await common.confirmDialog(`確定要撤銷 ${item.purchaseDate} 的 ${item.symbol} 買入嗎？\n\n系統會一併還原爸媽銀行、持股與成本；若後續已有賣出紀錄，系統會為了帳本安全而拒絕撤銷。`);
-      if (!confirmed) return;
-      const ok = await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.voidInvestmentPurchase({ purchaseId: item.id, parentPin: ui.parentPin }));
-      if (ok) {
-        if (ui.editingPurchaseId === item.id) closePurchaseEditor();
-        announce(root, "買入紀錄已撤銷，相關餘額與持股也已還原");
-      }
-      return;
-    }
-    case "edit-harvest": {
-      const item = state.harvests.find((harvest) => harvest.id === id);
-      if (!item) return;
-      ui.editingHarvestId = item.id;
-      ui.drafts["edit-harvest-sold-units"] = String(item.soldUnits);
-      ui.drafts["edit-harvest-net-proceeds"] = String(item.netProceeds);
-      ui.drafts["edit-harvest-dream"] = item.destinationDreamId ?? "";
-      ui.drafts["edit-harvest-sale-date"] = item.saleDate;
-      ui.drafts["edit-harvest-note"] = item.note;
-      ui.operationError = ui.operationError?.scope === "harvest" ? null : ui.operationError;
-      ctx.refresh();
-      return;
-    }
-    case "close-harvest-editor": {
-      closeHarvestEditor();
-      ctx.refresh();
-      return;
-    }
-    case "void-harvest": {
-      const item = state.harvests.find((harvest) => harvest.id === id);
-      if (!item) return;
-      const confirmed = await common.confirmDialog(`確定要撤銷 ${item.year} 年的過年投資收成嗎？\n\n系統會退回撲滿裡的 ${money(item.netProceeds)}，並恢復對應持股與投入成本。若後續餘額不足，系統會為了帳本安全而拒絕撤銷。`);
-      if (!confirmed) return;
-      const ok = await runParentAction(root, ctx, { button, scope: "harvest" }, () => store.voidAnnualHarvest({ harvestId: item.id, parentPin: ui.parentPin }));
-      if (ok) {
-        if (ui.editingHarvestId === item.id) closeHarvestEditor();
-        announce(root, "過年收成已撤銷，撲滿、持股與投入成本也已還原");
-      }
+    case "open-correction": {
+      ui.correctionOpen = true;
+      openCorrectionModal(ctx);
       return;
     }
     case "download-backup": {

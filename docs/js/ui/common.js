@@ -3,7 +3,8 @@
 // 結構與文案照原專案 app/primary-nav.tsx、status-toast.tsx、info-tip.tsx、profile-avatar.tsx、
 // money-state-cache.tsx（MoneyStateGate）；modal 的 inert／focus／Esc 行為照 ../stamps/index.html 1984–2076 行。
 
-import { html, raw, classNames, formatDateTime } from "../util.js";
+import { html, raw, classNames, formatDateTime, errorMessage } from "../util.js";
+import * as pin from "../pin.js";
 
 // ---------- 雲端狀態的橋接 ----------
 // common.js 不能 import gist.js（gist → store → db → common 會變成循環相依），
@@ -15,11 +16,12 @@ function cloudStatus() {
 }
 
 // ---------- 主要頁面導覽 ----------
+// 主線拍板（spec.md 第 9 節，題 1＋2a）：底部貼底列只放孩子每天會用的三個目的地；
+// 「家長區」不放進拇指區，改成每頁迷你頂欄右上角的 lockIconButton（見下方）。
 const primaryLinks = [
   { id: "home", href: "#/", label: "孩子首頁" },
   { id: "dreams", href: "#/dreams", label: "夢想與回顧" },
   { id: "history", href: "#/history", label: "所有紀錄" },
-  { id: "parent", href: "#/parent", label: "家長區" },
 ];
 
 export function primaryNav(active) {
@@ -28,6 +30,179 @@ export function primaryNav(active) {
       href="${item.href}"
       ${item.id === active ? raw('aria-current="page"') : ""}
     >${item.label}</a>`)}</nav>`;
+}
+
+// ---------- 迷你頂欄 ----------
+// miniTopbar({ active, ctx, right })：第 9 節「頂欄」列——四頁共用同一個函式，取代各頁原本
+// 手刻的 .topbar／.parent-topbar。品牌小字（左）＋ profileChips()（中，可橫向捲動）＋
+// 呼叫端自己組好的 right 插槽（右，例如 lockIconButton() 或加一個「🔍 所有紀錄」小連結）。
+// active 只用來決定品牌連結是否標成目前頁（首頁時不需要再點一次自己）。
+export function miniTopbar({ active, ctx, right } = {}) {
+  const profiles = (ctx && (ctx.profiles || (ctx.state && ctx.state.profiles))) || [];
+  const selectedId = ctx && ctx.profile ? ctx.profile.id : null;
+  const isHome = active === "home";
+  return html`<header class="mini-topbar">
+    <a class="mini-topbar-brand" href="#/" aria-label="回到小小理財島首頁" ${isHome ? raw('aria-current="page"') : ""}>
+      <span class="brand-mark" aria-hidden="true">¢</span>
+      <strong>小小理財島</strong>
+    </a>
+    <div class="mini-topbar-profiles">${raw(String(profileChips(profiles, selectedId)))}</div>
+    <div class="mini-topbar-right">${right ? raw(String(right)) : ""}</div>
+  </header>`;
+}
+
+// ---------- 情境式解鎖圖示 ----------
+// lockIconButton({ href, pinStatus })：規格 1.2／3.3／第 9 節 2b。
+// href 有值 → 純連結（首頁用，直接導去 #/parent，不開 modal）；
+// 沒有 href → 按鈕，帶 data-action="open-lock"，頁面模組自己接這個委派去呼叫
+// createLockModal() 回傳的 open()（dreams／history 用，開情境式解鎖 modal）。
+export function lockIconButton({ href, pinStatus } = {}) {
+  const unlocked = pinStatus === "unlocked";
+  const icon = unlocked ? "🔓" : "🔒";
+  if (href) {
+    return html`<a class="icon-lock-btn" href="${href}" aria-label="家長區">${icon}</a>`;
+  }
+  return html`<button
+    type="button"
+    class="icon-lock-btn"
+    data-action="open-lock"
+    aria-label="${unlocked ? "家長區（已解鎖）" : "家長區（未解鎖，點一下輸入操作碼）"}"
+  >${icon}</button>`;
+}
+
+// ---------- 情境式解鎖 modal ----------
+// createLockModal({ getPinStatus, onUnlocked, parentHref })：規格 1.2（回應手機裁判擋下：
+// 新 modal 沒有重繪存活機制）。回傳 { open(), mountCheck(ctx), reset() }，供 dreams.js／history.js
+// 各自在自己的模組作用域建一份（狀態彼此獨立，不共用）：
+//
+//   const lockModal = common.createLockModal({
+//     getPinStatus: () => currentCtx.pinStatus,
+//     onUnlocked: () => currentCtx.refresh(),
+//     parentHref: "#/parent",
+//   });
+//   // 點 .icon-lock-btn 的地方：lockModal.open();
+//   // 自己的 mount(root, ctx) 裡：currentCtx = ctx; lockModal.mountCheck(ctx);
+//
+// 內部用 module-scope（其實是這個閉包的作用域，效果等同 1.2 節骨架裡的
+// lockModalOpen／lockPin／lockError／lockModalKind）記住「該不該開」與「已輸入但還沒送出的值」，
+// mount() 觸發的 mountCheck() 檢查「該開卻沒開」就重新叫 openModal 並回填欄位——
+// 這是本次新增 modal 的硬性規定，不是這一份特例。
+// submit 成功只呼叫 onUnlocked()（頁面模組裡就是 ctx.refresh()），不用另外呼叫 closeModal()：
+// ctx.refresh() 會觸發 app.js 的 render()，裡面無條件的 closeModal() 已經涵蓋這一步。
+export function createLockModal({ getPinStatus, onUnlocked, parentHref } = {}) {
+  let wantOpen = false;   // 是否「應該」開著（不是 DOM 目前開不開）
+  let value = "";         // 已輸入但還沒送出的操作碼，重繪後要回填
+  let error = "";
+  let kind = "";          // "" | "lock"，跟 isModalOpen() 分開判斷，理由同 home.js
+
+  function panelMarkup() {
+    const pinStatus = typeof getPinStatus === "function" ? getPinStatus() : "locked";
+    const unlocked = pinStatus === "unlocked";
+    const heading = pinStatus === "setup" ? "第一次設定家長操作碼" : unlocked ? "家長區已解鎖" : "輸入家長操作碼";
+    const hint = pinStatus === "setup"
+      ? "使用 4–8 位數字；操作碼不會顯示在孩子頁面。"
+      : unlocked
+        ? "現在可以使用家長功能。"
+        : "解鎖後才能看到家長專屬的編輯與刪除。";
+    return html`<div class="${classNames("parent-lock-card lock-modal-card", unlocked && "is-unlocked")}">
+      <span class="lock-icon" aria-hidden="true">${unlocked ? "✓" : "🔒"}</span>
+      <div><b id="lock-modal-title">${heading}</b><small>${hint}</small></div>
+      ${!unlocked ? html`<form data-lock-form>
+        <label class="sr-only" for="lock-modal-pin">家長操作碼</label>
+        <input id="lock-modal-pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" value="${value}" placeholder="4–8 位數字" required />
+        <button data-busy-label="驗證中…">${pinStatus === "setup" ? "設定並解鎖" : "解鎖"}</button>
+      </form>` : ""}
+      ${error ? html`<p class="form-error" role="alert">${error}</p>` : ""}
+      ${parentHref ? html`<a class="lock-modal-parent-link" href="${parentHref}">前往家長區 →</a>` : ""}
+    </div>`;
+  }
+
+  function setFieldError(form, message) {
+    const existing = form.querySelector(".form-error");
+    if (!message) { if (existing) existing.remove(); return; }
+    if (existing) { existing.textContent = message; return; }
+    const node = document.createElement("p");
+    node.className = "form-error";
+    node.setAttribute("role", "alert");
+    node.textContent = message;
+    form.insertAdjacentElement("afterend", node);
+  }
+
+  async function submit(form) {
+    const pinStatus = typeof getPinStatus === "function" ? getPinStatus() : "locked";
+    const button = form.querySelector("button");
+    const busyLabel = button && button.dataset.busyLabel;
+    const idleLabel = button ? button.textContent : "";
+    if (button) { button.disabled = true; if (busyLabel) button.textContent = busyLabel; }
+    try {
+      if (pinStatus === "setup") await pin.setup(value); else await pin.assert(value);
+      wantOpen = false;
+      value = "";
+      error = "";
+      setFieldError(form, "");
+      if (typeof onUnlocked === "function") onUnlocked();
+      // 只呼叫 onUnlocked()：它觸發的 render() 裡的 closeModal() 已經會把這個 modal 收掉，
+      // 這裡不用、也不該再手動呼叫 closeModal()（見 1.2 節明文規定）。
+    } catch (caught) {
+      error = errorMessage(caught, "操作碼不正確");
+      setFieldError(form, error);
+      if (button && button.isConnected) { button.disabled = false; button.textContent = idleLabel; }
+    }
+  }
+
+  function openNow() {
+    const dialog = openModal(panelMarkup(), {
+      labelledBy: "lock-modal-title",
+      onClose: (reason) => {
+        if (kind !== "lock") return;
+        kind = "";
+        // 背景重繪（reason === "rerender"）不算使用者關閉：留著 wantOpen，mountCheck 會補開並回填。
+        if (reason !== "rerender") wantOpen = false;
+      },
+    });
+    if (!dialog) return;
+    kind = "lock";
+    dialog.addEventListener("input", (event) => {
+      const target = event.target;
+      if (!target || !target.matches || !target.matches("#lock-modal-pin")) return;
+      // 照舊版 dreams.js：打字過程就只留數字
+      const cleaned = target.value.replace(/\D/g, "");
+      if (cleaned !== target.value) target.value = cleaned;
+      value = cleaned;
+    });
+    const form = dialog.querySelector("[data-lock-form]");
+    if (form) {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void submit(form);
+      });
+      const input = form.querySelector("#lock-modal-pin");
+      if (input) input.focus();
+    }
+  }
+
+  return {
+    // 點 .icon-lock-btn 時呼叫：標記「該開」並立刻開（除非已經開著）。
+    open() {
+      wantOpen = true;
+      value = "";
+      error = "";
+      if (kind !== "lock") openNow();
+    },
+    // 頁面模組自己的 mount(root, ctx) 裡呼叫：重繪後如果「該開卻沒開」，補開並回填欄位值。
+    // 接受 ctx 只是配合頁面模組 mount(root, ctx) 的呼叫慣例；實際讀取的 pinStatus／onUnlocked
+    // 都是建立時傳進來的 getter/callback（它們自己會讀頁面模組當下最新的 ctx）。
+    mountCheck(_ctx) {
+      if (wantOpen && kind !== "lock") openNow();
+    },
+    // 離開情境（例如換小朋友、換頁）時可以呼叫，清空未送出的輸入與錯誤訊息。
+    reset() {
+      wantOpen = false;
+      value = "";
+      error = "";
+      kind = "";
+    },
+  };
 }
 
 // ---------- 頭像 ----------
@@ -131,7 +306,11 @@ export function openModal(content, options = {}) {
   return dialog;
 }
 
-export function closeModal() {
+// closeModal(reason)：reason 會原樣傳給 onClose。app.js 每次整頁重繪前會用 "rerender" 關掉
+// 開著的 modal；頁面模組的 onClose 看到 "rerender" 時只清「DOM 目前開著」的旗標，
+// 不清「應該開著」的旗標，mount() 才能把 modal 補開並回填輸入（規格 1.2／3.2 的存活機制）。
+// 使用者主動關（關閉鈕、背景、Esc）reason 為 undefined，兩個旗標都清。
+export function closeModal(reason) {
   const root = document.getElementById("modal-root");
   const session = modalSession;
   modalSession = null;
@@ -142,7 +321,7 @@ export function closeModal() {
     /* 開啟後畫面可能重繪過，原節點已失連：只在還連著的時候把焦點還回去，
        不然焦點會掉到 body */
     if (back && back.isConnected) { try { back.focus({ preventScroll: true }); } catch (e) {} }
-    if (session.onClose) session.onClose();
+    if (session.onClose) session.onClose(reason);
   }
 }
 

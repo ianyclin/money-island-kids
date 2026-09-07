@@ -9,7 +9,7 @@
    帳本資料都在 localStorage 與 IndexedDB，不經過這裡。 */
 'use strict';
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 const PREFIX = 'money-island-';
 const CACHE = `${PREFIX}${VERSION}`;
 /* 核心：缺一個就不准啟用新版——網路不穩時，寧可繼續用完整的舊版，
@@ -19,6 +19,10 @@ const CORE = [
   './',
   './index.html',
   './styles.css',
+  './css/home.css',
+  './css/dreams.css',
+  './css/history.css',
+  './css/parent.css',
   './manifest.webmanifest',
   './js/app.js',
   './js/util.js',
@@ -34,6 +38,7 @@ const CORE = [
   './js/ui/dreams.js',
   './js/ui/history.js',
   './js/ui/parent.js',
+  './js/ui/parent-investments.js',
   './js/ui/setup.js'
 ];
 /* 加分：抓不到也沒關係，之後上線時會自己補 */

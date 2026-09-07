@@ -1,0 +1,135 @@
+/* 小小理財島 · 孩子首頁頁面級樣式（notes/mobile-redesign/spec.md 第 9 節「主線拍板」為準）。
+   只由 docs/js/ui/home.js 使用；不動 docs/styles.css／docs/js/ui/common.js。 */
+
+/* ---------- 撲滿卡「我想多存一點」：桌機/iPad 留在卡片內（.money-card 裡那顆，styles.css
+   本來就有的樣式），手機斷點改成三格下方一整行（第 9 節「錢包卡」拍板）。
+   兩顆按鈕共用同一個 data-action="open-save-more"，同時只有一顆看得見／可以互動。 ---------- */
+.wallet-save-more-mobile { display: none; }
+
+@media (max-width: 650px) {
+  .wallet-grid .money-card .money-card-action { display: none; }
+  .wallet-save-more-mobile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    margin: 6px 0 0;
+  }
+}
+
+/* ---------- 儲存狀態常駐文字（複核 shouldFix：miniTopbar() 沒插槽，見 home.js 內註解）：
+   只負責把它水平對齊到跟迷你頂欄同一個內容寬度、靠右貼齊；顏色/字級/圓點沿用 styles.css
+   既有的 .backup-status，隱藏規則也沿用該檔案原本就有的 900px/650px 斷點，這裡不重複宣告。 ---------- */
+.home-save-status {
+  width: min(1180px, calc(100% - 40px));
+  margin-inline: auto;
+  padding-top: 2px;
+  text-align: right;
+}
+@media (max-width: 900px) {
+  /* .backup-status 本身在這個斷點以下已經是 display:none（styles.css），這裡把外層包裝也一併
+     藏起來，避免留下一道 2px 的空白間距。 */
+  .home-save-status { display: none; }
+}
+
+/* ---------- 折線圖收合摘要（規格 2.1 第5項）：<details class="growth-card growth-panel">，
+   summary 是收合時看到的一行「目前總資產…較上月…」。硬性規則 3.5：補齊 marker。 ---------- */
+.growth-panel > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: "Iowan Old Style", "Noto Serif TC", serif;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.growth-panel > summary::-webkit-details-marker { display: none; }
+.growth-panel > summary::before {
+  content: "▸";
+  display: inline-block;
+  color: var(--green);
+  font-size: 14px;
+  transition: transform .15s ease;
+}
+.growth-panel[open] > summary::before { transform: rotate(90deg); }
+/* 只補 summary 跟下一個元素之間的間距，不動 .asset-chart 等既有 margin-top（用 + 不用 ~）。 */
+.growth-panel > summary + * { margin-top: 14px; }
+
+/* 折線圖卡內原本重複的夢想罐進度小清單拿掉，改成一行連結（規格第4節「本輪新增」）。 */
+.growth-dream-link {
+  display: block;
+  margin-top: 20px;
+  padding-top: 17px;
+  border-top: 1px solid var(--line);
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+  text-decoration: none;
+}
+.growth-dream-link:hover { text-decoration: underline; }
+
+/* ---------- 家庭小專案收合（規格 2.1 第7項）：兩句理念文案留在 .projects-heading（常駐），
+   只把 .project-grid 卡片列表包進 <details>。硬性規則 3.5：補齊 marker。 ---------- */
+.project-panel { margin-top: 18px; }
+.project-panel > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--ink);
+}
+.project-panel > summary::-webkit-details-marker { display: none; }
+.project-panel > summary::before {
+  content: "▸";
+  display: inline-block;
+  color: var(--green);
+  font-size: 13px;
+  transition: transform .15s ease;
+}
+.project-panel[open] > summary::before { transform: rotate(90deg); }
+/* summary 跟 .project-grid 之間的間距沿用 .project-grid 既有 margin-top:24px（styles.css），
+   這裡不用再补一次；只有沒有專案時的 .project-empty-note 自己控制間距（見下方）。 */
+
+.project-empty-note,
+.activity-empty-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- 錢包搬進 .hero（規格 2.1 順序）：桌機跨兩欄排在花園下方；手機自然順序在花園前面 ---------- */
+.hero > .wallet-grid { grid-column: 1 / -1; order: 3; margin-top: 26px; }
+.hero > .wallet-save-more-mobile { grid-column: 1 / -1; order: 4; }
+
+/* ---------- 手機收緊（量測：hero 617、最近紀錄 468、專案標題 231、footer 132 都太高） ---------- */
+@media (max-width: 650px) {
+  .hero { padding: 22px 16px 16px; gap: 0; }
+  .hero::before { top: 26px; height: 64px; }
+  .hero h1 { font-size: 34px; line-height: 1.15; }
+  .hero-practice { margin-top: 12px; }
+  .hero > .wallet-grid { order: 0; margin-top: 14px; }
+  .hero > .wallet-save-more-mobile { order: 0; }
+  .island-scene { aspect-ratio: 1.3; margin-top: 12px; }
+  .island-garden { height: 150px; bottom: 56px; }
+  .island-garden > span { width: 42px; height: 42px; font-size: 30px; }
+  .content-grid { margin-top: 16px; gap: 12px; }
+  .activity-card { padding: 16px 14px; }
+  .activity-card .section-heading h2 { font-size: 20px; }
+  .timeline { margin-top: 8px; }
+  .timeline-item { padding: 8px 0; gap: 10px; }
+  .projects-section { margin-top: 22px; }
+  .projects-heading { gap: 8px; }
+  .projects-heading h2 { font-size: 22px; }
+  .projects-heading p { font-size: 12px; margin-top: 4px; }
+  .project-principle { font-size: 11px; padding: 8px 12px; }
+  .rules-section { margin-top: 22px; padding: 24px 16px; }
+  .rules-copy h2 { font-size: 22px; }
+  .rules-copy p { font-size: 12px; }
+  .rule-list { gap: 10px; }
+  footer { padding: 12px 0 6px; font-size: 10px; }
+}

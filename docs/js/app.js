@@ -17,6 +17,7 @@ const ROUTES = {
   "#/dreams": { id: "dreams", load: () => import("./ui/dreams.js") },
   "#/history": { id: "history", load: () => import("./ui/history.js") },
   "#/parent": { id: "parent", load: () => import("./ui/parent.js") },
+  "#/parent/investments": { id: "parent-investments", load: () => import("./ui/parent-investments.js") },
   "#/setup": { id: "setup", module: setup },
 };
 
@@ -103,13 +104,17 @@ async function render() {
     }
 
     const ctx = buildContext(state);
-    closeModal();
+    closeModal("rerender");   // 背景重繪：頁面模組的 onClose 會保留「該開」旗標，mount() 再補開
     /* 整頁重繪時換掉整個 #app 節點：頁面模組在 mount() 裡綁的事件委派會跟著舊節點一起消失，
        不會每重繪一次就疊一層監聽器（模組自己不用管解綁）。 */
     const next = document.createElement("div");
     next.id = "app";
     next.innerHTML = String(mod.render(ctx));
     mount.replaceWith(next);
+    // 規格 3.1／3.6：--dock 的唯一設定點。依這頁實際渲染出的貼底固定元素種類，
+    // 寫進 <html data-dock="...">，styles.css 依此算「貼底列吃掉多少空間」。
+    const dockKind = next.querySelector(".record-bar") ? "record" : next.querySelector(".primary-nav") ? "nav" : "none";
+    document.documentElement.dataset.dock = dockKind;
     if (typeof mod.mount === "function") mod.mount(next, ctx);
     updateInstallHint();
   } finally {

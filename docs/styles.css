@@ -90,7 +90,9 @@ button {
 
 .site-shell {
   min-height: 100vh;
-  overflow: hidden;
+  min-height: 100dvh;   /* 漸進增強：支援的瀏覽器拿到準確高度，不支援的忽略這行、吃回上一行的 100vh（規格 3.1） */
+  overflow-x: hidden;   /* 原本 overflow:hidden 只防水平方向意外捲軸；拿掉垂直方向，避免 WebKit
+                            「fixed 元素被 overflow:hidden 祖先裁掉」的風險（規格 0.1、3.1） */
   background: var(--theme-page, var(--cream));
   transition: background-color .28s ease, color .28s ease;
 }
@@ -243,7 +245,7 @@ footer {
   border-radius: 16px;
   background: rgba(255,255,255,.48);
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));  /* 主線拍板（第 9 節）：底部只留 首頁／夢想／紀錄 三項 */
   gap: 4px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.75);
 }
@@ -1152,7 +1154,7 @@ footer strong { color: var(--green); }
 .modal {
   position: relative;
   width: min(100%, 480px);
-  max-height: calc(100vh - 44px);
+  max-height: calc(100vh - 44px - var(--kb, 0px));  /* 扣掉鍵盤高度（規格 3.2 應修） */
   overflow-y: auto;
   padding: 36px;
   border-radius: 28px;
@@ -1255,7 +1257,9 @@ footer strong { color: var(--green); }
   cursor: pointer;
   font-size: 12px;
   font-weight: 900;
+  list-style: none;   /* 補齊既有缺口（規格 3.5） */
 }
+.project-admin summary::-webkit-details-marker { display: none; }
 
 .project-admin > p {
   margin: 11px 0 0;
@@ -1619,7 +1623,8 @@ footer strong { color: var(--green); }
 
 .preset-row span { color: var(--muted); font-size: 11px; }
 .preset-admin { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.55); }
-.preset-admin summary { cursor: pointer; color: var(--green); font-size: 10px; font-weight: 900; }
+.preset-admin summary { cursor: pointer; color: var(--green); font-size: 10px; font-weight: 900; list-style: none; }
+.preset-admin summary::-webkit-details-marker { display: none; }
 .preset-list { margin-top: 10px; }
 .preset-list > div { padding: 8px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 6px; }
 .preset-list b,
@@ -1900,7 +1905,8 @@ footer strong { color: var(--green); }
 .device-status.is-trusted { background: var(--theme-soft, #e5f0eb); color: var(--green); }
 .parent-device-grid { margin-top: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .parent-device-grid details { padding: 16px; border: 1px solid var(--line); border-radius: 17px; background: rgba(255,255,255,.55); }
-.parent-device-grid summary { min-height: 44px; cursor: pointer; color: var(--green); font-size: 13px; font-weight: 900; }
+.parent-device-grid summary { min-height: 44px; cursor: pointer; color: var(--green); font-size: 13px; font-weight: 900; list-style: none; }
+.parent-device-grid summary::-webkit-details-marker { display: none; }
 .parent-device-grid p { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .parent-device-grid label { display: block; margin-top: 10px; font-size: 12px; font-weight: 900; }
 .parent-device-grid input { width: 100%; min-height: 44px; margin-top: 5px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 9px; background: white; outline: none; font-size: 14px; }
@@ -1964,7 +1970,8 @@ footer strong { color: var(--green); }
 .empty-dream b { margin-top: 10px; font-size: 13px; }
 .empty-dream small { margin-top: 5px; color: var(--muted); font-size: 10px; }
 .new-dream-card { margin-top: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 21px; background: rgba(255,255,255,.58); }
-.new-dream-card summary { cursor: pointer; color: var(--green); font-size: 12px; font-weight: 900; }
+.new-dream-card summary { cursor: pointer; color: var(--green); font-size: 12px; font-weight: 900; list-style: none; }
+.new-dream-card summary::-webkit-details-marker { display: none; }
 .new-dream-card form { margin-top: 15px; }
 .new-dream-card label { display: block; margin-top: 12px; font-size: 10px; font-weight: 900; }
 .new-dream-card input,
@@ -2229,7 +2236,6 @@ footer strong { color: var(--green); }
   .scene-total-copy b { font-size: 13px; }
   .scene-total-copy strong { font-size: 20px; }
   .money-card { padding: 18px; border-radius: 20px; }
-  .wallet-grid { grid-template-columns: 1fr; }
   .forest-card { grid-template-columns: 1fr; }
   .forest-visual { justify-content: flex-start; }
   .money-card .forest-scale { right: 12px; bottom: 7px; }
@@ -2261,7 +2267,7 @@ footer strong { color: var(--green); }
   .transfer-preview i { transform: rotate(90deg); }
   .rules-section { margin-top: 52px; padding: 42px 24px; border-radius: 27px; }
   .rules-copy h2 { font-size: 31px; }
-  .rule-list { grid-template-columns: 1fr; }
+  .rule-list { grid-template-columns: repeat(2, 1fr); gap: 14px 10px; }  /* 規格 3.8：手機維持 2×2，不再堆成單欄 */
   footer { display: block; line-height: 1.8; }
   footer strong { display: block; margin-top: 4px; }
   .footer-credit { display: inline-block; margin-top: 5px; padding-left: 0; border-left: 0; }
@@ -2385,7 +2391,8 @@ footer strong { color: var(--green); }
   .queued-dream-row button { flex: 1; }
   .reflection-card { padding: 24px 19px; }
   .reflection-heading-row { align-items: stretch; flex-direction: column; }
-  .reflection-month-picker { width: 100%; grid-template-columns: 40px 1fr 40px; }
+  .reflection-month-picker { width: 100%; grid-template-columns: 44px 1fr 44px; }
+  .reflection-month-picker button { min-height: 44px; min-width: 44px; }  /* 規格 3.8：箭頭 36px→44px */
   .month-numbers-three,
   .reflection-card form { grid-template-columns: 1fr; }
   .reflection-card form > .form-error,
@@ -2396,9 +2403,9 @@ footer strong { color: var(--green); }
   .history-layout { width: min(100% - 24px, 1180px); }
   .history-hero { padding: 35px 23px; border-radius: 26px; }
   .history-hero h1 { font-size: 39px; }
-  .history-controls { display: block; }
-  .history-controls h2 { margin-bottom: 16px; }
-  .history-controls > label { margin-top: 12px; }
+  /* 規格 2.3／6：刪掉這裡原本的 .history-controls display:block 覆寫——
+     讓 900px 斷點（.history-controls { display:grid; grid-template-columns:1fr 1fr; }）延續到手機，
+     搜尋框＋類型下拉並排一行，不再跟 650px 這條規則互相打架 */
   .history-lock { margin-top: 20px; }
   .history-lock form { grid-template-columns: 1fr; }
   .history-list { padding: 23px 18px; }
@@ -2528,8 +2535,9 @@ footer strong { color: var(--green); }
 .status-toast {
   position: fixed;
   left: 50%;
-  /* --kb 是 app.js 用 visualViewport 量出來的鍵盤高度：iOS 打字時吐司不會躲到鍵盤後面 */
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 20px + var(--kb, 0px));
+  /* --kb 是 app.js 用 visualViewport 量出來的鍵盤高度：iOS 打字時吐司不會躲到鍵盤後面。
+     --dock 已經內含 env(safe-area-inset-bottom)，不要再加一次（規格 3.1／3.6 應修） */
+  bottom: calc(20px + var(--kb, 0px) + var(--dock, env(safe-area-inset-bottom, 0px)));
   transform: translateX(-50%);
   z-index: 10000;
   width: 520px;
@@ -2559,3 +2567,164 @@ footer strong { color: var(--green); }
 .confirm-dialog-copy { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.7; }
 .confirm-dialog-actions { margin-top: 24px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .confirm-dialog-actions .primary-button { margin-top: 0; }
+
+/* ═════════════════════════════════════════════════════════════════════
+   手機優先重新設計（notes/mobile-redesign/spec.md，第 9 節「主線拍板」為準）
+   本區塊只由共用層 builder 維護；四頁各自的頁面級樣式在 docs/css/<page>.css。
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* ---------- --dock：貼底固定列吃掉多少空間，唯一真相來源（規格 3.1／3.6） ----------
+   app.js 的 render() 依當頁渲染出的固定元素種類設定 <html data-dock="...">。
+   桌機／不到 650px 沒有意義：--dock 預設只留安全區，四個 shell 的 padding-bottom
+   在下面的 650px 區塊才會真的吃到非零值。 */
+:root { --dock: env(safe-area-inset-bottom, 0px); }
+
+@media (max-width: 650px) {
+  :root[data-dock="nav"]    { --dock: calc(56px + env(safe-area-inset-bottom, 0px)); }   /* 只有 tab bar 的頁 */
+  :root[data-dock="record"] { --dock: calc(120px + env(safe-area-inset-bottom, 0px)); }  /* 首頁：record-bar + tab bar */
+
+  /* ---------- .primary-nav 貼底 tab bar（規格 3.1／1.3；內容改 3 項見上面 primaryNav 規則） ---------- */
+  .primary-nav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    display: flex; width: 100%;
+    background: var(--paper); border-top: 1px solid var(--line);
+    padding: 4px 6px calc(6px + env(safe-area-inset-bottom));
+  }
+  .primary-nav a {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    gap: 2px; min-height: 52px; justify-content: center; font-size: 10px;
+  }
+
+  /* ---------- .record-bar 貼底記帳列（規格 3.1／2.1／8 拍板題 3） ---------- */
+  .record-bar {
+    position: fixed; left: 0; right: 0; z-index: 39;
+    bottom: calc(56px + env(safe-area-inset-bottom));  /* 貼在 tab-bar 正上方 */
+    display: flex; gap: 8px; padding: 8px 12px;
+    background: var(--paper); border-top: 1px solid var(--line);
+  }
+  .record-bar button { flex: 1; min-height: 48px; border-radius: 16px; font-weight: 900; }
+
+  /* 唯一的 padding-bottom 來源：四個 shell 全部改用 --dock，取代原本各自寫死的 80px，
+     也不再疊加任何通用 body 規則 */
+  .site-shell,
+  .parent-shell,
+  .dream-shell,
+  .history-shell { padding-bottom: var(--dock); }
+}
+
+/* ---------- 桌機／iPad 用 .hero-actions，手機用貼底 .record-bar（規格 0.1／3.1，回應理念裁判擋下） ----------
+   兩組按鈕的 data-action="open-allowance"/"open-spend" 完全相同，只是顯示切換，不是二選一實作。 */
+.record-bar { display: none; }  /* 桌機／iPad 預設不出現：.hero-actions 已有自己的桌機基準樣式，不用動 */
+
+@media (max-width: 650px) {
+  .hero-actions { display: none; }   /* 手機隱藏 hero 裡的按鈕，改用貼底列 */
+  .record-bar { display: flex; }     /* position/gap/padding 已在上面定義，這裡只切換可見性 */
+}
+
+/* ---------- 錢包三格小磚：推翻 2.1 第 3 項與 3.1 的橫向捲動（第 9 節主線拍板） ----------
+   三個帳戶要一眼可比較，不用橫向捲動；桌機斷點（900px 以上）維持原本三欄大卡，不動。 */
+@media (max-width: 650px) {
+  .wallet-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .money-card {
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 8px;
+    border-radius: 16px;
+    text-align: center;
+  }
+  .money-card-icon { flex: 0 0 20px; width: 20px; height: 20px; border-radius: 8px; font-size: 13px; }
+  .money-card > div { width: 100%; text-align: center; }
+  .money-card small {
+    font-size: 11px; line-height: 1.3;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .money-card strong {
+    margin: 4px 0; font-size: 17px; font-variant-numeric: tabular-nums;
+  }
+  .money-card p {
+    font-size: 10px; line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .money-card-value-row { flex-direction: column; gap: 2px; }
+  .money-card-action { width: 100%; margin-top: 4px; }  /* 撲滿卡按鈕若被頁面搬到三格下方，這裡讓它撐滿一整行 */
+}
+
+/* ---------- 浮層：.modal.sheet 備用滑入變體（規格 3.2，本輪未強制使用，先定義起來） ---------- */
+.modal.sheet {
+  align-self: flex-end; width: 100%; max-width: 100%;
+  border-radius: 20px 20px 0 0; max-height: calc(88vh - var(--kb, 0px));
+}
+.modal.sheet::before {
+  content: ""; display: block; width: 36px; height: 4px; border-radius: 2px;
+  background: var(--line); margin: 8px auto 4px;
+}
+
+/* ---------- 情境式解鎖圖示 .icon-lock-btn（規格 1.2／3.3，第 9 節 2b：右上角 32×32，不淡化） ---------- */
+.icon-lock-btn {
+  position: relative; width: 32px; height: 32px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--paper);
+  display: flex; align-items: center; justify-content: center; font-size: 15px;
+  text-decoration: none; color: var(--ink); flex: 0 0 auto;
+}
+.icon-lock-btn::before { content: ""; position: absolute; inset: -6px; } /* 擴大命中區到 44×44 */
+
+/* ---------- lock modal 內容沿用既有 .parent-lock-card 視覺語言（common.createLockModal 用） ---------- */
+.parent-lock-card.lock-modal-card { margin-top: 0; }
+.lock-modal-parent-link {
+  grid-column: 1 / -1; margin-top: 6px;
+  color: var(--green); font-size: 12px; font-weight: 900; text-decoration: none;
+}
+.lock-modal-parent-link:hover { text-decoration: underline; }
+
+/* ---------- 月份分組 sticky 標頭（規格 3.4，history 用） ---------- */
+.history-month-header {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--cream); padding: 6px 4px; font-size: 12px; font-weight: 900; color: var(--muted);
+}
+
+/* ---------- 迷你頂欄 common.miniTopbar()：品牌小字＋profileChips＋右側插槽（第 9 節「頂欄」列） ----------
+   取代四頁原本各自手刻的 .topbar／.parent-topbar；高度目標 56–64px。 */
+.mini-topbar {
+  width: min(1180px, calc(100% - 40px));
+  margin-inline: auto;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-block: 10px;
+}
+.mini-topbar-brand {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  text-decoration: none; color: var(--ink);
+}
+.mini-topbar-brand .brand-mark {
+  width: 34px; height: 34px; font-size: 17px; border-radius: 11px 11px 13px 13px;
+  box-shadow: 0 3px 0 #224e45;
+}
+.mini-topbar-brand strong { font-size: 13px; letter-spacing: .04em; white-space: nowrap; }
+.mini-topbar-profiles { flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.mini-topbar-profiles::-webkit-scrollbar { display: none; }
+.mini-topbar-profiles .top-profile-picker { justify-content: flex-start; }
+.mini-topbar-right { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; margin-left: 12px; }   /* 規格 3.3：跟孩子切換列至少留 12px，熱區擴大後才不重疊 */
+.mini-topbar-right .history-link { font-size: 11px; font-weight: 900; color: var(--green); text-decoration: none; white-space: nowrap; }
+.mini-topbar-right .history-link:hover { text-decoration: underline; }
+
+@media (max-width: 650px) {
+  .mini-topbar { width: min(100% - 24px, 1180px); min-height: 56px; gap: 8px; padding-block: 8px; }
+  .mini-topbar-brand strong { font-size: 12px; }
+}
+
+/* ---------- 夢想／回顧分頁列 .dream-tabs（第 9 節拍板題 4：JS 互斥版，不用 <details name>） ---------- */
+.dream-tabs {
+  display: flex; gap: 6px; padding: 4px;
+  border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.5);
+}
+.dream-tabs button {
+  flex: 1; min-height: 44px; border: 1px solid transparent; border-radius: 11px;
+  background: transparent; color: var(--green); font-size: 13px; font-weight: 900; cursor: pointer;
+}
+.dream-tabs button[aria-pressed="true"] {
+  border-color: var(--green); background: var(--green); color: white;
+  box-shadow: 0 3px 0 var(--green-deep);
+}

@@ -1,0 +1,34 @@
+/* #/dreams 夢想與回顧：頁面專屬樣式（notes/mobile-redesign/spec.md 第 2.2、9 節）。
+   共用元件（.mini-topbar、.icon-lock-btn、lock modal、.dream-tabs、--dock）一律沿用 styles.css，
+   這裡只放這一頁獨有的排版調整。 */
+
+/* ---------- hero 精簡成單行常駐＋infoTip（規格 2.2／4：主句留在頁上，第二句收進 ❔）----------
+   原本 .dream-hero 是給大字 h1 用的大留白卡片；換成一行文字後，那份留白對現在的內容太厚。 */
+.dream-hero {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 22px;
+}
+
+/* ---------- 夢想罐／每月回顧兩個分頁面板（規格第 9 節拍板題 4：JS 互斥，不用 <details name>）----------
+   原本 .reflection-card 與 .dream-heading 是相鄰兄弟元素，靠 CSS 的相鄰選擇器抓間距；
+   拆成分頁後兩塊不再同時出現，改由面板本身的 margin-top 頂開跟 .dream-tabs 的距離。 */
+.dream-panel { margin-top: 22px; }
+
+/* ---------- 已完成夢想罐：本頁新增的 <details>（規格 2.2 第 7 項／3.5 硬性規則）----------
+   .completed-dream-panel 原本是普通 <section>，現在改成 <details>；沿用同一個 class 拿視覺樣式，
+   這裡只補 Safari 原生三角形隱藏（3.5 節硬性規則：新增的每一個 details 都要有這兩行）。 */
+.completed-dream-panel summary {
+  cursor: pointer;
+  list-style: none;
+  font-family: "Iowan Old Style", "Noto Serif TC", serif;
+  font-size: 20px;
+}
+.completed-dream-panel summary::-webkit-details-marker { display: none; }
+.completed-dream-panel .completed-dream-grid { margin-top: 16px; }
+
+@media (max-width: 650px) {
+  .dream-hero { padding: 14px 18px; }
+  .dream-panel { margin-top: 18px; }
+}
