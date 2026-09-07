@@ -629,23 +629,32 @@ export default function ParentInvestmentPage() {
   }
 
   async function downloadBackup(kind: "account" | "portable" = "account") {
-    const response = await fetch("/api/backups", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: kind === "portable" ? "export-portable" : "export", parentPin }),
-    });
-    const result = await response.json() as Record<string, unknown> & { error?: string };
-    if (!response.ok) {
-      reportOperationError("backup", new Error(result.error || "備份下載失敗"), "備份下載失敗");
-      return;
+    clearOperationError("backup");
+    try {
+      const response = await fetch("/api/backups", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: kind === "portable" ? "export-portable" : "export", parentPin }),
+      });
+      const result = await response.json() as Record<string, unknown> & { error?: string };
+      if (!response.ok) throw new Error(result.error || "備份下載失敗");
+
+      const fileName = `${kind === "portable" ? "小小理財島完整可攜備份" : "小小理財島帳本備份"}-${new Date().toISOString().slice(0, 10)}.json`;
+      const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = fileName;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+      showStatus(kind === "portable" ? "完整可攜備份已送到下載項目" : "帳本備份已送到下載項目", "success");
+    } catch (caught) {
+      reportOperationError("backup", caught, "備份下載失敗");
+      throw caught;
     }
-    const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `${kind === "portable" ? "小小理財島完整可攜備份" : "小小理財島帳本備份"}-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    showStatus(kind === "portable" ? "完整可攜備份已經下載" : "帳本備份已經下載", "success");
   }
 
   return (
@@ -1010,7 +1019,7 @@ export default function ParentInvestmentPage() {
           </details>
         </div>
       </section>
-      <DeviceTrustPanel parentPin={parentPin} unlocked={pinStatus === "unlocked"} onDownloadBackup={() => void downloadBackup("account")} onDownloadPortableBackup={() => void downloadBackup("portable")} onRestore={(next) => { setMoneyStateCache(next); announce("備份已還原，畫面已更新"); }} />
+      <DeviceTrustPanel parentPin={parentPin} unlocked={pinStatus === "unlocked"} onDownloadBackup={() => downloadBackup("account")} onDownloadPortableBackup={() => downloadBackup("portable")} onRestore={(next) => { setMoneyStateCache(next); announce("備份已還原，畫面已更新"); }} />
       <StatusToast toast={toast} onDismiss={dismissStatus} />
     </main>
   );
