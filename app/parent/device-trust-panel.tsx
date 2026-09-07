@@ -28,8 +28,8 @@ export function DeviceTrustPanel({
 }: {
   parentPin: string;
   unlocked: boolean;
-  onDownloadBackup: () => void;
-  onDownloadPortableBackup: () => void;
+  onDownloadBackup: () => Promise<void>;
+  onDownloadPortableBackup: () => Promise<void>;
   onRestore: (state: MoneyState) => void;
 }) {
   const [status, setStatus] = useState<AccessStatus>({ configured: false, trusted: false, device: null });
@@ -119,6 +119,24 @@ export function DeviceTrustPanel({
     finally { setBusy(""); }
   }
 
+  async function startDownload(kind: "account" | "portable") {
+    if (!unlocked) {
+      setError("請先在頁面上方輸入家長操作碼解鎖，再下載備份。");
+      document.querySelector(".parent-lock-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.setTimeout(() => document.querySelector<HTMLInputElement>(".parent-lock-card input")?.focus(), 450);
+      return;
+    }
+    setBusy(`download-${kind}`);
+    setError("");
+    try {
+      await (kind === "portable" ? onDownloadPortableBackup() : onDownloadBackup());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "備份下載失敗，請稍後再試。");
+    } finally {
+      setBusy("");
+    }
+  }
+
   const needsAccountUpgrade = status.family?.code === "MY-FAMILY";
   return (
     <section className="parent-device-panel" id="devices">
@@ -126,7 +144,7 @@ export function DeviceTrustPanel({
       <div className="parent-device-grid">
         {needsAccountUpgrade && <details open><summary>完成多家庭帳戶設定</summary><p>為目前帳本建立家庭代碼與家庭密碼，資料不會搬動或遺失。</p><form onSubmit={configureAccount}><label>家庭名稱<input value={familyName} onChange={(event) => setFamilyName(event.target.value)} required maxLength={30} /></label><label>家庭密碼<input type="password" minLength={8} maxLength={64} value={familyPassword} onChange={(event) => setFamilyPassword(event.target.value)} required /></label><button disabled={!unlocked || busy === "account"}>{busy === "account" ? "設定中…" : "建立家庭登入資料"}</button></form>{accountResult && <p><b>家庭代碼：{accountResult.code}</b><br />離線救援碼：{accountResult.recoveryCode}<br />請寫在紙上安全保管，之後不會再次完整顯示。</p>}</details>}
         <details><summary>管理信任裝置</summary><p>{status.family ? `${status.family.name} · ${status.family.code}` : "這台裝置尚未登入家庭"}</p><button disabled={!unlocked || busy === "list"} onClick={() => void loadDevices()}>{busy === "list" ? "讀取中…" : "查看所有裝置"}</button><Link href="/family-access">家庭入口</Link>{devices.length > 0 && <div className="device-list">{devices.map((device) => { const isCurrentDevice = status.device?.id === device.id; return <div key={device.id} className={[device.revokedAt ? "is-revoked" : "", isCurrentDevice ? "is-current" : ""].filter(Boolean).join(" ")}><span><b>{device.label}{isCurrentDevice && <em className="device-current-badge">這台裝置</em>}</b><small>{device.revokedAt ? "已撤銷" : `上次使用 ${new Date(device.lastUsedAt).toLocaleDateString("zh-TW")}`}</small></span><button disabled={Boolean(device.revokedAt) || busy === device.id} aria-label={`${device.revokedAt ? "已停用" : "撤銷"}裝置「${device.label}」${isCurrentDevice ? "（這台裝置）" : ""}`} onClick={() => void revoke(device.id)}>{device.revokedAt ? "已停用" : busy === device.id ? "撤銷中…" : "撤銷"}</button></div>; })}</div>}</details>
-        <details><summary>下載或上傳資料副本</summary><p>平時可下載帳本；搬到另一個部署時，請下載包含孩子照片的完整可攜備份。兩種備份都不含密碼、家長操作碼或裝置信任。</p><div className="backup-download-actions"><button disabled={!unlocked} onClick={onDownloadBackup}>下載帳本備份</button><button disabled={!unlocked} onClick={onDownloadPortableBackup}>下載完整可攜備份</button></div><label className="backup-file-label">選擇備份檔<input ref={fileRef} type="file" accept="application/json,.json" disabled={!unlocked || busy === "restore"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void inspectBackup(file); }} /></label>{busy === "inspect" && <p>正在檢查備份內容…</p>}{restoreSummary && <div className="restore-summary"><b>{restoreSummary.family.name} · {new Date(restoreSummary.exportedAt).toLocaleString("zh-TW")}</b><small>{restoreSummary.portable ? `完整可攜備份${restoreSummary.photoCount ? `，包含 ${restoreSummary.photoCount} 張照片` : ""}` : "同家庭帳本備份"}</small><small>{restoreSummary.counts.profiles} 位孩子、{restoreSummary.counts.activities} 筆紀錄、{restoreSummary.counts.dreams} 個夢想、{restoreSummary.counts.holdings} 個投資標的</small><button className="restore-button" disabled={!unlocked || busy === "restore"} onClick={() => void restoreBackup()}>{busy === "restore" ? "還原中…" : "確認覆蓋並還原"}</button><small>確認後會先自動保存目前帳本，再以備份內容取代。</small></div>}</details>
+        <details><summary>下載或上傳資料副本</summary><p>平時可下載帳本；搬到另一個部署時，請下載包含孩子照片的完整可攜備份。兩種備份都不含密碼、家長操作碼或裝置信任。</p>{!unlocked && <p className="backup-unlock-hint">🔒 下載與還原前，請先在頁面上方解鎖家長區。</p>}<div className="backup-download-actions"><button aria-disabled={!unlocked} disabled={busy.startsWith("download-")} onClick={() => void startDownload("account")}>{busy === "download-account" ? "正在準備帳本…" : "下載帳本備份"}</button><button aria-disabled={!unlocked} disabled={busy.startsWith("download-")} onClick={() => void startDownload("portable")}>{busy === "download-portable" ? "正在整理照片…" : "下載完整可攜備份"}</button></div><label className="backup-file-label">選擇備份檔<input ref={fileRef} type="file" accept="application/json,.json" disabled={!unlocked || busy === "restore"} onChange={(event) => { const file = event.target.files?.[0]; if (file) void inspectBackup(file); }} /></label>{busy === "inspect" && <p>正在檢查備份內容…</p>}{restoreSummary && <div className="restore-summary"><b>{restoreSummary.family.name} · {new Date(restoreSummary.exportedAt).toLocaleString("zh-TW")}</b><small>{restoreSummary.portable ? `完整可攜備份${restoreSummary.photoCount ? `，包含 ${restoreSummary.photoCount} 張照片` : ""}` : "同家庭帳本備份"}</small><small>{restoreSummary.counts.profiles} 位孩子、{restoreSummary.counts.activities} 筆紀錄、{restoreSummary.counts.dreams} 個夢想、{restoreSummary.counts.holdings} 個投資標的</small><button className="restore-button" disabled={!unlocked || busy === "restore"} onClick={() => void restoreBackup()}>{busy === "restore" ? "還原中…" : "確認覆蓋並還原"}</button><small>確認後會先自動保存目前帳本，再以備份內容取代。</small></div>}</details>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
     </section>
