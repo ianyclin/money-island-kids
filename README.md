@@ -1,4 +1,8 @@
-# vinext-starter
+# 小小理財島（Money Island Kids）
+
+## 開啟網站
+
+[前往小小理財島家庭入口](https://money-island-kids.gigigagagogogege.chatgpt.site/family-access)
 
 > Privacy-safe source snapshot derived from local commit
 > `fb1875829cdfaefb76ab8a6fcc8168784f2db1fa`. Personal ledger history,
@@ -26,7 +30,7 @@ This starter does not use `wrangler.jsonc`.
 ## Included Shape
 
 - edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
+- deployment-specific configuration is intentionally omitted from this privacy-safe repository
 - `vite.config.ts` simulates declared bindings for local development
 - `db/schema.ts` starts intentionally empty
 - `examples/d1/` contains an optional D1 example surface
