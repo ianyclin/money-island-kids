@@ -256,6 +256,25 @@ export function profilePicker(profiles, selectedId, onChoose, options = {}) {
   </div>`;
 }
 
+// 契約第 15 節的兩個名字：頁面模組自己接 data-choose-profile 委派，不經過 pickerHandlers。
+export function profileChips(profiles, selectedId) {
+  return html`<div class="top-profile-picker" aria-label="切換小朋友">
+    <span class="profile-label">今天是誰？</span>
+    <div class="profile-switcher">${(profiles || []).map((item) => {
+      const active = item.id === selectedId;
+      return html`<button type="button" class="${active ? "profile-chip is-active" : "profile-chip"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" aria-label="切換到${item.name}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b></button>`;
+    })}</div>
+  </div>`;
+}
+
+export function profileRow(profiles, selectedId, subtitleOf, className) {
+  return html`<section class="${classNames("parent-profile-row", className)}">${(profiles || []).map((item) => {
+    const active = item.id === selectedId;
+    const text = typeof subtitleOf === "function" ? subtitleOf(item, active) : "";
+    return html`<button type="button" class="${active ? "parent-profile is-active" : "parent-profile"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b>${text ? html`<small>${text}</small>` : ""}</button>`;
+  })}</section>`;
+}
+
 document.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;

@@ -81,6 +81,13 @@ function recomputeHoldingTotals(next) {
       (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)
       || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
     profile.stockCode = first ? first.symbol : null;
+    // 與 backup.js 的 recomputeInvestmentTotals 一致：最後一次行情時間也從 holdings 推回來，
+    // 匯出前與還原後才會相等。
+    const synced = owned
+      .map((holding) => holding.priceUpdatedAt ?? holding.updatedAt)
+      .filter(Boolean)
+      .sort();
+    profile.lastSyncedAt = synced.length ? synced[synced.length - 1] : null;
   }
 }
 

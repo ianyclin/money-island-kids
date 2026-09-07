@@ -123,6 +123,7 @@ function buildContext(state) {
     profile,
     profiles,
     unlocked: safeUnlocked(),
+    pinStatus: safePinStatus(),
     navigate,
     refresh,
     chooseProfile,
@@ -131,6 +132,10 @@ function buildContext(state) {
 
 function safeUnlocked() {
   try { return pin.isUnlocked(); } catch (e) { return false; }
+}
+
+function safePinStatus() {
+  try { return pin.status(); } catch (e) { return "locked"; }
 }
 
 // ---------- 每月獎勵 ----------
@@ -259,6 +264,8 @@ function askPersist() {
 
 // ---------- 開機 ----------
 async function boot() {
+  // 先把 localStorage 的帳本放進 store（不回寫）；讀不到就維持 null，render 會導去第一次使用。
+  store.hydrate(db.load());
   gist.loadGist();
   gist.setRefreshHandler(() => { void refresh(); });
   store.subscribe(() => { void refresh(); });

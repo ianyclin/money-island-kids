@@ -584,3 +584,113 @@ export function disconnect() {
   refreshSettings();
   return { had };
 }
+
+/* ───────── 家長區「GitHub 雲端備份」面板（stamps 3547–3818 行的畫面） ─────────
+   render 只產生字串；mount 綁一次事件委派。危險動作用「按兩次」武裝，幾秒沒按第二下就解除。 */
+const armed = new Map();        /* key → timer；武裝中的按鈕會把文案換成「再按一次…」 */
+function arm(key, ms, root) {
+  if (armed.has(key)) return true;                 /* 第二按 */
+  armed.set(key, setTimeout(() => { armed.delete(key); paintArmed(root); }, ms));
+  paintArmed(root);
+  return false;
+}
+function disarm(key) { clearTimeout(armed.get(key)); armed.delete(key); }
+function paintArmed(root) {
+  if (!root || !root.isConnected) return;
+  root.querySelectorAll("[data-arm-label]").forEach((button) => {
+    const key = button.getAttribute("data-gist");
+    button.textContent = armed.has(key) ? button.getAttribute("data-arm-label") : button.getAttribute("data-idle-label");
+  });
+}
+const escapeHtml = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function whenText(iso) {
+  if (!iso) return "還沒同步過";
+  try { return new Date(iso).toLocaleString("zh-TW", { hour12: false }); } catch (e) { return iso; }
+}
+function summaryHtml(label, s) {
+  if (!s) return "";
+  return `<small><b>${escapeHtml(label)}</b>：${s.activities} 筆紀錄，最後一筆 ${escapeHtml(s.lastEntryDate)}；${s.profiles.map((p) => `${escapeHtml(p.name)} ${p.activities} 筆`).join("、")}</small>`;
+}
+
+export function renderGistPanel() {
+  const info = cloudInfo();
+  if (!info.on) {
+    return `<p>雲端備份會把整份帳本（含孩子的名字與照片）傳到<b>你自己 GitHub 帳號的祕密 Gist</b>。祕密 Gist 不會被搜尋到，但知道網址的人看得到，而且 GitHub 會保留每次修改前的舊版本；自己用風險很低但不是零，別把備份網址分享出去。</p>
+      <p>做法：到 GitHub 的 Settings → Developer settings → Personal access tokens（classic）建一把<b>只勾 gist 權限</b>的金鑰，貼在下面。金鑰只存在這台裝置，不會進備份檔。</p>
+      <label>GitHub 金鑰<input type="password" data-gist-token autocomplete="off" placeholder="ghp_…" spellcheck="false"></label>
+      <div class="backup-download-actions"><button type="button" data-gist="connect">連線並開始自動備份</button></div>
+      <p data-gist-status role="status"></p>`;
+  }
+  const statusLine = info.pullFreeze ? "拿回備份確認中，自動上傳暫停"
+    : info.card === "decide" ? "等你決定要用哪一份，自動上傳暫停"
+    : info.card === "gone" ? "雲端那份備份不見了，自動上傳暫停"
+    : info.card === "stale" ? "還沒跟雲端比對完，自動上傳暫停"
+    : info.lastError ? `上次同步失敗：${info.lastError}`
+    : `上次同步 ${whenText(info.lastSyncAt)}`;
+  let card = "";
+  if (info.card === "decide") {
+    card = `<div class="restore-summary"><b>雲端跟這台裝置都有資料，要用哪一份？</b>
+      ${summaryHtml("雲端那份", info.cloudSummary)}${summaryHtml("這台裝置", info.localSummary)}
+      <div class="backup-download-actions">
+        <button type="button" class="restore-button" data-gist="adopt-cloud" data-arm-label="再按一次：用雲端的" data-idle-label="用雲端的（覆蓋這台裝置）">用雲端的（覆蓋這台裝置）</button>
+        <button type="button" data-gist="adopt-local" data-arm-label="再按一次：用這台裝置的" data-idle-label="用這台裝置的（覆蓋雲端）">用這台裝置的（覆蓋雲端）</button>
+      </div><small>按一下後 4 秒內再按一次才會執行。</small></div>`;
+  } else if (info.card === "gone") {
+    card = `<div class="restore-summary"><b>雲端那份備份不見了</b><small>可能在 GitHub 被刪掉，或另一台裝置改用了別份。</small>
+      <div class="backup-download-actions"><button type="button" data-gist="reupload">重新上傳這台裝置的資料</button><button type="button" data-gist="disconnect">中斷連線</button></div></div>`;
+  } else if (info.card === "stale") {
+    card = `<div class="restore-summary"><b>還沒跟雲端比對完</b><small>上次讀不到雲端內容；比對完成前不會上傳。</small>
+      <div class="backup-download-actions"><button type="button" data-gist="compare">讀取雲端備份來比對</button></div></div>`;
+  }
+  return `<p>已連線到你的 GitHub。每次改動 15 秒後、以及 app 切到背景時會自動上傳。</p>
+    <p data-gist-status role="status">${escapeHtml(statusLine)}</p>
+    ${card}
+    <div class="backup-download-actions">
+      ${info.frozen ? "" : `<button type="button" data-gist="sync">立刻同步</button>`}
+      <button type="button" data-gist="pull" data-arm-label="再按一次：從雲端還原" data-idle-label="從雲端拿回備份">${info.pullArmed ? "再按一次：從雲端還原" : "從雲端拿回備份"}</button>
+    </div>
+    <details><summary>進階</summary>
+      <p>刪除雲端備份會把 GitHub 上那份 Gist 整個刪掉並中斷連線；中斷連線只是這台裝置不再上傳，雲端那份會留著。</p>
+      <div class="backup-download-actions">
+        <button type="button" class="is-danger" data-gist="delete" data-arm-label="再按一次：真的刪除雲端備份" data-idle-label="刪除雲端備份">刪除雲端備份</button>
+        <button type="button" data-gist="disconnect">中斷連線</button>
+      </div>
+    </details>`;
+}
+
+export function mountGistPanel(root) {
+  if (!root || root.dataset.gistMounted) return;
+  root.dataset.gistMounted = "1";
+  root.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-gist]");
+    if (!button) return;
+    const action = button.getAttribute("data-gist");
+    const status = root.querySelector("[data-gist-status]");
+    const say = (text) => { if (status) status.textContent = text; };
+    button.disabled = true;
+    try {
+      if (action === "connect") {
+        const input = root.querySelector("[data-gist-token]");
+        say("正在連線…");
+        const result = await connect(input ? input.value : "");
+        if (!result.ok) { say(result.error || "連線失敗"); button.disabled = false; }
+        return;
+      }
+      if (action === "sync") { say("同步中…"); await syncNow(); return; }
+      if (action === "compare") { say("讀取中…"); await compareCloud(); return; }
+      if (action === "reupload") { say("上傳中…"); await reuploadCloud(); return; }
+      if (action === "disconnect") { disconnect(); return; }
+      if (action === "pull") {
+        const r = await pullFromCloud();
+        if (r && r.armed) say(`雲端那份有 ${r.activities} 筆紀錄；5 秒內再按一次就會覆蓋這台裝置`);
+        button.disabled = false;
+        return;
+      }
+      if (action === "adopt-cloud") { if (!arm("adopt-cloud", 4000, root)) { button.disabled = false; return; } disarm("adopt-cloud"); adoptCloud(); return; }
+      if (action === "adopt-local") { if (!arm("adopt-local", 4000, root)) { button.disabled = false; return; } disarm("adopt-local"); say("上傳中…"); await adoptLocal(); return; }
+      if (action === "delete") { if (!arm("delete", 5000, root)) { button.disabled = false; return; } disarm("delete"); say("刪除中…"); await deleteCloudBackup(); return; }
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  });
+}

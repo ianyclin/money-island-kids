@@ -284,10 +284,7 @@ export function render(ctx) {
             <small>先存一點，夢想長大</small>
           </span>
         </a>
-        <div class="top-profile-picker" aria-label="切換小朋友">
-          <span class="profile-label">今天是誰？</span>
-          ${profileChips(ctx.profiles, profile.id)}
-        </div>
+        ${profileChips(ctx.profiles, profile.id)}
         <div class="top-actions">
           <span class="backup-status"><i aria-hidden="true"></i>${notice || backupStatusText(state)}</span>
           ${primaryNav("home")}
