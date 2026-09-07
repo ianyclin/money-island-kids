@@ -41,6 +41,10 @@ python3 -m http.server 8792 --directory docs
 
 然後開 <http://localhost:8792>。引擎的自我測試在 <http://localhost:8792/dev/selftest.html>（119 條斷言，跑完最後一行會印 PASS／FAIL）。
 
+## 改了程式要記得的一件事
+
+`docs/sw.js` 最上面的 `VERSION` 每次改程式都要往上加一號（v2 → v3）。Service Worker 是整組版本快取：手機抓到新的 sw.js 才會重新下載所有檔案，並跳「有新版本」提示。沒改 VERSION，已安裝的手機會一直用舊版。新增了 js 檔也要加進 `CORE` 清單。
+
 ## 證交所收盤價
 
 投資持股的市值會在打開 app 時自動向臺灣證券交易所查最新收盤價（每 30 分鐘最多一次），也可以由家長手動輸入市值。不是即時報價。
