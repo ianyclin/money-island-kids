@@ -2100,8 +2100,10 @@ footer strong { color: var(--green); }
 .recovery-method-tabs button.is-active { background: white; color: var(--green); box-shadow: 0 5px 14px rgba(48,80,69,.11); }
 .backup-file-label { display: block; margin-top: 14px; }
 .backup-file-label input { display: block; margin-top: 6px; font-size: 12px; }
+.parent-device-grid .backup-unlock-hint { padding: 9px 11px; border-radius: 10px; background: #fff4cf; color: #725a1e; font-weight: 800; }
 .backup-download-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .backup-download-actions button { margin-top: 0; }
+.backup-download-actions button[aria-disabled="true"] { background: #d7ddd8; color: #53645d; box-shadow: none; }
 .restore-summary { margin-top: 12px; padding: 13px; border: 1px solid #e6c77b; border-radius: 13px; background: #fff7dc; }
 .restore-summary b, .restore-summary small { display: block; }
 .restore-summary small { margin-top: 5px; color: var(--muted); line-height: 1.55; }
