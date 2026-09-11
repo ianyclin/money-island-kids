@@ -3,7 +3,7 @@
 // 結構與文案照原專案 app/primary-nav.tsx、status-toast.tsx、info-tip.tsx、profile-avatar.tsx、
 // money-state-cache.tsx（MoneyStateGate）；modal 的 inert／focus／Esc 行為照 ../stamps/index.html 1984–2076 行。
 
-import { html, raw, classNames, formatDateTime, errorMessage } from "../util.js";
+import { html, raw, esc, classNames, formatDateTime, errorMessage } from "../util.js";
 import * as pin from "../pin.js";
 
 // ---------- 雲端狀態的橋接 ----------
@@ -15,40 +15,56 @@ function cloudStatus() {
   try { return cloudStatusProvider ? cloudStatusProvider() : null; } catch (e) { return null; }
 }
 
-// ---------- 主要頁面導覽 ----------
-// 主線拍板（spec.md 第 9 節，題 1＋2a）：底部貼底列只放孩子每天會用的三個目的地；
-// 「家長區」不放進拇指區，改成每頁迷你頂欄右上角的 lockIconButton（見下方）。
-const primaryLinks = [
-  { id: "home", href: "#/", label: "孩子首頁" },
-  { id: "dreams", href: "#/dreams", label: "夢想與回顧" },
-  { id: "history", href: "#/history", label: "所有紀錄" },
+// ---------- v2 的殼（規格 3.1／3.2／3.3） ----------
+// appShell({ page, title, ctx, right, body })：四個分頁頁面與家長頁都用它包起來（setup 不用）。
+// 同一份 markup，CSS 切換：< 768px 顯示底部 .tabbar、≥ 768px 顯示左側 .sidebar。
+//   page  ："home" | "growth" | "history" | "more" | "parent"（parent 時四個分頁都不 active）
+//   title ：頁面標題；留空＝把 .page-head 左側換成 profileChips（首頁用法，規格 3.1）
+//   right ：.page-head 右插槽（鎖鈕、「🔓 已解鎖」小字…），字串或 html`` 都可以
+//   body  ：.page-body 的內容
+// --kid-accent 照規格第 1 節注入到這一頁的根節點（.app），主題色派生公式在 app.css。
+const SHELL_TABS = [
+  { id: "home", href: "#/", icon: "🏠", label: "首頁" },
+  { id: "growth", href: "#/growth", icon: "🌱", label: "成長" },
+  { id: "history", href: "#/history", icon: "📒", label: "紀錄" },
+  { id: "more", href: "#/more", icon: "✨", label: "更多" },
 ];
 
-export function primaryNav(active) {
-  return html`<nav class="primary-nav" aria-label="主要頁面">${primaryLinks.map((item) => html`<a
-      class="${item.id === active ? "is-active" : ""}"
-      href="${item.href}"
-      ${item.id === active ? raw('aria-current="page"') : ""}
-    >${item.label}</a>`)}</nav>`;
-}
-
-// ---------- 迷你頂欄 ----------
-// miniTopbar({ active, ctx, right })：第 9 節「頂欄」列——四頁共用同一個函式，取代各頁原本
-// 手刻的 .topbar／.parent-topbar。品牌小字（左）＋ profileChips()（中，可橫向捲動）＋
-// 呼叫端自己組好的 right 插槽（右，例如 lockIconButton() 或加一個「🔍 所有紀錄」小連結）。
-// active 只用來決定品牌連結是否標成目前頁（首頁時不需要再點一次自己）。
-export function miniTopbar({ active, ctx, right } = {}) {
+export function appShell({ page, title, ctx, right, body } = {}) {
   const profiles = (ctx && (ctx.profiles || (ctx.state && ctx.state.profiles))) || [];
   const selectedId = ctx && ctx.profile ? ctx.profile.id : null;
-  const isHome = active === "home";
-  return html`<header class="mini-topbar">
-    <a class="mini-topbar-brand" href="#/" aria-label="回到小小理財島首頁" ${isHome ? raw('aria-current="page"') : ""}>
-      <span class="brand-mark" aria-hidden="true">¢</span>
-      <strong>小小理財島</strong>
-    </a>
-    <div class="mini-topbar-profiles">${raw(String(profileChips(profiles, selectedId)))}</div>
-    <div class="mini-topbar-right">${right ? raw(String(right)) : ""}</div>
-  </header>`;
+  const accent = ctx && ctx.profile ? ctx.profile.accent : "";
+  const active = page ? String(page) : "";
+  const heading = title == null ? "" : String(title);
+  return html`<div class="app" data-page="${active}" style="${accent ? `--kid-accent: ${accent}` : ""}">
+    <aside class="sidebar">
+      <a class="brand" href="#/"><span class="brand-mark" aria-hidden="true">¢</span><b>小小理財島</b><small>先存一點，夢想長大</small></a>
+      <nav class="sidenav" aria-label="主要頁面">${SHELL_TABS.map((item) => html`<a class="${item.id === active ? "navitem is-active" : "navitem"}" href="${item.href}"${item.id === active ? raw(' aria-current="page"') : ""}><i aria-hidden="true">${item.icon}</i><span>${item.label}</span></a>`)}</nav>
+      ${sidebarKids(profiles, selectedId)}
+    </aside>
+    <main class="page" data-page="${active}">
+      <header class="page-head">
+        ${heading ? html`<h1 class="page-title">${heading}</h1>` : profileChips(profiles, selectedId)}
+        <div class="page-head-right">${right ? raw(String(right)) : ""}</div>
+      </header>
+      <div class="page-body">${body ? raw(String(body)) : ""}</div>
+    </main>
+    <nav class="tabbar" aria-label="主要頁面">${SHELL_TABS.map((item) => html`<a class="${item.id === active ? "tab is-active" : "tab"}" href="${item.href}"${item.id === active ? raw(' aria-current="page"') : ""}><i aria-hidden="true">${item.icon}</i><span>${item.label}</span></a>`)}</nav>
+  </div>`;
+}
+
+// ---------- 小元件 helper（規格 4.2 的 class，頁面建造者不用自己記） ----------
+// btn({ label, action, kind, block, disabled, busyLabel, attrs })
+//   kind："primary" | "secondary" | "ghost" | "danger"（預設 primary）
+//   action：寫成 data-action="…"，委派邏輯照舊由頁面模組自己接
+//   attrs：需要額外屬性時傳「已經組好的字串」（原樣輸出，呼叫端自己負責跳脫）
+export function btn({ label, action, kind = "primary", block, disabled, busyLabel, attrs } = {}) {
+  return html`<button type="button" class="${classNames("btn", `btn-${kind}`, block && "btn-block")}"${action ? raw(` data-action="${esc(action)}"`) : ""}${busyLabel ? raw(` data-busy-label="${esc(busyLabel)}"`) : ""}${disabled ? raw(" disabled") : ""}${attrs ? raw(` ${attrs}`) : ""}>${label}</button>`;
+}
+
+// field({ label, id, input })：一組 .field + .field-label + 呼叫端自己畫好的輸入元素。
+export function field({ label, id, input } = {}) {
+  return html`<div class="field">${label ? html`<label class="field-label"${id ? raw(` for="${esc(id)}"`) : ""}>${label}</label>` : ""}${input ? raw(String(input)) : ""}</div>`;
 }
 
 // ---------- 情境式解鎖圖示 ----------
@@ -60,11 +76,11 @@ export function lockIconButton({ href, pinStatus } = {}) {
   const unlocked = pinStatus === "unlocked";
   const icon = unlocked ? "🔓" : "🔒";
   if (href) {
-    return html`<a class="icon-lock-btn" href="${href}" aria-label="家長區">${icon}</a>`;
+    return html`<a class="lock-btn" href="${href}" aria-label="家長區">${icon}</a>`;
   }
   return html`<button
     type="button"
-    class="icon-lock-btn"
+    class="lock-btn"
     data-action="open-lock"
     aria-label="${unlocked ? "家長區（已解鎖）" : "家長區（未解鎖，點一下輸入操作碼）"}"
   >${icon}</button>`;
@@ -80,7 +96,7 @@ export function lockIconButton({ href, pinStatus } = {}) {
 //     onUnlocked: () => currentCtx.refresh(),
 //     parentHref: "#/parent",
 //   });
-//   // 點 .icon-lock-btn 的地方：lockModal.open();
+//   // 點 .lock-btn 的地方：lockModal.open();
 //   // 自己的 mount(root, ctx) 裡：currentCtx = ctx; lockModal.mountCheck(ctx);
 //
 // 內部用 module-scope（其實是這個閉包的作用域，效果等同 1.2 節骨架裡的
@@ -241,11 +257,11 @@ export function showStatus(message, tone = "success", options = {}) {
   if (!clean) return;
   const kind = toneIcons[tone] ? tone : "success";
   toastAction = typeof options.onAction === "function" ? options.onAction : null;
-  root.innerHTML = String(html`<div class="status-toast is-${kind}" role="${kind === "error" ? "alert" : "status"}" aria-live="${kind === "error" ? "assertive" : "polite"}" aria-atomic="true">
-    <span class="status-toast-icon" aria-hidden="true">${toneIcons[kind]}</span>
+  root.innerHTML = String(html`<div class="toast is-${kind}" role="${kind === "error" ? "alert" : "status"}" aria-live="${kind === "error" ? "assertive" : "polite"}" aria-atomic="true">
+    <span class="toast-icon" aria-hidden="true">${toneIcons[kind]}</span>
     <strong>${clean}</strong>
-    ${options.action ? html`<button type="button" class="status-toast-action" data-toast-action>${options.action}</button>` : ""}
-    <button type="button" class="status-toast-close" aria-label="關閉提示" data-toast-close>×</button>
+    ${options.action ? html`<button type="button" class="toast-action" data-toast-action>${options.action}</button>` : ""}
+    <button type="button" class="toast-close" aria-label="關閉提示" data-toast-close>×</button>
   </div>`);
   clearTimeout(toastTimer);
   const ms = Number(options.ms) || (kind === "error" ? 7000 : 4500);
@@ -363,8 +379,8 @@ export function confirmDialog(message, options = {}) {
     const dialog = openModal(html`<h2 id="confirm-dialog-title">${options.title || "請確認"}</h2>
       <p class="confirm-dialog-copy">${message}</p>
       <div class="confirm-dialog-actions">
-        <button type="button" class="secondary-button" data-confirm-cancel>${options.cancelLabel || "取消"}</button>
-        <button type="button" class="primary-button" data-confirm-ok autofocus>${options.confirmLabel || "確定"}</button>
+        <button type="button" class="btn btn-secondary" data-confirm-cancel>${options.cancelLabel || "取消"}</button>
+        <button type="button" class="btn btn-primary" data-confirm-ok autofocus>${options.confirmLabel || "確定"}</button>
       </div>`, {
       labelledBy: "confirm-dialog-title",
       className: "confirm-dialog",
@@ -393,9 +409,8 @@ function prunePickers() {
 }
 
 // profilePicker(profiles, selectedId, onChoose, { variant: "chip" | "parent", label, caption })
-// variant "chip"＝首頁 topbar 那一排；variant "parent"＝家長區 parent-profile 那一排。
-// 每顆按鈕都帶 data-choose-profile="<id>"：頁面模組要自己接（像 dreams／history 那樣）也可以，
-// 不傳 onChoose 就不會走這裡的委派。
+// v2 過渡用，頁面建造者改完後由主線刪除：現在兩種 variant 都輸出 v2 的 .profile-chips／.chip，
+// 只有 onChoose 走 pickerHandlers 的委派這件事沒變（不帶 data-choose-profile，不會重複觸發）。
 export function profilePicker(profiles, selectedId, onChoose, options = {}) {
   prunePickers();
   pickerSerial += 1;
@@ -405,53 +420,76 @@ export function profilePicker(profiles, selectedId, onChoose, options = {}) {
   const caption = typeof options.caption === "function" ? options.caption : null;
 
   if (options.variant === "parent") {
-    return html`<div class="${classNames("parent-profile-row", options.className)}" aria-label="${options.label || "選擇要編輯的小朋友"}">${list.map((item) => {
+    return html`<div class="${classNames("profile-chips", options.className)}" aria-label="${options.label || "選擇要編輯的小朋友"}">${list.map((item) => {
       const active = item.id === selectedId;
       const text = caption ? caption(item, active) : "";
-      return html`<div class="parent-profile-shell" style="--profile-color: ${item.accent}"><button
+      return html`<button
         type="button"
-        class="${active ? "parent-profile is-active" : "parent-profile"}"
+        class="${active ? "chip is-active" : "chip"}"
         data-picker="${key}"
         data-profile-id="${item.id}"
         aria-pressed="${active ? "true" : "false"}"
-      ><span>${profileAvatar(item.avatar, item.name)}</span><b>${item.name}</b>${text ? html`<small>${text}</small>` : ""}</button></div>`;
+        style="--profile-color: ${item.accent}"
+      ><span>${profileAvatar(item.avatar, item.name)}</span><b>${item.name}</b>${text ? html`<small>${text}</small>` : ""}</button>`;
     })}</div>`;
   }
 
-  return html`<div class="top-profile-picker" aria-label="${options.label || "切換小朋友"}">
-    <span class="profile-label">${options.title || "今天是誰？"}</span>
-    <div class="profile-switcher">${list.map((item) => {
-      const active = item.id === selectedId;
-      return html`<button
-        type="button"
-        class="${active ? "profile-chip is-active" : "profile-chip"}"
-        data-picker="${key}"
-        data-profile-id="${item.id}"
-        aria-pressed="${active ? "true" : "false"}"
-        aria-label="切換到${item.name}"
-        style="--profile-color: ${item.accent}"
-      ><span>${profileAvatar(item.avatar, item.name)}</span><b>${item.name}</b></button>`;
-    })}</div>
-  </div>`;
+  return html`<div class="profile-chips" aria-label="${options.label || "切換小朋友"}">${list.map((item) => {
+    const active = item.id === selectedId;
+    return html`<button
+      type="button"
+      class="${active ? "chip is-active" : "chip"}"
+      data-picker="${key}"
+      data-profile-id="${item.id}"
+      aria-pressed="${active ? "true" : "false"}"
+      aria-label="切換到${item.name}"
+      style="--profile-color: ${item.accent}"
+    ><span>${profileAvatar(item.avatar, item.name)}</span><b>${item.name}</b></button>`;
+  })}</div>`;
 }
 
-// 契約第 15 節的兩個名字：頁面模組自己接 data-choose-profile 委派，不經過 pickerHandlers。
-export function profileChips(profiles, selectedId) {
-  return html`<div class="top-profile-picker" aria-label="切換小朋友">
-    <span class="profile-label">今天是誰？</span>
-    <div class="profile-switcher">${(profiles || []).map((item) => {
-      const active = item.id === selectedId;
-      return html`<button type="button" class="${active ? "profile-chip is-active" : "profile-chip"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" aria-label="切換到${item.name}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b></button>`;
-    })}</div>
-  </div>`;
+// profileChips(profiles, selectedId)：橫排的孩子切換列（規格 4.2 的 .profile-chips／.chip）。
+// 每顆按鈕帶 data-choose-profile="<id>"，委派由 app.js 統一接（見 app.js 的「孩子切換」段）。
+export function profileChips(profiles, selectedId, captionOf) {
+  return html`<div class="profile-chips" aria-label="切換小朋友">${(profiles || []).map((item) => {
+    const active = item.id === selectedId;
+    const text = typeof captionOf === "function" ? captionOf(item, active) : "";
+    return html`<button type="button" class="${active ? "chip is-active" : "chip"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" aria-label="切換到${item.name}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b>${text ? html`<small>${text}</small>` : ""}</button>`;
+  })}</div>`;
 }
 
+// sidebarKids(profiles, selectedId)：同一組 chip 排成直行，放在側欄底部（規格 3.2／3.3）。
+export function sidebarKids(profiles, selectedId) {
+  return html`<div class="sidebar-kids" aria-label="切換小朋友">${(profiles || []).map((item) => {
+    const active = item.id === selectedId;
+    return html`<button type="button" class="${active ? "chip is-active" : "chip"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" aria-label="切換到${item.name}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b></button>`;
+  })}</div>`;
+}
+
+// v2 過渡用，頁面建造者改完後由主線刪除。
 export function profileRow(profiles, selectedId, subtitleOf, className) {
-  return html`<section class="${classNames("parent-profile-row", className)}">${(profiles || []).map((item) => {
+  return html`<div class="${classNames("profile-chips", className)}" aria-label="切換小朋友">${(profiles || []).map((item) => {
     const active = item.id === selectedId;
     const text = typeof subtitleOf === "function" ? subtitleOf(item, active) : "";
-    return html`<button type="button" class="${active ? "parent-profile is-active" : "parent-profile"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b>${text ? html`<small>${text}</small>` : ""}</button>`;
-  })}</section>`;
+    return html`<button type="button" class="${active ? "chip is-active" : "chip"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b>${text ? html`<small>${text}</small>` : ""}</button>`;
+  })}</div>`;
+}
+
+// ---------- v2 過渡用的相容層，頁面建造者改完後由主線刪除 ----------
+// 舊頁面（home／dreams／history／parent／parent-investments）還在呼叫這兩支；
+// v2 的殼由 appShell() 提供，這裡只保證過渡期間不會 crash、孩子切換仍然可用。
+export function miniTopbar({ active, ctx, right } = {}) {
+  const profiles = (ctx && (ctx.profiles || (ctx.state && ctx.state.profiles))) || [];
+  const selectedId = ctx && ctx.profile ? ctx.profile.id : null;
+  return html`<header class="page-head">
+    ${profileChips(profiles, selectedId)}
+    <div class="page-head-right">${right ? raw(String(right)) : ""}</div>
+  </header>`;
+}
+
+// v2 的導覽是 appShell() 的 .tabbar／.sidenav：舊頁面的第二條導覽直接消失。
+export function primaryNav(_active) {
+  return html``;
 }
 
 document.addEventListener("click", (event) => {

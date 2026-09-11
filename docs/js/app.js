@@ -12,14 +12,17 @@ import { stateGate, showStatus, closeModal } from "./ui/common.js";
 
 // ---------- 路由表 ----------
 // hash 路由：GitHub Pages 沒有伺服器可以改寫網址，所有頁面共用同一份 index.html。
+// 路由表照 v2 規格第 2 節：#/growth、#/more 新增；#/dreams 保留為 #/growth 的別名（舊連結不斷）。
 const ROUTES = {
   "#/": { id: "home", load: () => import("./ui/home.js") },
-  "#/dreams": { id: "dreams", load: () => import("./ui/dreams.js") },
+  "#/growth": { id: "growth", load: () => import("./ui/growth.js") },
   "#/history": { id: "history", load: () => import("./ui/history.js") },
+  "#/more": { id: "more", load: () => import("./ui/more.js") },
   "#/parent": { id: "parent", load: () => import("./ui/parent.js") },
   "#/parent/investments": { id: "parent-investments", load: () => import("./ui/parent-investments.js") },
   "#/setup": { id: "setup", module: setup },
 };
+ROUTES["#/dreams"] = ROUTES["#/growth"];
 
 function currentHash() {
   const hash = location.hash || "#/";
@@ -52,11 +55,26 @@ function selectedProfile(profiles, state) {
 export function chooseProfile(id) {
   const state = readState();
   if (!state || !(state.profiles || []).some((item) => item.id === id)) return;
+  // 已經是選中的那一個就什麼都不做：v2 的殼每一頁都有孩子切換（側欄＋頁首），
+  // 加上舊頁面自己也還接著 data-choose-profile，同一次點擊可能被處理兩次——
+  // 第二次一定是「切到已經選中的人」，在這裡擋掉就不會多重繪一輪。
+  if (storedProfileId(state) === id) return;
   if (!state.meta) state.meta = {};
   state.meta.selectedProfileId = id;
   try { localStorage.setItem(PROFILE_STORAGE_KEY, id); } catch (e) {}
   void render();
 }
+
+// 孩子切換的統一委派（規格 3.3）：appShell() 的側欄與頁首 chip 都帶 data-choose-profile，
+// 不屬於任何一個頁面模組，所以接在 document 上。舊頁面自己綁的那一份先留著，
+// chooseProfile() 上面的「已經選中就不做事」保證不會重覆重繪。
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest("[data-choose-profile]");
+  if (!button) return;
+  chooseProfile(button.getAttribute("data-choose-profile"));
+});
 
 export function navigate(hash) {
   if (location.hash === hash) { void render(); return; }
@@ -111,10 +129,7 @@ async function render() {
     next.id = "app";
     next.innerHTML = String(mod.render(ctx));
     mount.replaceWith(next);
-    // 規格 3.1／3.6：--dock 的唯一設定點。依這頁實際渲染出的貼底固定元素種類，
-    // 寫進 <html data-dock="...">，styles.css 依此算「貼底列吃掉多少空間」。
-    const dockKind = next.querySelector(".record-bar") ? "record" : next.querySelector(".primary-nav") ? "nav" : "none";
-    document.documentElement.dataset.dock = dockKind;
+    // v2 的殼不用 --dock：貼底補償由 app.css 的 .page-body 直接算（規格 3.1）。
     if (typeof mod.mount === "function") mod.mount(next, ctx);
     updateInstallHint();
   } finally {
