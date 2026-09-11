@@ -844,7 +844,16 @@ img { height: auto; display: block; }
 .wallet-action { display: block; }
 
 .island-card { display: grid; justify-items: center; overflow: visible; }
-.island-card .island-scene { aspect-ratio: 1.15; }   /* 規格 5.1 第 6 列 */
+.island-card .island-scene { aspect-ratio: 1; margin-top: 0; }   /* 規格 5.1 第 6 列；v2 的小島卡在手機（343px）與電腦右欄（~330px）都是窄容器，
+   下面這組是舊 styles.css 2227–2237 行的手機縮放，改成不分寬度一律套用 */
+.island-card .island-ground { left: -4%; right: -4%; bottom: 30px; }
+.island-card .island-garden { left: 2%; right: 2%; bottom: 69px; height: 200px; }
+.island-card .island-garden > span { width: 50px; height: 50px; font-size: 36px; }
+.island-card .garden-picker { top: -2px; width: min(205px, calc(100% - 64px)); }
+.island-card .scene-total { width: min(330px, calc(100% - 10px)); min-width: 0; padding: 9px 11px 9px 9px; gap: 8px; }
+.island-card .scene-total-avatar { width: 46px; height: 46px; font-size: 27px; }
+.island-card .scene-total-copy b { font-size: 13px; }
+.island-card .scene-total-copy strong { font-size: 20px; }
 
 .recent .record-list { margin-top: var(--space-1); }
 
@@ -1017,9 +1026,9 @@ img { height: auto; display: block; }
   transform: translateX(-50%);
 }
 
-.garden-picker summary { padding: 8px 11px; border: 1px solid rgba(255,255,255,.8); border-radius: 999px; background: rgba(255,253,248,.88); display: flex; align-items: center; justify-content: space-between; gap: 8px; list-style: none; color: var(--green); font-size: 10px; font-weight: 900; cursor: pointer; box-shadow: 0 6px 16px rgba(39,73,65,.09); }
+.garden-picker summary { padding: 8px 12px; border: 1px solid rgba(255,255,255,.8); border-radius: 999px; background: rgba(255,253,248,.88); display: flex; align-items: center; justify-content: space-between; gap: 8px; list-style: none; color: var(--green); font-size: 12px; font-weight: 900; cursor: pointer; box-shadow: 0 6px 16px rgba(39,73,65,.09); }   /* v2：10→12px，字級下限 */
 .garden-picker summary::-webkit-details-marker { display: none; }
-.garden-picker summary b { color: var(--ink); font-size: 11px; }
+.garden-picker summary b { color: var(--ink); font-size: 12px; }
 .garden-picker[open] summary { border-radius: 15px 15px 10px 10px; background: rgba(255,253,248,.98); }
 .garden-picker > div { margin-top: 5px; padding: 7px; border-radius: 12px; background: rgba(255,253,248,.96); display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; box-shadow: 0 10px 24px rgba(39,73,65,.13); }
 .garden-picker button { min-width: 0; height: 28px; border: 1px solid transparent; border-radius: 9px; background: transparent; font-size: 17px; line-height: 1; cursor: pointer; }
@@ -1049,8 +1058,8 @@ img { height: auto; display: block; }
 
 .scene-total-copy { min-width: 0; }
 .scene-total-copy > span { display: block; white-space: nowrap; }
-.scene-total-copy > span:first-child { color: var(--muted); font-size: 10px; }
-.scene-total-copy > span:last-child { margin-top: 3px; color: var(--ink); font-size: 11px; font-weight: 800; }
+.scene-total-copy > span:first-child { color: var(--muted); font-size: 12px; }   /* v2：10→12px */
+.scene-total-copy > span:last-child { margin-top: 3px; color: var(--ink); font-size: 12px; font-weight: 800; }
 .scene-total-copy b,
 .scene-total-copy strong { display: inline; margin-left: 3px; color: var(--green); font-family: Georgia, serif; }
 .scene-total-copy b { font-size: 14px; }
@@ -1078,7 +1087,7 @@ img { height: auto; display: block; }
 .line-chart-stage polygon { fill: color-mix(in srgb, var(--kid-accent) 14%, transparent); }
 .line-chart-stage polyline { fill: none; stroke: var(--green); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .chart-point { position: absolute; width: 10px; height: 10px; border: 3px solid var(--paper); border-radius: 50%; background: var(--kid-accent); box-shadow: 0 2px 7px rgba(35,82,70,.25); transform: translate(-50%, -50%); }
-.chart-year-count { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 800; }
+.chart-year-count { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 800; }
 .chart-x-axis { min-height: 34px; display: flex; align-items: flex-start; justify-content: space-between; color: var(--muted); font-size: 10px; }
 .chart-x-axis > span { min-width: 30px; display: grid; justify-items: center; gap: 2px; }
 .chart-x-axis b { color: var(--muted); font-size: 10px; }

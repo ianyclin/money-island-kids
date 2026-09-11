@@ -1,1 +1,726 @@
-/* 頁面專屬樣式，由頁面建造者填寫 */
+/* ═══════════════════════════════════════════════════════════════════════
+   頁面專屬樣式：家長區 #/parent、投資子頁 #/parent/investments、第一次使用 #/setup
+   （建造者 D；規格 notes/redesign-v2/spec.md 5.5／5.6）
+
+   只放 app.css 的元件層沒有的東西：家長頁的兩欄順序、stepper、子面板抽屜、
+   持股／買入／收成三段的列版面、指南排版、setup 的置中卡。
+   字級一律 ≥ 12px（--fs-caption）；可點元素 ≥ 44px。
+
+   區塊索引：
+     P0. 共用小件（.form-actions／.card-sub／.parent-subtitle／.parent-row／.subpanel）
+     P1. 家長區版面與順序（規格 5.5）
+     P2. 家長區各卡
+     P3. 家長區的 modal（校正撲滿、變更操作碼）
+     P4. 理念與操作指南
+     P5. 投資子頁（規格 5.5 末段）
+     P6. 第一次使用（規格 5.6）
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────
+   P0. 共用小件
+   ───────────────────────────────────────────── */
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.form-actions > .btn { flex: 1 1 auto; }
+.form-actions > .btn-block { flex: 1 1 100%; }
+.form-actions > .form-error { flex: 1 1 100%; margin-top: 0; }
+
+/* 卡片標題下的一行說明 */
+.card-sub {
+  margin-top: calc(var(--space-3) * -1 + var(--space-1));
+  margin-bottom: var(--space-3);
+  color: var(--muted);
+  font-size: var(--fs-small);
+  line-height: 1.55;
+}
+
+/* 卡片內的小標（表單分段） */
+.parent-subtitle {
+  margin-bottom: var(--space-3);
+  font-size: var(--fs-body);
+  font-weight: 900;
+}
+
+/* 左文右鈕的一列（專案、快照、常用標的、買入紀錄、收成歷史共用） */
+.parent-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--line);
+}
+.parent-row:first-child { border-top: 0; }
+.parent-row > div { min-width: 0; }
+.parent-row b { display: block; font-size: 14px; font-weight: 900; }
+.parent-row small { display: block; margin-top: 2px; color: var(--muted); font-size: var(--fs-caption); line-height: 1.5; }
+.parent-row .btn { padding-inline: 14px; font-size: 14px; }
+.parent-row .btn-row { flex: 0 0 auto; }
+.parent-row .btn-row > .btn { flex: 0 0 auto; }
+
+/* 卡片裡的抽屜（規格 0.4：只用在真的低頻的地方） */
+.subpanel { border-top: 1px solid var(--line); }
+.subpanel > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--tap);
+  padding: var(--space-2) 0;
+  font-size: var(--fs-body);
+  font-weight: 900;
+  cursor: pointer;
+}
+.subpanel > summary::-webkit-details-marker { display: none; }
+.subpanel > summary::after {
+  content: "＋";
+  margin-left: auto;
+  color: var(--green);
+  font-size: var(--fs-small);
+}
+.subpanel[open] > summary::after { content: "−"; }
+.subpanel > summary > span { flex: 1 1 auto; min-width: 0; }
+.subpanel > summary > b { color: var(--muted); font-size: var(--fs-caption); font-weight: 900; }
+.subpanel-body { padding-bottom: var(--space-4); }
+.subpanel-body > p { color: var(--muted); font-size: var(--fs-small); line-height: 1.65; }
+.subpanel-body > p + p { margin-top: var(--space-2); }
+
+/* 檔案選擇（照片、備份檔） */
+.file-input { padding: 8px 10px; font-size: var(--fs-small); }
+.backup-file-label {
+  display: block;
+  margin-top: var(--space-3);
+  font-size: var(--fs-small);
+  font-weight: 900;
+}
+.backup-file-label input { margin-top: var(--space-2); }
+
+/* ─────────────────────────────────────────────
+   P1. 家長區版面與順序（規格 5.5）
+   ≥1100px：左 3 待辦／快速動作／比例／孩子／專案，右 2 投資入口／備份／指南。
+   < 1100px：兩個欄容器攤平回 .page-body 的單欄，用 order 排成規格列的手機順序。
+   ───────────────────────────────────────────── */
+@media (max-width: 1099px) {
+  .parent-grid,
+  .parent-grid > .grid-2-col { display: contents; }
+  .parent-card-inbox { order: 1; }
+  .parent-card-quick { order: 2; }
+  .parent-card-rate { order: 3; }
+  .parent-card-kids { order: 4; }
+  .parent-card-invest { order: 5; }
+  .parent-card-projects { order: 6; }
+  .parent-device-panel { order: 7; }
+  .parent-guide { order: 8; }
+}
+
+/* 頁首右插槽：🔓 已解鎖 · 變更操作碼 */
+.parent-unlocked-link {
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  color: var(--green);
+  font-size: var(--fs-caption);
+  font-weight: 900;
+  text-align: right;
+  line-height: 1.3;
+}
+.parent-unlocked-link:hover { text-decoration: underline; }
+
+/* ─────────────────────────────────────────────
+   P2. 家長區各卡
+   ───────────────────────────────────────────── */
+
+/* 未解鎖 */
+.parent-lock-copy { color: var(--muted); font-size: var(--fs-small); line-height: 1.65; }
+.parent-lock-card form { margin-top: var(--space-4); }
+.parent-lock-note { color: var(--muted); font-size: var(--fs-caption); text-align: center; }
+
+/* 待辦 */
+.inbox-list { display: block; }
+
+/* 快速動作：三顆等寬，emoji 與字排在一行 */
+.parent-quick-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.parent-quick-row .btn {
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+/* 預先儲蓄比例 */
+.stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--theme-soft, #eef5f1);
+}
+.stepper-btn {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  color: var(--green);
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+}
+.stepper-btn:disabled { opacity: .4; cursor: not-allowed; }
+.stepper output {
+  flex: 1 1 auto;
+  text-align: center;
+  font-family: var(--font-serif);
+  font-size: var(--fs-amount);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 孩子資料 */
+.parent-card-kids .profile-chips { margin-bottom: var(--space-3); }
+.profile-editor-forms { margin-top: var(--space-4); }
+.profile-editor-forms > form + form,
+.profile-editor-forms > form + .form-actions {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--line);
+}
+.profile-photo-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+}
+.profile-photo-preview {
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--kid-accent) 20%, white);
+  font-size: 32px;
+}
+.profile-photo-fields { min-width: 0; }
+
+/* 投資入口 */
+.parent-card-invest .card-title span { font-size: 18px; }
+
+/* 資料與備份 */
+.backup-status.is-failed { color: #913e58; }
+.backup-status.is-failed i { background: #c2607b; box-shadow: 0 0 0 4px #f6dde3; }
+
+.device-list { margin-top: var(--space-2); }
+.empty-history {
+  padding: var(--space-3) 0;
+  color: var(--muted);
+  font-size: var(--fs-small);
+}
+
+.restore-summary {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--theme-soft, #eef5f1);
+}
+.restore-summary b { font-size: 14px; font-weight: 900; }
+.restore-summary small { color: var(--muted); font-size: var(--fs-caption); line-height: 1.5; }
+.restore-summary .btn,
+.restore-summary button { margin-top: var(--space-2); }
+
+/* gist.renderGistPanel() 的內容：那一份 markup 不歸頁面模組管，這裡只補樣式 */
+.parent-device-panel .backup-download-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.parent-device-panel .backup-download-actions > * { flex: 1 1 auto; }
+.parent-device-panel [data-gist-root] label {
+  display: block;
+  margin-top: var(--space-3);
+  font-size: var(--fs-small);
+  font-weight: 900;
+}
+.parent-device-panel [data-gist-root] input {
+  width: 100%;
+  min-height: var(--tap);
+  margin-top: var(--space-2);
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: #fff;
+  font-size: 16px;
+}
+.parent-device-panel [data-gist-root] button:not(.btn) {
+  min-height: var(--tap);
+  padding: 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 900;
+}
+.parent-device-panel [data-gist-root] button.is-danger { background: #8f3650; border-color: transparent; color: #fff; }
+.parent-device-panel [data-gist-root] details { margin-top: var(--space-3); }
+.parent-device-panel [data-gist-root] summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-small);
+  font-weight: 900;
+  cursor: pointer;
+}
+.parent-device-panel [data-gist-root] [data-gist-status] { font-weight: 900; }
+
+/* ─────────────────────────────────────────────
+   P3. 家長區的 modal（校正撲滿、變更操作碼）
+   ───────────────────────────────────────────── */
+.piggy-correction-context {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--fs-small);
+}
+.piggy-correction-context > span {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--kid-accent, #5aae9b) 22%, white);
+  font-size: 18px;
+}
+
+/* ─────────────────────────────────────────────
+   P4. 理念與操作指南（唯一的大抽屜）
+   ───────────────────────────────────────────── */
+.parent-guide > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  cursor: pointer;
+}
+.parent-guide > summary::-webkit-details-marker { display: none; }
+.parent-guide > summary > div { min-width: 0; flex: 1 1 auto; }
+.parent-guide small { display: block; color: var(--muted); font-size: var(--fs-caption); }
+.parent-guide > summary b { display: block; font-size: var(--fs-body); font-weight: 900; }
+.guide-mark {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: var(--theme-soft, #eef5f1);
+  font-size: 20px;
+}
+.summary-hint { flex: 0 0 auto; color: var(--green); font-size: var(--fs-caption); font-weight: 900; }
+.summary-hint i { font-style: normal; }
+.summary-open-label,
+details[open] > summary .summary-closed-label { display: none; }
+details[open] > summary .summary-open-label { display: inline; }
+
+.guide-body {
+  display: grid;
+  gap: var(--space-5);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+.guide-block h3 {
+  margin-top: var(--space-2);
+  font-family: var(--font-serif);
+  font-size: var(--fs-title);
+  line-height: 1.35;
+}
+.guide-block > p {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--fs-small);
+  line-height: 1.7;
+}
+.guide-grid {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.guide-grid article {
+  padding: var(--space-3);
+  border-radius: var(--radius-m);
+  background: var(--theme-soft, #eef5f1);
+}
+.guide-grid b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-bottom: var(--space-1);
+  border-radius: 50%;
+  background: var(--green);
+  color: #fff;
+  font-size: var(--fs-caption);
+}
+.guide-grid h4 { font-size: var(--fs-body); font-weight: 900; }
+.guide-grid p { margin-top: 2px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+
+.guide-accounts { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
+.guide-accounts article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+}
+.guide-accounts article > span {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--theme-soft, #eef5f1);
+  font-size: 20px;
+}
+.guide-accounts b { font-size: var(--fs-body); font-weight: 900; }
+.guide-accounts p { margin-top: 2px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.guide-note { margin-top: var(--space-3); color: var(--muted); font-size: var(--fs-caption); line-height: 1.6; }
+
+.guide-list { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
+.guide-list li {
+  padding-left: var(--space-4);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+  position: relative;
+}
+.guide-list li::before {
+  content: "·";
+  position: absolute;
+  left: var(--space-2);
+  color: var(--green);
+  font-weight: 900;
+}
+
+@media (min-width: 768px) {
+  .guide-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 1100px) {
+  .guide-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ─────────────────────────────────────────────
+   P5. 投資子頁（規格 5.5：單欄 max-width 760）
+   ───────────────────────────────────────────── */
+.parent-back { align-self: flex-start; padding-inline: var(--space-2); }
+
+.narrow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .narrow {
+    max-width: 760px;
+    margin-inline: auto;
+    gap: var(--space-5);
+  }
+}
+
+/* 表單的兩格一列（手機單欄，≥768 兩欄） */
+.field-row { display: grid; gap: var(--space-4); }
+.field-row > .field + .field { margin-top: 0; }
+
+@media (min-width: 768px) {
+  .field-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* 常用標的 */
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.preset-chip {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--theme-soft, #eef5f1);
+  color: var(--green);
+  font-size: 14px;
+  font-weight: 900;
+}
+.preset-row > span { color: var(--muted); font-size: var(--fs-caption); }
+.preset-list { margin-bottom: var(--space-3); }
+
+/* 買入表單 */
+.purchase-preview {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  border-radius: var(--radius-m);
+  background: var(--theme-soft, #eef5f1);
+}
+.purchase-preview > span {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--kid-accent) 22%, white);
+  font-size: 20px;
+}
+.purchase-preview b { display: block; font-size: 14px; font-weight: 900; }
+.purchase-preview small { display: block; margin-top: 2px; color: var(--muted); font-size: var(--fs-caption); line-height: 1.55; }
+
+.confirm-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  margin-top: var(--space-3);
+  font-size: 14px;
+  font-weight: 800;
+}
+.confirm-check input { width: 22px; height: 22px; flex: 0 0 22px; accent-color: var(--green); }
+
+.parent-save-note {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--fs-caption);
+}
+
+.panel-help { margin-top: var(--space-3); }
+
+/* 持股 */
+.market-quote-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.market-auto-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-small);
+  font-weight: 900;
+}
+.market-quote-actions > small { flex: 1 1 100%; color: var(--muted); font-size: var(--fs-caption); }
+.market-quote-actions .btn { padding-inline: 16px; font-size: 14px; }
+
+.holding-record { padding: var(--space-3) 0; border-top: 1px solid var(--line); }
+.holding-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+.holding-symbol {
+  min-width: 56px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: var(--theme-soft, #eef5f1);
+  color: var(--green);
+  font-size: var(--fs-caption);
+  font-weight: 900;
+  text-align: center;
+}
+.holding-card > div { min-width: 0; }
+.holding-card b { display: block; font-size: 14px; font-weight: 900; }
+.holding-card small { display: block; margin-top: 2px; color: var(--muted); font-size: var(--fs-caption); line-height: 1.5; }
+.holding-value { text-align: right; }
+.holding-value b { font-family: var(--font-serif); font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
+.holding-value .is-up { color: var(--green); }
+.holding-value .is-down { color: #a44e6b; }
+.holding-sole-updated { display: block; margin-bottom: var(--space-2); color: var(--muted); font-size: var(--fs-caption); }
+
+.market-editor { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
+.market-editor .input { flex: 1 1 auto; min-width: 0; }
+.market-editor .btn { flex: 0 0 auto; padding-inline: 14px; font-size: 14px; }
+
+.empty-holding {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1);
+  padding: var(--space-5) var(--space-3);
+  text-align: center;
+}
+.empty-holding > span {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--kid-accent) 22%, white);
+  font-size: 24px;
+}
+.empty-holding b { font-size: var(--fs-body); font-weight: 900; }
+.empty-holding small { color: var(--muted); font-size: var(--fs-small); }
+
+/* 買入紀錄 */
+.purchase-entry { border-top: 1px solid var(--line); }
+.purchase-entry:first-of-type { border-top: 0; }
+.purchase-entry .parent-row { border-top: 0; }
+.purchase-row-tail {
+  display: grid;
+  justify-items: end;
+  gap: var(--space-2);
+}
+.purchase-row-tail > strong {
+  font-family: var(--font-serif);
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+}
+.purchase-correction-form,
+.harvest-correction-form { padding: 0 0 var(--space-4); }
+
+/* 過年收成 */
+.harvest-panel > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+}
+.harvest-panel > summary::-webkit-details-marker { display: none; }
+.harvest-summary > div { flex: 1 1 auto; min-width: 0; }
+.harvest-summary b { display: block; margin-top: var(--space-1); font-family: var(--font-serif); font-size: var(--fs-title); font-weight: 700; }
+.harvest-summary small { display: block; margin-top: var(--space-1); color: var(--muted); font-size: var(--fs-caption); line-height: 1.5; }
+.harvest-summary-action {
+  flex: 0 0 auto;
+  display: grid;
+  justify-items: end;
+  gap: var(--space-1);
+}
+.harvest-summary-action small { color: var(--green); font-size: var(--fs-caption); font-weight: 900; }
+.harvest-open-label,
+.harvest-panel[open] .harvest-closed-label { display: none; }
+.harvest-panel[open] .harvest-open-label { display: block; }
+
+.harvest-content { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--line); }
+.harvest-limit {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-m);
+  background: var(--theme-soft, #eef5f1);
+}
+.harvest-limit > span {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--kid-accent) 22%, white);
+  font-size: 20px;
+}
+.harvest-limit small { display: block; color: var(--muted); font-size: var(--fs-caption); }
+.harvest-limit strong { font-family: var(--font-serif); font-size: var(--fs-title); font-variant-numeric: tabular-nums; }
+.harvest-limit > b { font-size: var(--fs-caption); font-weight: 900; }
+
+.harvest-sole-holding {
+  display: grid;
+  gap: 2px;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+}
+.harvest-sole-holding > span { color: var(--muted); font-size: var(--fs-small); font-weight: 900; }
+.harvest-sole-holding > b { font-size: 14px; font-weight: 900; }
+
+.harvest-history-panel { margin-top: var(--space-4); }
+.harvest-history-entry { border-top: 1px solid var(--line); }
+.harvest-history-entry:first-child { border-top: 0; }
+.harvest-history-entry .parent-row { border-top: 0; }
+
+/* ─────────────────────────────────────────────
+   P6. 第一次使用（規格 5.6：不用 shell，置中一張 .card）
+   ───────────────────────────────────────────── */
+.setup-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-5) var(--space-4) calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
+  background: var(--cream);
+}
+
+.setup-card { width: min(480px, 100%); }
+
+.setup-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.setup-brand strong { display: block; font-size: 18px; letter-spacing: .06em; }
+.setup-brand small { display: block; color: var(--muted); font-size: var(--fs-caption); }
+
+.setup-title {
+  margin-top: var(--space-2);
+  font-family: var(--font-serif);
+  font-size: var(--fs-display);
+  font-weight: 700;
+  line-height: 1.25;
+}
+.setup-title em { font-style: normal; color: var(--green); }
+
+.setup-copy {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--fs-small);
+  line-height: 1.7;
+}
+
+.setup-card .segmented { margin-top: var(--space-4); }
+
+.setup-subtitle {
+  margin-top: var(--space-5);
+  font-family: var(--font-serif);
+  font-size: var(--fs-title);
+  font-weight: 700;
+}
+
+.setup-card form { margin-top: var(--space-4); }
+
+.setup-kid-grid { display: grid; gap: var(--space-2); }
+
+.setup-help {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--fs-caption);
+  line-height: 1.65;
+}

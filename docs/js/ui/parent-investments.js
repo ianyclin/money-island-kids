@@ -1,7 +1,10 @@
 // 小小理財島 PWA：家長專區的投資子頁（真實買入、持股、買入紀錄、過年收成）。
 // 內容整段搬自 docs/js/ui/parent.js 原本的 `.investment-layout`（規格 2.4.1）；
-// class、文案、store 呼叫、operationId、錯誤處理、busy 狀態、事件委派模式一律照抄，
-// 只改結構、順序、收合與入口（買入表單不再收合、單一持股簡化、月份自動展開過年收成、深連結）。
+// 文案、store 呼叫、operationId、錯誤處理、busy 狀態、事件委派模式一律照抄。
+//
+// v2 重做（notes/redesign-v2/spec.md 5.5）：外殼換成 common.appShell()（title「投資管理」、
+// body 第一個元素是「‹ 家長區」），四段各一張 .card，markup 換成 v2 的 .card／.btn／.field；
+// 收成的 1、2 月自動展開與 ?open=purchase|harvest 深連結原樣沿用。電腦單欄 max-width 760（.narrow）。
 //
 // 這頁自己的模組作用域已經在「已解鎖」的家長區裡（見下方 render() 開頭的解鎖保護），
 // 所以不需要、也沒有 parent.js 那個 ui.parentPin：所有 store 呼叫都不帶 parentPin，
@@ -130,41 +133,58 @@ export function render(ctx) {
   const harvestOpen = ui.harvestManuallyToggled ? isOpen("harvest") : seasonalHarvestOpen;
   const lastHarvest = harvestHistory[0];
 
-  return html`<main class="parent-shell investment-shell" data-kid="${profile.id}" style="--kid-accent: ${profile.accent}">
-      ${raw(common.miniTopbar({ active: "parent", ctx, right: "" }))}
-      <a class="back-home" href="#/parent">‹ 返回家長區</a>
-
-      <section class="investment-layout" id="investments">
-        <section class="investment-form-card is-standalone">
-          <div class="investment-summary">
-            <div><span class="parent-kicker">新增一筆真實買入</span><h2>🌱 爸媽已經買好了嗎？</h2><small>請依實際券商成交結果填寫</small></div>
+  const body = html`<a class="btn btn-ghost parent-back" href="#/parent">‹ 家長區</a>
+      <div class="narrow" id="investments">
+        <section class="card investment-form-card">
+          <span class="kicker">新增一筆真實買入</span>
+          <div class="card-head">
+            <h2 class="card-title"><span aria-hidden="true">🌱</span> 爸媽已經買好了嗎？</h2>
+            ${raw(common.infoTip("請依照券商成交結果填寫；總成本包含手續費，會最容易和真實帳戶對得上。", { align: "right" }))}
           </div>
-          <div class="investment-form-content">
-          <div class="panel-help">${raw(common.infoTip("請依照券商成交結果填寫；總成本包含手續費，會最容易和真實帳戶對得上。", { align: "right" }))}</div>
+          <p class="card-sub">請依實際券商成交結果填寫</p>
 
           <div class="preset-row" aria-label="常用標的">
-            ${activePresets(state).map((preset) => html`<button type="button" data-action="choose-preset" data-symbol="${preset.symbol}" data-name="${preset.name}" data-category="${preset.category}">${preset.symbol}</button>`)}
+            ${activePresets(state).map((preset) => html`<button type="button" class="preset-chip" data-action="choose-preset" data-symbol="${preset.symbol}" data-name="${preset.name}" data-category="${preset.category}">${preset.symbol}</button>`)}
             <span>也可以輸入其他標的</span>
           </div>
 
-          <details class="preset-admin" data-open-key="preset-admin" ${isOpen("preset-admin") ? raw("open") : ""}>
+          <details class="subpanel preset-admin" data-open-key="preset-admin" ${isOpen("preset-admin") ? raw("open") : ""}>
             <summary>調整常用標的</summary>
-            <div class="preset-list">${activePresets(state).map((preset) => html`<div><span><b>${preset.symbol}</b><small>${preset.name} · ${preset.category}</small></span><button type="button" data-action="edit-preset" data-id="${preset.id}">編輯</button><button type="button" data-action="delete-preset" data-id="${preset.id}" data-busy-label="停用中…">停用</button></div>`)}</div>
-            <form data-form="preset"><div class="form-two-columns"><label><span>標的代號</span><input data-draft="preset-symbol" data-uppercase value="${draft("preset-symbol")}" placeholder="例如 VT" required maxlength="12" /></label><label><span>類型</span><select data-draft="preset-category"><option ${draft("preset-category", "ETF") === "ETF" ? raw("selected") : ""}>ETF</option><option ${draft("preset-category", "ETF") === "股票" ? raw("selected") : ""}>股票</option></select></label></div><label><span>顯示名稱</span><input data-draft="preset-name" value="${draft("preset-name")}" placeholder="例如 Vanguard Total World" required maxlength="40" /></label><label><span>排序</span><input type="number" min="0" max="100" data-draft="preset-sort" value="${draft("preset-sort")}" placeholder="數字越小越前面" /></label><button class="primary-button full-width" data-busy-label="儲存中…">${ui.presetId ? "儲存常用標的修改" : "新增常用標的"}</button>${ui.presetId ? html`<button class="cancel-preset" type="button" data-action="cancel-preset-edit">取消編輯</button>` : ""}</form>
+            <div class="subpanel-body">
+              <div class="preset-list">${activePresets(state).map((preset) => html`<div class="parent-row">
+                <div><b>${preset.symbol}</b><small>${preset.name} · ${preset.category}</small></div>
+                <div class="btn-row">
+                  <button type="button" class="btn btn-secondary" data-action="edit-preset" data-id="${preset.id}">編輯</button>
+                  <button type="button" class="btn btn-ghost" data-action="delete-preset" data-id="${preset.id}" data-busy-label="停用中…">停用</button>
+                </div>
+              </div>`)}</div>
+              <form data-form="preset">
+                <div class="field-row">
+                  ${common.field({ label: "標的代號", input: html`<input class="input" data-draft="preset-symbol" data-uppercase value="${draft("preset-symbol")}" placeholder="例如 VT" required maxlength="12" />` })}
+                  ${common.field({ label: "類型", input: html`<select class="select" data-draft="preset-category"><option ${draft("preset-category", "ETF") === "ETF" ? raw("selected") : ""}>ETF</option><option ${draft("preset-category", "ETF") === "股票" ? raw("selected") : ""}>股票</option></select>` })}
+                </div>
+                ${common.field({ label: "顯示名稱", input: html`<input class="input" data-draft="preset-name" value="${draft("preset-name")}" placeholder="例如 Vanguard Total World" required maxlength="40" />` })}
+                ${common.field({ label: "排序", input: html`<input class="input" type="number" min="0" max="100" data-draft="preset-sort" value="${draft("preset-sort")}" placeholder="數字越小越前面" />` })}
+                <div class="form-actions">
+                  <button class="btn btn-primary btn-block" data-busy-label="儲存中…">${ui.presetId ? "儲存常用標的修改" : "新增常用標的"}</button>
+                  ${ui.presetId ? html`<button class="btn btn-ghost btn-block" type="button" data-action="cancel-preset-edit">取消編輯</button>` : ""}
+                </div>
+              </form>
+            </div>
           </details>
 
           <form data-form="purchase">
-            <div class="form-two-columns">
-              <label><span>股票代號</span><input data-draft="purchase-symbol" data-uppercase value="${draft("purchase-symbol", soleHolding ? soleHolding.symbol : "")}" placeholder="例如 00646" required maxlength="12" /></label>
-              <label><span>類型</span><select data-draft="purchase-category"><option ${draft("purchase-category", soleHolding ? soleHolding.category : "ETF") === "ETF" ? raw("selected") : ""}>ETF</option><option ${draft("purchase-category", soleHolding ? soleHolding.category : "ETF") === "股票" ? raw("selected") : ""}>股票</option></select></label>
+            <div class="field-row">
+              ${common.field({ label: "股票代號", input: html`<input class="input" data-draft="purchase-symbol" data-uppercase value="${draft("purchase-symbol", soleHolding ? soleHolding.symbol : "")}" placeholder="例如 00646" required maxlength="12" />` })}
+              ${common.field({ label: "類型", input: html`<select class="select" data-draft="purchase-category"><option ${draft("purchase-category", soleHolding ? soleHolding.category : "ETF") === "ETF" ? raw("selected") : ""}>ETF</option><option ${draft("purchase-category", soleHolding ? soleHolding.category : "ETF") === "股票" ? raw("selected") : ""}>股票</option></select>` })}
             </div>
-            <label><span>標的名稱</span><input data-draft="purchase-name" value="${draft("purchase-name", soleHolding ? soleHolding.name : "")}" placeholder="例如 元大 S&P 500" required maxlength="40" /></label>
-            <div class="form-two-columns">
-              <label><span>實際買入股數</span><input type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="purchase-units" value="${draft("purchase-units")}" placeholder="例如 10" required /></label>
-              <label><span>總成本（含費用）</span><input type="number" inputmode="numeric" min="1" max="${profile.bankBalance}" data-draft="purchase-total-cost" value="${draft("purchase-total-cost")}" placeholder="NT$" required /></label>
+            ${common.field({ label: "標的名稱", input: html`<input class="input" data-draft="purchase-name" value="${draft("purchase-name", soleHolding ? soleHolding.name : "")}" placeholder="例如 元大 S&P 500" required maxlength="40" />` })}
+            <div class="field-row">
+              ${common.field({ label: "實際買入股數", input: html`<input class="input" type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="purchase-units" value="${draft("purchase-units")}" placeholder="例如 10" required />` })}
+              ${common.field({ label: "總成本（含費用）", input: html`<input class="input" type="number" inputmode="numeric" min="1" max="${profile.bankBalance}" data-draft="purchase-total-cost" value="${draft("purchase-total-cost")}" placeholder="NT$" required />` })}
             </div>
-            <label><span>買入日期</span><input type="date" data-draft="purchase-date" value="${draft("purchase-date", taipeiDate())}" required /></label>
-            <label><span>備註（選填）</span><input data-draft="purchase-note" value="${draft("purchase-note")}" placeholder="例如：用 8 月累積的存款買入" maxlength="100" /></label>
+            ${common.field({ label: "買入日期", input: html`<input class="input" type="date" data-draft="purchase-date" value="${draft("purchase-date", taipeiDate())}" required />` })}
+            ${common.field({ label: "備註（選填）", input: html`<input class="input" data-draft="purchase-note" value="${draft("purchase-note")}" placeholder="例如：用 8 月累積的存款買入" maxlength="100" />` })}
 
             <div class="purchase-preview">
               <span>${raw(common.profileAvatar(profile.avatar))}</span>
@@ -174,142 +194,148 @@ export function render(ctx) {
               <input type="checkbox" data-draft="purchase-confirm" ${draftChecked("purchase-confirm") ? raw("checked") : ""} />
               <span>我確認這筆交易已經在真實券商完成</span>
             </label>
-            <button class="primary-button full-width" data-purchase-submit data-busy-label="正在記錄與備份…" ${!purchaseReady ? raw("disabled") : ""}>
-              確認記錄 ${profile.name}的買入
-            </button>
+            <div class="form-actions">
+              <button class="btn btn-primary btn-block" data-purchase-submit data-busy-label="正在記錄與備份…" ${!purchaseReady ? raw("disabled") : ""}>確認記錄 ${profile.name}的買入</button>
+            </div>
             <small class="parent-save-note">${ui.notice}</small>
           </form>
-          </div>
         </section>
 
-        <div class="holding-column">
-          <section class="${soleHolding ? "holding-panel is-single" : "holding-panel"}">
-            <div class="holding-heading"><div><span class="parent-kicker">目前持有</span><h2>${profile.name}的 ETF 小森林</h2></div><b>${holdings.length} 個標的</b></div>
-            <div class="market-quote-actions">
-              <div class="market-auto-label"><b>自動更新</b>${raw(common.infoTip("打開 app 或回到前景時，系統會在背景檢查證交所最新可用收盤價；同一家庭 30 分鐘內不會重複請求。這不是盤中即時報價。", { align: "right" }))}</div>
-              <button type="button" data-action="refresh-quotes" data-busy-label="檢查中…" ${!holdings.length ? raw("disabled") : ""}>
-                重新檢查收盤價
-              </button>
-              ${ui.quoteMeta || latestPriceUpdatedAt ? html`<small>
-                ${ui.quoteMeta?.source ?? "最近行情"} · ${formatDateTime(ui.quoteMeta?.updatedAt ?? latestPriceUpdatedAt)}
-              </small>` : ""}
+        <section class="${soleHolding ? "card holding-panel is-single" : "card holding-panel"}">
+          <div class="card-head">
+            <div><span class="kicker">目前持有</span><h2 class="card-title">${profile.name}的 ETF 小森林</h2></div>
+            <span class="badge">${holdings.length} 個標的</span>
+          </div>
+          <div class="market-quote-actions">
+            <div class="market-auto-label"><b>自動更新</b>${raw(common.infoTip("打開 app 或回到前景時，系統會在背景檢查證交所最新可用收盤價；同一家庭 30 分鐘內不會重複請求。這不是盤中即時報價。", { align: "right" }))}</div>
+            <button type="button" class="btn btn-secondary" data-action="refresh-quotes" data-busy-label="檢查中…" ${!holdings.length ? raw("disabled") : ""}>重新檢查收盤價</button>
+            ${ui.quoteMeta || latestPriceUpdatedAt ? html`<small>${ui.quoteMeta?.source ?? "最近行情"} · ${formatDateTime(ui.quoteMeta?.updatedAt ?? latestPriceUpdatedAt)}</small>` : ""}
+          </div>
+          ${soleHolding ? html`<small class="holding-sole-updated">${soleHoldingUpdatedLabel(soleHolding)}</small>` : ""}
+          ${holdings.length ? holdings.map((holding) => {
+            const gain = holding.marketValue - holding.costBasis;
+            const rate = holding.costBasis ? gain / holding.costBasis * 100 : 0;
+            const marketDraft = draft(`market-${holding.id}`);
+            return html`
+              <div class="holding-record">
+                <article class="holding-card">
+                  <span class="holding-symbol">${holding.symbol}</span>
+                  <div><b>${holding.name}</b><small>${holding.category} · ${holding.units} 股 · ${holding.quoteAsOf ? `${holding.quoteAsOf} 收盤價` : holding.priceUpdatedAt ? `家長更新於 ${formatDate(holding.priceUpdatedAt)}` : "尚未更新市值"}</small></div>
+                  <div class="holding-value"><b>${money(holding.marketValue)}</b><small class="${gain >= 0 ? "is-up" : "is-down"}">${gain >= 0 ? "+" : ""}${rate.toFixed(1)}%</small></div>
+                </article>
+                <div class="market-editor">
+                  <input class="input" type="number" min="0" inputmode="numeric" data-draft="market-${holding.id}" value="${marketDraft}" placeholder="更新市值，目前 ${holding.marketValue}" />
+                  <button type="button" class="btn btn-secondary" data-action="update-market-value" data-id="${holding.id}" data-busy-label="更新中…" ${marketDraft === "" ? raw("disabled") : ""}>記錄今日市值</button>
+                </div>
+              </div>
+            `;
+          }) : html`<div class="empty-holding"><span>${raw(common.profileAvatar(profile.avatar))}</span><b>第一棵投資小樹還在等你</b><small>等爸媽完成第一次真實買入後，就會出現在這裡。</small></div>`}
+          <p class="panel-help">${raw(common.infoTip("按下更新會取得最新可用收盤價；也可以依券商畫面手動記錄今日市值。", { align: "right" }))}</p>
+        </section>
+
+        <section class="card purchase-history">
+          <span class="kicker">最近記錄</span>
+          <h2 class="card-title">爸媽協助買入</h2>
+          ${purchases.length ? purchases.map((item) => html`
+            <div class="${ui.editingPurchaseId === item.id ? "purchase-entry is-editing" : "purchase-entry"}">
+              <div class="parent-row purchase-row">
+                <div><b>${item.symbol} · ${item.name}</b><small>${item.purchaseDate} · ${item.units} 股${item.note ? ` · ${item.note}` : ""}</small></div>
+                <div class="purchase-row-tail">
+                  <strong>${money(item.totalCost)}</strong>
+                  <div class="btn-row">
+                    <button type="button" class="btn btn-secondary" data-action="${ui.editingPurchaseId === item.id ? "close-purchase-editor" : "edit-purchase"}" data-id="${item.id}" data-busy-lock>${ui.editingPurchaseId === item.id ? "收起" : "編輯"}</button>
+                    <button type="button" class="btn btn-danger" data-action="void-purchase" data-id="${item.id}" data-busy-label="撤銷中…" data-busy-lock>撤銷</button>
+                  </div>
+                </div>
+              </div>
+              ${ui.editingPurchaseId === item.id ? html`<form class="purchase-correction-form" data-form="purchase-correct" data-id="${item.id}">
+                <div class="field-row">
+                  ${common.field({ label: "股數", input: html`<input class="input" type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="edit-purchase-units" value="${draft("edit-purchase-units")}" required />` })}
+                  ${common.field({ label: "總成本", input: html`<input class="input" type="number" inputmode="numeric" min="1" step="1" data-draft="edit-purchase-cost" value="${draft("edit-purchase-cost")}" required />` })}
+                  ${common.field({ label: "買入日期", input: html`<input class="input" type="date" data-draft="edit-purchase-date" value="${draft("edit-purchase-date")}" required />` })}
+                  ${common.field({ label: "備註", input: html`<input class="input" data-draft="edit-purchase-note" value="${draft("edit-purchase-note")}" maxlength="100" placeholder="選填" />` })}
+                </div>
+                <div class="form-actions">
+                  <button type="button" class="btn btn-ghost" data-action="close-purchase-editor">取消</button>
+                  <button type="submit" class="btn btn-primary" data-busy-label="校正中…">儲存更正</button>
+                </div>
+              </form>` : ""}
             </div>
-            ${soleHolding ? html`<small class="holding-sole-updated">${soleHoldingUpdatedLabel(soleHolding)}</small>` : ""}
-            ${holdings.length ? holdings.map((holding) => {
-              const gain = holding.marketValue - holding.costBasis;
-              const rate = holding.costBasis ? gain / holding.costBasis * 100 : 0;
-              const marketDraft = draft(`market-${holding.id}`);
-              return html`
-                <div class="holding-record">
-                  <article class="holding-card">
-                    <span class="holding-symbol">${holding.symbol}</span>
-                    <div><b>${holding.name}</b><small>${holding.category} · ${holding.units} 股 · ${holding.quoteAsOf ? `${holding.quoteAsOf} 收盤價` : holding.priceUpdatedAt ? `家長更新於 ${formatDate(holding.priceUpdatedAt)}` : "尚未更新市值"}</small></div>
-                    <div class="holding-value"><b>${money(holding.marketValue)}</b><small class="${gain >= 0 ? "is-up" : "is-down"}">${gain >= 0 ? "+" : ""}${rate.toFixed(1)}%</small></div>
-                  </article>
-                  <div class="market-editor"><input type="number" min="0" inputmode="numeric" data-draft="market-${holding.id}" value="${marketDraft}" placeholder="更新市值，目前 ${holding.marketValue}" /><button data-action="update-market-value" data-id="${holding.id}" data-busy-label="更新中…" ${marketDraft === "" ? raw("disabled") : ""}>記錄今日市值</button></div>
-                </div>
-              `;
-            }) : html`<div class="empty-holding"><span>${raw(common.profileAvatar(profile.avatar))}</span><b>第一棵投資小樹還在等你</b><small>等爸媽完成第一次真實買入後，就會出現在這裡。</small></div>`}
-            <div class="panel-help">${raw(common.infoTip("按下更新會取得最新可用收盤價；也可以依券商畫面手動記錄今日市值。", { align: "right" }))}</div>
-          </section>
+          `) : html`<p class="empty-history">新記錄會自動留在這裡。</p>`}
+        </section>
 
-          <section class="purchase-history">
-            <div class="holding-heading"><div><span class="parent-kicker">最近記錄</span><h2>爸媽協助買入</h2></div></div>
-            ${purchases.length ? purchases.map((item) => html`
-              <div class="${ui.editingPurchaseId === item.id ? "purchase-entry is-editing" : "purchase-entry"}">
-                <div class="purchase-row">
-                  <span>↗</span>
-                  <div><b>${item.symbol} · ${item.name}</b><small>${item.purchaseDate} · ${item.units} 股${item.note ? ` · ${item.note}` : ""}</small></div>
-                  <div class="purchase-row-tail">
-                    <strong>${money(item.totalCost)}</strong>
-                    <div class="purchase-history-actions">
-                      <button type="button" data-action="${ui.editingPurchaseId === item.id ? "close-purchase-editor" : "edit-purchase"}" data-id="${item.id}" data-busy-lock>${ui.editingPurchaseId === item.id ? "收起" : "編輯"}</button>
-                      <button type="button" class="is-danger" data-action="void-purchase" data-id="${item.id}" data-busy-label="撤銷中…" data-busy-lock>撤銷</button>
-                    </div>
-                  </div>
-                </div>
-                ${ui.editingPurchaseId === item.id ? html`<form class="purchase-correction-form" data-form="purchase-correct" data-id="${item.id}">
-                  <div class="purchase-correction-grid">
-                    <label><span>股數</span><input type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="edit-purchase-units" value="${draft("edit-purchase-units")}" required /></label>
-                    <label><span>總成本</span><input type="number" inputmode="numeric" min="1" step="1" data-draft="edit-purchase-cost" value="${draft("edit-purchase-cost")}" required /></label>
-                    <label><span>買入日期</span><input type="date" data-draft="edit-purchase-date" value="${draft("edit-purchase-date")}" required /></label>
-                    <label><span>備註</span><input data-draft="edit-purchase-note" value="${draft("edit-purchase-note")}" maxlength="100" placeholder="選填" /></label>
-                  </div>
-                  <div class="purchase-correction-actions">
-                    <button type="button" data-action="close-purchase-editor">取消</button>
-                    <button type="submit" class="is-primary" data-busy-label="校正中…">儲存更正</button>
-                  </div>
-                </form>` : ""}
+        <details class="card harvest-panel" id="harvest" data-open-key="harvest" ${harvestOpen ? raw("open") : ""}>
+          <summary class="harvest-summary">
+            <div>
+              <span class="kicker">一年一次的選擇</span>
+              <b><span aria-hidden="true">🧧</span> 過年投資收成日</b>
+              <small>${currentYear} 年最多 ${money(maxHarvest)} · ${harvestedThisYear ? "今年已使用" : "今年尚未使用"} · ${lastHarvest ? `上次收成：${lastHarvest.saleDate}` : "今年還沒收成"}</small>
+            </div>
+            <span class="harvest-summary-action">
+              <span class="badge">最多 5%</span>
+              <small class="harvest-closed-label">查看或操作 ＋</small>
+              <small class="harvest-open-label">收起細節 −</small>
+            </span>
+          </summary>
+          <div class="harvest-content">
+            <p class="panel-help">${raw(common.infoTip("可以選擇完全不提領。若要使用，爸媽先在券商實際賣出，再把淨入帳金額放回撲滿；短期夢想罐的進度會自動更新。"))}</p>
+            <div class="harvest-limit"><span>${raw(common.profileAvatar(profile.avatar))}</span><div><small>${currentYear} 年最高收成額度</small><strong>${money(maxHarvest)}</strong></div><b>${harvestedThisYear ? "今年已使用" : "今年尚未使用"}</b></div>
+            <form data-form="harvest">
+              ${soleHolding
+                ? html`<div class="harvest-sole-holding"><span>實際賣出的標的</span><b>${soleHolding.symbol} · ${soleHolding.name}（${soleHolding.units} 股）</b><input type="hidden" data-draft="harvest-holding" value="${soleHolding.id}" /></div>`
+                : common.field({ label: "實際賣出的標的", input: html`<select class="select" data-draft="harvest-holding" required>${holdings.map((holding) => html`<option value="${holding.id}" ${holding.id === ui.harvestHoldingId ? raw("selected") : ""}>${holding.symbol} · ${holding.name}（${holding.units} 股）</option>`)}</select>` })}
+              <div class="field-row">
+                ${common.field({ label: "實際賣出股數", input: html`<input class="input" type="number" min="0.0001" step="0.0001" data-draft="harvest-sold-units" value="${draft("harvest-sold-units")}" required />` })}
+                ${common.field({ label: "券商淨入帳", input: html`<input class="input" type="number" min="1" max="${maxHarvest}" data-draft="harvest-net-proceeds" value="${draft("harvest-net-proceeds")}" required />` })}
               </div>
-            `) : html`<p class="empty-history">新記錄會自動留在這裡。</p>`}
-          </section>
-
-          <details class="harvest-panel" id="harvest" data-open-key="harvest" ${harvestOpen ? raw("open") : ""}>
-            <summary class="harvest-summary">
-              <div>
-                <span class="parent-kicker">一年一次的選擇</span>
-                <h2>🧧 過年投資收成日</h2>
-                <small>${currentYear} 年最多 ${money(maxHarvest)} · ${harvestedThisYear ? "今年已使用" : "今年尚未使用"} · ${lastHarvest ? `上次收成：${lastHarvest.saleDate}` : "今年還沒收成"}</small>
+              ${common.field({ label: "這次收成要對應哪個短期夢想？", input: html`<select class="select" data-draft="harvest-dream"><option value="" ${ui.destinationDreamId === "" ? raw("selected") : ""}>不指定（仍放回撲滿）</option>${shortDreams.map((jar) => html`<option value="${jar.id}" ${jar.id === ui.destinationDreamId ? raw("selected") : ""}>短期夢想罐：${jar.title}</option>`)}</select>` })}
+              ${common.field({ label: "實際賣出日期", input: html`<input class="input" type="date" data-draft="harvest-sale-date" value="${draft("harvest-sale-date", taipeiDate())}" required />` })}
+              ${common.field({ label: "備註（選填）", input: html`<input class="input" data-draft="harvest-note" value="${draft("harvest-note")}" placeholder="例如：今年選擇收成 3%" maxlength="100" />` })}
+              <label class="confirm-check"><input type="checkbox" data-draft="harvest-confirm" ${draftChecked("harvest-confirm") ? raw("checked") : ""} /><span>我確認這筆股票已在真實券商賣出</span></label>
+              <div class="form-actions">
+                <button class="btn btn-primary btn-block" data-harvest-submit data-busy-label="記錄收成中…" ${harvestedThisYear || !holdings.length || !harvestReady ? raw("disabled") : ""}>${harvestedThisYear ? "今年已完成收成" : "確認過年收成"}</button>
               </div>
-              <span class="harvest-summary-action">
-                <b>最多 5%</b>
-                <small class="harvest-closed-label">查看或操作 ＋</small>
-                <small class="harvest-open-label">收起細節 −</small>
-              </span>
-            </summary>
-            <div class="harvest-content">
-              <div class="panel-help">${raw(common.infoTip("可以選擇完全不提領。若要使用，爸媽先在券商實際賣出，再把淨入帳金額放回撲滿；短期夢想罐的進度會自動更新。"))}</div>
-              <div class="harvest-limit"><span>${raw(common.profileAvatar(profile.avatar))}</span><div><small>${currentYear} 年最高收成額度</small><strong>${money(maxHarvest)}</strong></div><b>${harvestedThisYear ? "今年已使用" : "今年尚未使用"}</b></div>
-              <form data-form="harvest">
-                ${soleHolding
-                  ? html`<div class="harvest-sole-holding"><span>實際賣出的標的</span><b>${soleHolding.symbol} · ${soleHolding.name}（${soleHolding.units} 股）</b><input type="hidden" data-draft="harvest-holding" value="${soleHolding.id}" /></div>`
-                  : html`<label>實際賣出的標的<select data-draft="harvest-holding" required>${holdings.map((holding) => html`<option value="${holding.id}" ${holding.id === ui.harvestHoldingId ? raw("selected") : ""}>${holding.symbol} · ${holding.name}（${holding.units} 股）</option>`)}</select></label>`}
-                <div class="form-two-columns"><label>實際賣出股數<input type="number" min="0.0001" step="0.0001" data-draft="harvest-sold-units" value="${draft("harvest-sold-units")}" required /></label><label>券商淨入帳<input type="number" min="1" max="${maxHarvest}" data-draft="harvest-net-proceeds" value="${draft("harvest-net-proceeds")}" required /></label></div>
-                <label>這次收成要對應哪個短期夢想？<select data-draft="harvest-dream"><option value="" ${ui.destinationDreamId === "" ? raw("selected") : ""}>不指定（仍放回撲滿）</option>${shortDreams.map((jar) => html`<option value="${jar.id}" ${jar.id === ui.destinationDreamId ? raw("selected") : ""}>短期夢想罐：${jar.title}</option>`)}</select></label>
-                <label>實際賣出日期<input type="date" data-draft="harvest-sale-date" value="${draft("harvest-sale-date", taipeiDate())}" required /></label>
-                <label>備註（選填）<input data-draft="harvest-note" value="${draft("harvest-note")}" placeholder="例如：今年選擇收成 3%" maxlength="100" /></label>
-                <label class="confirm-check"><input type="checkbox" data-draft="harvest-confirm" ${draftChecked("harvest-confirm") ? raw("checked") : ""} /><span>我確認這筆股票已在真實券商賣出</span></label>
-                <button class="primary-button full-width" data-harvest-submit data-busy-label="記錄收成中…" ${harvestedThisYear || !holdings.length || !harvestReady ? raw("disabled") : ""}>${harvestedThisYear ? "今年已完成收成" : "確認過年收成"}</button>
-              </form>
-              <details class="harvest-history-panel" data-open-key="harvest-history" ${isOpen("harvest-history") ? raw("open") : ""}>
-                <summary><span>過年收成歷史</span><b>${harvestHistory.length} 筆 ＋</b></summary>
-                <div class="harvest-history-list">
-                  ${harvestHistory.length ? harvestHistory.map((item) => {
-                    const holding = state.holdings.find((candidate) => candidate.id === item.holdingId);
-                    const destination = state.dreamJars.find((candidate) => candidate.id === item.destinationDreamId);
-                    const destinationOptions = destination && !shortDreams.some((candidate) => candidate.id === destination.id)
-                      ? [destination, ...shortDreams]
-                      : shortDreams;
-                    const isEditing = ui.editingHarvestId === item.id;
-                    return html`<article class="${isEditing ? "harvest-history-entry is-editing" : "harvest-history-entry"}">
-                      <div class="harvest-history-row">
-                        <span aria-hidden="true">福</span>
-                        <div><strong>${item.year} 年 · ${money(item.netProceeds)}</strong><small>${item.saleDate} · ${holding?.symbol ?? "歷史標的"} · ${item.soldUnits} 股${destination ? ` · ${destination.title}` : ""}</small></div>
-                        <div class="harvest-history-actions">
-                          <button type="button" data-action="${isEditing ? "close-harvest-editor" : "edit-harvest"}" data-id="${item.id}" data-busy-lock>${isEditing ? "收起" : "編輯"}</button>
-                          <button type="button" class="is-danger" data-action="void-harvest" data-id="${item.id}" data-busy-label="撤銷中…" data-busy-lock>撤銷</button>
-                        </div>
+            </form>
+            <details class="subpanel harvest-history-panel" data-open-key="harvest-history" ${isOpen("harvest-history") ? raw("open") : ""}>
+              <summary><span>過年收成歷史</span><b>${harvestHistory.length} 筆</b></summary>
+              <div class="subpanel-body harvest-history-list">
+                ${harvestHistory.length ? harvestHistory.map((item) => {
+                  const holding = state.holdings.find((candidate) => candidate.id === item.holdingId);
+                  const destination = state.dreamJars.find((candidate) => candidate.id === item.destinationDreamId);
+                  const destinationOptions = destination && !shortDreams.some((candidate) => candidate.id === destination.id)
+                    ? [destination, ...shortDreams]
+                    : shortDreams;
+                  const isEditing = ui.editingHarvestId === item.id;
+                  return html`<article class="${isEditing ? "harvest-history-entry is-editing" : "harvest-history-entry"}">
+                    <div class="parent-row">
+                      <div><b>${item.year} 年 · ${money(item.netProceeds)}</b><small>${item.saleDate} · ${holding?.symbol ?? "歷史標的"} · ${item.soldUnits} 股${destination ? ` · ${destination.title}` : ""}</small></div>
+                      <div class="btn-row">
+                        <button type="button" class="btn btn-secondary" data-action="${isEditing ? "close-harvest-editor" : "edit-harvest"}" data-id="${item.id}" data-busy-lock>${isEditing ? "收起" : "編輯"}</button>
+                        <button type="button" class="btn btn-danger" data-action="void-harvest" data-id="${item.id}" data-busy-label="撤銷中…" data-busy-lock>撤銷</button>
                       </div>
-                      ${isEditing ? html`<form class="harvest-correction-form" data-form="harvest-correct" data-id="${item.id}">
-                        <div class="harvest-correction-grid">
-                          <label><span>實際賣出股數</span><input type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="edit-harvest-sold-units" value="${draft("edit-harvest-sold-units")}" required /></label>
-                          <label><span>券商淨入帳</span><input type="number" inputmode="numeric" min="1" step="1" data-draft="edit-harvest-net-proceeds" value="${draft("edit-harvest-net-proceeds")}" required /></label>
-                          <label><span>短期夢想罐</span><select data-draft="edit-harvest-dream"><option value="" ${draft("edit-harvest-dream") === "" ? raw("selected") : ""}>不指定（仍放回撲滿）</option>${destinationOptions.map((jar) => html`<option value="${jar.id}" ${draft("edit-harvest-dream") === jar.id ? raw("selected") : ""}>${jar.title}${jar.status !== "active" ? "（已完成或排隊中）" : ""}</option>`)}</select></label>
-                          <label><span>實際賣出日期</span><input type="date" data-draft="edit-harvest-sale-date" value="${draft("edit-harvest-sale-date")}" required /></label>
-                          <label class="harvest-note-field"><span>備註</span><input data-draft="edit-harvest-note" value="${draft("edit-harvest-note")}" maxlength="100" placeholder="選填" /></label>
-                        </div>
-                        <div class="harvest-correction-actions"><button type="button" data-action="close-harvest-editor">取消</button><button type="submit" class="is-primary" data-busy-label="校正中…">儲存更正</button></div>
-                      </form>` : ""}
-                    </article>`;
-                  }) : html`<p class="empty-history">尚未有過年收成紀錄。</p>`}
-                </div>
-              </details>
-            </div>
-          </details>
-        </div>
-      </section>
-      ${raw(common.primaryNav("parent"))}
-    </main>`;
+                    </div>
+                    ${isEditing ? html`<form class="harvest-correction-form" data-form="harvest-correct" data-id="${item.id}">
+                      <div class="field-row">
+                        ${common.field({ label: "實際賣出股數", input: html`<input class="input" type="number" inputmode="decimal" min="0.0001" step="0.0001" data-draft="edit-harvest-sold-units" value="${draft("edit-harvest-sold-units")}" required />` })}
+                        ${common.field({ label: "券商淨入帳", input: html`<input class="input" type="number" inputmode="numeric" min="1" step="1" data-draft="edit-harvest-net-proceeds" value="${draft("edit-harvest-net-proceeds")}" required />` })}
+                        ${common.field({ label: "短期夢想罐", input: html`<select class="select" data-draft="edit-harvest-dream"><option value="" ${draft("edit-harvest-dream") === "" ? raw("selected") : ""}>不指定（仍放回撲滿）</option>${destinationOptions.map((jar) => html`<option value="${jar.id}" ${draft("edit-harvest-dream") === jar.id ? raw("selected") : ""}>${jar.title}${jar.status !== "active" ? "（已完成或排隊中）" : ""}</option>`)}</select>` })}
+                        ${common.field({ label: "實際賣出日期", input: html`<input class="input" type="date" data-draft="edit-harvest-sale-date" value="${draft("edit-harvest-sale-date")}" required />` })}
+                        ${common.field({ label: "備註", input: html`<input class="input" data-draft="edit-harvest-note" value="${draft("edit-harvest-note")}" maxlength="100" placeholder="選填" />` })}
+                      </div>
+                      <div class="form-actions">
+                        <button type="button" class="btn btn-ghost" data-action="close-harvest-editor">取消</button>
+                        <button type="submit" class="btn btn-primary" data-busy-label="校正中…">儲存更正</button>
+                      </div>
+                    </form>` : ""}
+                  </article>`;
+                }) : html`<p class="empty-history">尚未有過年收成紀錄。</p>`}
+              </div>
+            </details>
+          </div>
+        </details>
+      </div>`;
+
+  return common.appShell({ page: "parent", title: "投資管理", ctx, right: "", body });
 }
 
 // ---------- 忙碌狀態與錯誤（照 parent.js 原本的模式） ----------

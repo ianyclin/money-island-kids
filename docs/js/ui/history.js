@@ -1,18 +1,15 @@
-// 小小理財島 PWA：所有紀錄（移植自 app/history/page.tsx）。
-// DOM、class、aria、文案照原頁；資料改由 store.getActivitiesPage 同步取得，401 導向刪除。
-// 手機版重新設計（notes/mobile-redesign/spec.md 第 2.3、9 節）：頂欄改用 common.miniTopbar，
-// 家長解鎖收成情境式 icon-lock-btn，點擊開本檔原有的 lockPanel(pinStatus) 表單片段包進
-// common.openModal()（規格 2.3 節「直接沿用」，不改標題／提示句／按鈕文字），套用 1.2 節給的
-// lockModalOpen／lockPin／lockError／lockModalKind 存活骨架，篩選列沿用共用層修好的 650px 斷點，
-// 列表改成 groupByMonth 純前端分組＋sticky 月份標頭，編輯／刪除鈕只在 unlocked 時才產出 DOM，
-// PAGE_SIZE 40→16。
-import { html, money, formatMonthLabel, errorMessage } from "../util.js";
+// 小小理財島 PWA：所有紀錄（規格 5.3）。
+// 版面重寫成 v2 的殼：頁首下孩子切換、sticky 篩選列、sticky 月份標頭、.record 一列。
+// 資料與家長功能的邏輯原樣搬：store.getActivitiesPage 分頁、groupByMonth 前端分組、搜尋 debounce、
+// 編輯 modal（含 editDraft 的重繪存活）、刪除確認、可刪除判斷；解鎖改用 common.createLockModal。
+
+import { html, raw, money, formatMonthLabel, errorMessage } from "../util.js";
 import * as common from "./common.js";
 import * as store from "../store.js";
 import * as appState from "../state.js";
 import * as pin from "../pin.js";
 
-const PAGE_SIZE = 16; // 規格 2.3 第 7 項：40→16，「載入更多」更快出現
+const PAGE_SIZE = 20; // 規格 5.3：「載入更多（已顯示 N / M）」每次 20 筆
 const FOCUSABLE = "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], summary, [tabindex]:not([tabindex='-1'])";
 const DELETABLE_APP_KINDS = ["allowance", "spend", "reward", "dream", "savings-transfer"];
 
@@ -28,16 +25,21 @@ let lastProfileId = "";
 let searchTimer = 0;
 let pageActivities = [];
 let currentCtx = null;
+let menuId = "";        // 手機「⋯」選單目前對著哪一筆（重繪後 mount() 補開）
+let menuNode = null;
 
-// 情境式解鎖（規格 1.2／2.3／3.3／第 9 節「頂欄」列）：module-scope 存活骨架，重繪後
-// mount() 裡的 mountCheck 邏輯會補開並回填欄位，不會被無聲清空。
-let lockModalOpen = false;   // 是否「應該」開著（不是 DOM 目前開不開）
-let lockPin = "";            // 已輸入但還沒送出的操作碼，重繪後要回填
-let lockError = "";
-let lockModalKind = "";      // "" | "lock"，跟 common.isModalOpen() 分開判斷，理由同 home.js
+// ---------- 情境式解鎖 modal（規格 3.3：頁首右插槽的 32px 鎖鈕） ----------
+const lockModal = common.createLockModal({
+  getPinStatus: () => (currentCtx ? (currentCtx.pinStatus || pin.status()) : "locked"),
+  onUnlocked: () => { if (currentCtx) currentCtx.refresh(); },
+  parentHref: "#/parent",
+});
 
-// ---------- 移植自原檔的三支純函式 ----------
-// 原檔的 kindName 對照表已經搬到 state.js（KIND_NAMES／kindName），這裡直接用。
+function frag(value) {
+  return raw(String(value));
+}
+
+// ---------- 移植自原檔的純函式 ----------
 const kindName = appState.kindName;
 
 function historyIcon(value) {
@@ -50,15 +52,18 @@ function historyIcon(value) {
   return "+";
 }
 
-function deltaText(item) {
-  const parts = [];
-  if (item.spendDelta) parts.push(`撲滿 ${item.spendDelta > 0 ? "+" : ""}${item.spendDelta}`);
-  if (item.bankDelta) parts.push(`爸媽銀行 ${item.bankDelta > 0 ? "+" : ""}${item.bankDelta}`);
-  if (item.marketDelta) parts.push(`ETF 小森林 ${item.marketDelta > 0 ? "+" : ""}${item.marketDelta}`);
-  return parts.join(" · ") || "沒有改變餘額";
+// 規格 5.3 的日期寫法「9/6」：entryDate 是 YYYY-MM-DD，直接取月日。
+function shortDate(entryDate) {
+  const parts = String(entryDate).slice(0, 10).split("-");
+  return parts.length === 3 ? `${Number(parts[1])}/${Number(parts[2])}` : String(entryDate);
 }
 
-// 規格 3.4：純前端依 entryDate 年月分組，不動 store.getActivitiesPage。
+// 規格 5.3：正數綠。金額欄本身沒有正負號，用三個錢包的淨變化判斷這一筆是進來還是出去。
+function netDelta(item) {
+  return item.spendDelta + item.bankDelta + item.marketDelta;
+}
+
+// 純前端依 entryDate 年月分組，不動 store.getActivitiesPage。
 function groupByMonth(activities) {
   const groups = [];
   let currentKey = "";
@@ -109,38 +114,59 @@ function isDeletable(item) {
     || (item.source === "parent" && item.kind === "piggy-adjustment");
 }
 
+// 孩子切換列的小字：各自的總筆數（不跟著搜尋條件變）。
+function countOf(state, profileId) {
+  return state.activities.filter((item) => item.profileId === profileId).length;
+}
+
 // ---------- 繪製 ----------
-function profileButtons(profiles, profile, total) {
-  return profiles.map((item) => {
-    const active = item.id === profile.id;
-    return html`<button aria-pressed="${active ? "true" : "false"}" class="${active ? "parent-profile is-active" : "parent-profile"}" data-choose-profile="${item.id}" style="--profile-color: ${item.accent}"><span>${common.profileAvatar(item.avatar)}</span><b>${item.name}</b><small>${active ? `${total} 筆紀錄` : "選擇查看"}</small></button>`;
-  });
+function filters(kinds) {
+  const options = kinds.map((item) => html`<option value="${item}"${kind === item ? raw(" selected") : ""}>${kindName(item)}</option>`);
+  return html`<div class="filters">
+      <input class="input" type="search" data-history-search value="${query}" placeholder="名稱、備註或日期" aria-label="搜尋紀錄">
+      <select class="select" data-history-kind aria-label="紀錄類型"><option value="all"${kind === "all" ? raw(" selected") : ""}>全部類型</option>${options}</select>
+    </div>`;
 }
 
-function controls(kinds) {
-  const options = kinds.map((item) => html`<option value="${item}"${kind === item ? " selected" : ""}>${kindName(item)}</option>`);
-  return html`<aside class="history-controls"><h2>篩選紀錄</h2><label>搜尋<input data-history-search value="${query}" placeholder="名稱、備註或日期" /></label><label>紀錄類型<select data-history-kind><option value="all"${kind === "all" ? " selected" : ""}>全部類型</option>${options}</select></label>${formError ? html`<p class="form-error" role="alert">${formError}</p>` : ""}</aside>`;
-}
-
-// 規格 2.3 第 6 項：編輯／刪除鈕只在 unlocked 時才產出這段 DOM（不是渲染出來再 disabled）。
-function activityRow(item, pinStatus) {
-  const unlocked = pinStatus === "unlocked";
+// 編輯／刪除鈕只在 unlocked 時才產出 DOM（不是渲染出來再 disabled）。
+// 手機一顆「⋯」開 modal 選；≥1100 由 history.css 換成直接顯示兩顆 ghost。
+function rowActions(item) {
   const deletable = isDeletable(item);
   const deleteHelp = deletable ? "刪除並撤銷餘額變化" : "請到對應家長功能調整";
-  const actions = unlocked
-    ? html`<div class="history-actions"><button title="編輯紀錄說明" data-action="edit" data-id="${item.id}">編輯</button><button class="delete-record"${deletable ? "" : " disabled"} title="${deleteHelp}" aria-label="${`刪除「${item.label}」：${deleteHelp}`}" data-action="delete" data-id="${item.id}">刪除</button></div>`
-    : "";
-  return html`<article class="history-row"><span class="timeline-dot kind-${item.kind}">${historyIcon(item.kind)}</span><div><b>${item.label}</b><small>${item.entryDate} · ${kindName(item.kind)} · ${item.note || "沒有備註"}</small><i>${deltaText(item)}</i></div><strong>${item.amount ? money(item.amount) : "—"}</strong>${actions}</article>`;
+  return html`<button type="button" class="btn-icon record-menu" data-action="row-menu" data-id="${item.id}" aria-label="${`「${item.label}」的編輯與刪除`}">⋯</button>
+        <div class="record-actions">
+          <button type="button" class="btn btn-ghost" title="編輯紀錄說明" data-action="edit" data-id="${item.id}">編輯</button>
+          <button type="button" class="btn btn-ghost"${deletable ? "" : raw(" disabled")} title="${deleteHelp}" aria-label="${`刪除「${item.label}」：${deleteHelp}`}" data-action="delete" data-id="${item.id}">刪除</button>
+        </div>`;
+}
+
+// 這一行是 app 的核心教學（錢有不同任務）：每一筆錢分別進了哪個錢包。從舊版原樣搬回。
+function deltaText(item) {
+  const parts = [];
+  if (item.spendDelta) parts.push(`撲滿 ${item.spendDelta > 0 ? "+" : ""}${item.spendDelta}`);
+  if (item.bankDelta) parts.push(`爸媽銀行 ${item.bankDelta > 0 ? "+" : ""}${item.bankDelta}`);
+  if (item.marketDelta) parts.push(`ETF 小森林 ${item.marketDelta > 0 ? "+" : ""}${item.marketDelta}`);
+  return parts.join(" · ") || "沒有改變餘額";
+}
+
+function activityRow(item, pinStatus) {
+  const unlocked = pinStatus === "unlocked";
+  return html`<article class="record">
+        <span class="timeline-dot kind-${item.kind}" aria-hidden="true">${historyIcon(item.kind)}</span>
+        <div><b>${item.label}</b><small>${shortDate(item.entryDate)} · ${kindName(item.kind)} · ${item.note || "沒有備註"}</small><i class="record-delta">${deltaText(item)}</i></div>
+        <strong class="${netDelta(item) > 0 ? "is-positive" : ""}">${item.amount ? money(item.amount) : "—"}</strong>
+        ${unlocked ? rowActions(item) : ""}
+      </article>`;
 }
 
 function listSection(page, pinStatus) {
   const groups = groupByMonth(page.activities);
-  const rows = groups.map((group) => html`<h3 class="history-month-header">${formatMonthLabel(group.key)}</h3>${group.items.map((item) => activityRow(item, pinStatus))}`);
-  const empty = page.activities.length ? "" : html`<p class="empty-history">沒有符合條件的紀錄。</p>`;
+  const rows = groups.map((group) => html`<h2 class="month-head">${formatMonthLabel(group.key)}</h2>${group.items.map((item) => activityRow(item, pinStatus))}`);
+  const empty = page.activities.length ? "" : html`<p class="empty">沒有符合條件的紀錄。</p>`;
   const more = page.nextOffset !== null
-    ? html`<button class="load-more-button" type="button" data-action="load-more">${`載入更多（已顯示 ${page.activities.length}／${page.total}）`}</button>`
+    ? html`<button type="button" class="btn btn-secondary btn-block load-more-button" data-action="load-more">${`載入更多（已顯示 ${page.activities.length} / ${page.total}）`}</button>`
     : "";
-  return html`<div class="history-heading"><div><span class="parent-kicker">符合條件</span><h2>${page.total} 筆紀錄</h2></div>${common.infoTip("先解鎖家長編輯即可修改說明。只有能安全撤銷餘額變化的紀錄可在這裡刪除；持股、專案與匯入資料請到對應家長功能調整。", { label: "編輯與刪除說明" })}</div>${listError ? html`<p class="form-error" role="alert">${listError}</p>` : ""}${rows}${empty}${more}`;
+  return html`<div class="history-list">${listError ? html`<p class="form-error" role="alert">${listError}</p>` : ""}<div class="record-list">${rows}</div>${empty}${more}</div>`;
 }
 
 export function render(ctx) {
@@ -154,7 +180,16 @@ export function render(ctx) {
   const pinStatus = ctx.pinStatus || pin.status();
   const profiles = ctx.profiles || ctx.state.profiles || [];
   const page = readPage(profile.id);
-  return html`<main class="history-shell" data-kid="${profile.id}" style="--kid-accent: ${profile.accent}">${common.miniTopbar({ active: "history", ctx, right: common.lockIconButton({ pinStatus }) })}<section class="history-hero"><h1><span class="heading-avatar">${common.profileAvatar(profile.avatar)}</span>${profile.name}的錢，<em>每一步都有故事。</em></h1></section><section class="parent-profile-row history-profiles">${profileButtons(profiles, profile, page.total)}</section><section class="history-layout">${controls(page.kinds)}<section class="history-list">${listSection(page, pinStatus)}</section></section>${common.primaryNav("history")}</main>`;
+  const body = html`${frag(common.profileChips(profiles, profile.id, (item) => `${countOf(ctx.state, item.id)} 筆`))}
+      ${filters(page.kinds)}
+      ${listSection(page, pinStatus)}`;
+  return common.appShell({
+    page: "history",
+    title: `${profile.name}的紀錄`,
+    ctx,
+    right: common.lockIconButton({ pinStatus }),
+    body,
+  });
 }
 
 // ---------- 局部更新（不整頁重繪，才不會把使用者踢出搜尋框） ----------
@@ -164,11 +199,9 @@ function syncList({ focusLoadMore = false } = {}) {
   if (!ctx || !ctx.profile || !section) return;
   const pinStatus = ctx.pinStatus || pin.status();
   const page = readPage(ctx.profile.id);
-  section.innerHTML = String(listSection(page, pinStatus));
-  const activeSubtitle = document.querySelector(".history-profiles .parent-profile.is-active small");
-  if (activeSubtitle) activeSubtitle.textContent = `${page.total} 筆紀錄`;
+  section.outerHTML = String(listSection(page, pinStatus));
   if (focusLoadMore) {
-    const button = section.querySelector(".load-more-button");
+    const button = document.querySelector(".history-list .load-more-button");
     if (button) button.focus();
   }
 }
@@ -195,89 +228,52 @@ function syncErrorNode(host, message, before) {
   }
 }
 
-// 原頁的 error 同時出現在側欄與編輯視窗；這裡兩處一起更新。
+// 錯誤畫在開著的編輯視窗裡；沒有視窗（例如列上直接刪除）時走吐司。
 function setFormError(message) {
   formError = message;
-  syncErrorNode(document.querySelector(".history-controls"), message, null);
   const form = document.querySelector("#modal-root form");
-  if (form) syncErrorNode(form, message, form.querySelector(".primary-button"));
-}
-
-// ---------- 情境式解鎖 modal ----------
-// 規格 2.3 節：「history.js 已有 lockPanel(pinStatus) 函式，直接沿用其表單片段包進
-// openModal()」——標題／提示句／按鈕文字整段照抄原檔（曾經內嵌在 .history-controls 側欄
-// 裡的版本），只新增 id 供 aria-labelledby，以及第 9 節新規定的「前往家長區 →」連結
-// （原本沒有的新內容，不是文案被改寫）。
-function lockPanel(pinStatus) {
-  const heading = pinStatus === "unlocked" ? "家長編輯已解鎖" : pinStatus === "setup" ? "第一次設定家長碼" : "家長編輯已上鎖";
-  const form = pinStatus === "unlocked" ? "" : html`<form data-history-pin-form><label class="sr-only" for="history-parent-pin">家長操作碼</label><input id="history-parent-pin" aria-describedby="history-pin-help" type="password" inputmode="numeric" pattern="[0-9]{4,8}" value="${lockPin}" placeholder="4–8 位數字" required /><span class="sr-only" id="history-pin-help">輸入四到八位數字，解鎖編輯與可撤銷紀錄的刪除功能。</span><button>解鎖</button></form>`;
-  return html`<div class="${pinStatus === "unlocked" ? "history-lock is-unlocked" : "history-lock"}"><div class="history-lock-heading"><span aria-hidden="true">${pinStatus === "unlocked" ? "✓" : "🔒"}</span><b id="history-lock-title">${heading}</b></div>${form}${lockError ? html`<p class="form-error" role="alert">${lockError}</p>` : ""}<a class="lock-modal-parent-link" href="#/parent">前往家長區 →</a></div>`;
-}
-
-// common.openModal 已經處理 backdrop、Esc、inert 與焦點還原，這裡只綁 input／submit。
-function openLockModal() {
-  const pinStatus = currentCtx ? (currentCtx.pinStatus || pin.status()) : "locked";
-  const dialog = common.openModal(String(lockPanel(pinStatus)), {
-    labelledBy: "history-lock-title",
-    onClose: (reason) => {
-      if (lockModalKind !== "lock") return;
-      lockModalKind = "";
-      if (reason !== "rerender") lockModalOpen = false;   // 背景重繪留著，mount() 補開並回填
-    },
-  });
-  if (!dialog) {
-    lockModalOpen = false;
+  if (form) {
+    syncErrorNode(form, message, form.querySelector(".history-save"));
     return;
   }
-  lockModalKind = "lock";
-  dialog.addEventListener("input", (event) => {
-    const target = event.target;
-    if (!target || !target.matches || !target.matches("#history-parent-pin")) return;
-    const cleaned = target.value.replace(/\D/g, "");
-    if (cleaned !== target.value) target.value = cleaned;
-    lockPin = cleaned;
-  });
-  const form = dialog.querySelector("[data-history-pin-form]");
-  if (form) {
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      void submitLock(form);
-    });
-    const input = form.querySelector("#history-parent-pin");
-    if (input) input.focus();
-  }
+  if (message) common.showStatus(message, "error");
 }
 
-// 規格 1.2 明文規定：驗證成功只呼叫 ctx.refresh()，不要另外呼叫 closeModal()——
-// render() 裡無條件的 closeModal() 已經涵蓋關閉這一步。
-async function submitLock(form) {
-  const button = form.querySelector("button");
-  const input = form.querySelector("#history-parent-pin");
-  const value = input ? input.value : lockPin;
-  const pinStatus = currentCtx ? (currentCtx.pinStatus || pin.status()) : "locked";
-  const panel = form.closest(".history-lock");
-  const link = panel ? panel.querySelector(".lock-modal-parent-link") : null;
-  lockError = "";
-  syncErrorNode(panel, "", link);
-  if (button) {
-    button.disabled = true;
-    button.textContent = "驗證中…";
-  }
-  try {
-    if (pinStatus === "setup") await pin.setup(value);
-    else await pin.assert(value);
-    lockPin = value;
-    lockModalOpen = false;
-    lockError = "";
-    if (currentCtx) currentCtx.refresh();
-  } catch (caught) {
-    lockError = errorMessage(caught, "操作碼驗證失敗");
-    syncErrorNode(panel, lockError, link);
-    if (button && button.isConnected) {
-      button.disabled = false;
-      button.textContent = "解鎖";
+// ---------- 手機的「⋯」選單（規格 5.3：列右側 32px 鈕開 modal 選編輯／刪除） ----------
+function openRowMenu(item) {
+  menuId = item.id;
+  const deletable = isDeletable(item);
+  const node = common.openModal(html`<h2 id="record-menu-title">${item.label}</h2>
+      <p class="confirm-dialog-copy">${shortDate(item.entryDate)} · ${kindName(item.kind)}</p>
+      <div class="record-menu-actions">
+        <button type="button" class="btn btn-secondary btn-block" data-menu-edit>編輯</button>
+        <button type="button" class="btn btn-danger btn-block"${deletable ? "" : raw(" disabled")} title="${deletable ? "刪除並撤銷餘額變化" : "請到對應家長功能調整"}" data-menu-delete>刪除</button>
+      </div>`, {
+    labelledBy: "record-menu-title",
+    onClose: (reason) => {
+      menuNode = null;
+      if (reason !== "rerender") menuId = "";   // 背景重繪留著 menuId，mount() 補開
+    },
+  });
+  if (!node) { menuId = ""; return; }
+  menuNode = node;
+  node.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest("[data-menu-edit]")) {
+      menuId = "";
+      menuNode = null;
+      startEdit(item);
+      return;
     }
-  }
+    if (target.closest("[data-menu-delete]")) {
+      const button = target.closest("[data-menu-delete]");
+      if (button.disabled) return;
+      menuId = "";
+      menuNode = null;
+      void remove(item, null);
+    }
+  });
 }
 
 // ---------- 編輯視窗 ----------
@@ -307,7 +303,16 @@ function startEdit(item) {
   editingId = item.id;
   modalOpen = true;
   const draft = editDraft && editDraft.id === item.id ? editDraft : null;
-  const content = html`<div class="heading-help"><span class="parent-kicker">家長編輯紀錄</span>${common.infoTip("金額與分配不在這裡修改，避免帳務失去平衡。")}</div><h2 id="history-edit-title">${item.label}</h2><p class="sr-only" id="history-edit-help">可以修改紀錄名稱、日期與備註；不能修改金額與分配。</p><form><label class="input-label" for="history-edit-label">紀錄名稱</label><input id="history-edit-label" class="text-input" value="${draft ? draft.label : item.label}" maxlength="60" required /><label class="input-label" for="history-edit-date">日期</label><input id="history-edit-date" class="text-input" type="date" value="${draft ? draft.entryDate : item.entryDate}" required /><label class="input-label" for="history-edit-note">備註</label><textarea id="history-edit-note" class="text-input" maxlength="160">${draft ? draft.note : item.note}</textarea><button class="primary-button full-width">儲存修改</button></form>`;
+  const content = html`<span class="kicker">家長編輯紀錄</span>
+      <h2 id="history-edit-title">${item.label}</h2>
+      <p class="sr-only" id="history-edit-help">可以修改紀錄名稱、日期與備註；不能修改金額與分配。</p>
+      <p class="confirm-dialog-copy">金額與分配不在這裡修改，避免帳務失去平衡。</p>
+      <form>
+        ${frag(common.field({ label: "紀錄名稱", id: "history-edit-label", input: html`<input id="history-edit-label" class="input" value="${draft ? draft.label : item.label}" maxlength="60" required>` }))}
+        ${frag(common.field({ label: "日期", id: "history-edit-date", input: html`<input id="history-edit-date" class="input" type="date" value="${draft ? draft.entryDate : item.entryDate}" required>` }))}
+        ${frag(common.field({ label: "備註", id: "history-edit-note", input: html`<textarea id="history-edit-note" class="textarea" maxlength="160">${draft ? draft.note : item.note}</textarea>` }))}
+        <button type="submit" class="btn btn-primary btn-block history-save">儲存修改</button>
+      </form>`;
   const node = common.openModal(String(content), {
     labelledBy: "history-edit-title",
     onClose: (reason) => {
@@ -357,7 +362,7 @@ async function activityRequest(payload, button, busyLabel) {
   }
   try {
     // pin.assertParentPin 沒收到 pin 時會退回本次開啟期間記住的 unlockedPin（見 pin.js assert()），
-    // 解鎖成功過一次之後這裡傳空字串一樣過得了驗證，不用另外把 lockPin 傳過來。
+    // 解鎖成功過一次之後這裡傳空字串一樣過得了驗證。
     await store.updateActivityRecord({ ...payload, parentPin: "" });
     closeEdit();
     pagesLoaded = 1;
@@ -380,7 +385,7 @@ function saveEdit(event) {
   const note = form.querySelector("#history-edit-note");
   void activityRequest(
     { action: "edit", activityId: editingId, label: label ? label.value : "", note: note ? note.value : "", entryDate: date ? date.value : "" },
-    form.querySelector(".primary-button"),
+    form.querySelector(".history-save"),
     "儲存中…",
   );
 }
@@ -410,20 +415,14 @@ function onChange(event) {
 function onClick(event) {
   const chooser = event.target.closest("[data-choose-profile]");
   if (chooser) {
+    // 換小朋友時把開著的編輯視窗收掉（實際的切換由 app.js 的統一委派處理）。
     closeEdit();
-    currentCtx.chooseProfile(chooser.dataset.chooseProfile);
     return;
   }
   const button = event.target.closest("[data-action]");
-  if (!button) return;
+  if (!button || button.disabled) return;
   const action = button.dataset.action;
-  if (action === "open-lock") {
-    lockModalOpen = true;
-    lockPin = "";
-    lockError = "";
-    if (lockModalKind !== "lock") openLockModal();
-    return;
-  }
+  if (action === "open-lock") { lockModal.open(); return; }
   if (action === "load-more") {
     pagesLoaded += 1;
     syncList({ focusLoadMore: true });
@@ -431,24 +430,26 @@ function onClick(event) {
   }
   const item = findActivity(button.dataset.id);
   if (!item) return;
-  if (action === "edit") startEdit(item);
+  if (action === "row-menu") openRowMenu(item);
+  else if (action === "edit") startEdit(item);
   else if (action === "delete") void remove(item, button);
 }
 
 export function mount(root, ctx) {
   currentCtx = ctx;
-  root.removeEventListener("input", onInput);
-  root.removeEventListener("change", onChange);
-  root.removeEventListener("click", onClick);
   if (!ctx.state || !ctx.profile) return;
   root.addEventListener("input", onInput);
   root.addEventListener("change", onChange);
   root.addEventListener("click", onClick);
+  // 規格 4.3：重繪後如果 modal「該開卻沒開」，補開並回填欄位值。
   if (editingId && !modalOpen) {
     const item = findActivity(editingId);
     if (item) startEdit(item);
     else editingId = "";
+  } else if (menuId && !menuNode) {
+    const item = findActivity(menuId);
+    if (item) openRowMenu(item);
+    else menuId = "";
   }
-  // 規格 1.2：重繪後如果 lock modal「該開卻沒開」，補開並回填欄位值。
-  if (lockModalOpen && lockModalKind !== "lock") openLockModal();
+  lockModal.mountCheck(ctx);
 }

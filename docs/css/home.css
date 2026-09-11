@@ -1,1 +1,117 @@
-/* 頁面專屬樣式，由頁面建造者填寫 */
+/* 首頁專屬樣式（規格 5.1）。app.css 已經有 .greeting／.wallets／.wallet／.island-card／
+   .recent／.grid-2-home 的骨架，這裡只補 app.css 沒有的三件事：
+     1. 電腦版（≥1100）把小島卡放到右欄並 sticky；
+     2. 「看全部 →」小連結；
+     3. 兩個 modal 裡 app.css 沒有的片段（頭像、快速金額間距、預覽條、附註）。
+   主線可自行決定要不要併回 app.css。 */
+
+/* --- 1. 電腦版兩欄（規格 5.1「電腦」段）---
+   手機的順序是：問候→錢包→兩顆鈕→多存鈕→小島→最近紀錄，所以六個區塊是 .grid-2-home 的
+   直接子元素（DOM 順序＝手機順序）；≥1100 才用格線把小島挪到右欄，其餘留在左欄。 */
+@media (min-width: 1100px) {
+  .grid-2-home > * { grid-column: 1; }
+  .grid-2-home > .island-card {
+    grid-column: 2;
+    grid-row: 1 / span 5;
+    align-self: start;
+    position: sticky;
+    top: var(--space-5);
+  }
+}
+
+/* --- 2. 卡片標題列右側的小連結 --- */
+.card-head-link {
+  flex: 0 0 auto;
+  color: var(--green);
+  font-size: var(--fs-small);
+  font-weight: 900;
+  text-decoration: none;
+}
+
+/* --- 3. 記帳／多存 modal 裡的片段 --- */
+.modal-avatar {
+  width: 48px;
+  height: 48px;
+  margin-bottom: var(--space-2);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--kid-accent) 22%, white);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-size: 26px;
+  line-height: 1;
+}
+
+/* 只作用在首頁自己開的兩個 modal（openModal 的 className: "money-modal"），
+   不會影響紀錄頁、家長頁的 modal。 */
+.money-modal form > .quick-amounts { margin-bottom: var(--space-4); }
+
+/* 零用錢的「先存 x%／自己安排 y%」預覽 */
+.preview-split {
+  margin-top: var(--space-4);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.preview-split > span {
+  padding: var(--space-3);
+  border-radius: var(--radius-m);
+  background: var(--theme-soft, #eef5f1);
+  color: var(--muted);
+  font-size: var(--fs-caption);
+  text-align: center;
+}
+.preview-split b {
+  display: block;
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 多存：撲滿 → 爸媽銀行 */
+.transfer-dialog-copy {
+  margin-top: var(--space-3);
+  color: var(--muted);
+  font-size: var(--fs-small);
+  line-height: 1.7;
+}
+
+.no-transfer-balance {
+  margin-top: var(--space-3);
+  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  background: var(--theme-soft, #eef5f1);
+  color: var(--green);
+  font-size: var(--fs-caption);
+  line-height: 1.6;
+}
+
+.transfer-preview {
+  margin-top: var(--space-4);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+}
+.transfer-preview > span {
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-m);
+  background: var(--theme-soft, #eef5f1);
+  text-align: center;
+}
+.transfer-preview small { display: block; color: var(--muted); font-size: var(--fs-caption); }
+.transfer-preview b { font-size: var(--fs-small); font-variant-numeric: tabular-nums; }
+.transfer-preview > i { color: var(--muted); font-style: normal; }
+
+.pending-transfer-note,
+.auto-save-note {
+  display: block;
+  margin-top: var(--space-3);
+  color: var(--muted);
+  font-size: var(--fs-caption);
+  line-height: 1.6;
+}
+
+.money-modal form > .btn { margin-top: var(--space-5); }

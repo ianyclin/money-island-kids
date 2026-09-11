@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>建造者 D 的暫時性瀏覽器自測</title>
+<link rel="stylesheet" href="../app.css">
+<link rel="stylesheet" href="../css/home.css">
+<link rel="stylesheet" href="../css/growth.css">
+<link rel="stylesheet" href="../css/history.css">
+<link rel="stylesheet" href="../css/more.css">
+<link rel="stylesheet" href="../css/parent.css">
+</head>
+<body>
+<div id="install-hint" hidden><div class="install-hint-body"><span>x</span><button type="button" id="install-hint-close">×</button></div></div>
+<div id="app"></div>
+<div id="toast-root"></div>
+<div id="modal-root"></div>
+<pre id="d-report" style="position:fixed;left:-9999px;top:0">RUNNING</pre>
+<script type="module">
+const report = (extra) => {
+  document.getElementById("d-report").textContent = `D2-START\n寬度 ${window.innerWidth}\n${log.join("\n")}\n${fail.length ? fail.join("\n") : "（沒有 FAIL）"}\nconsole/未捕捉錯誤：${errors.length ? errors.join(" | ") : "0"}\n${extra || ""}\nD2-END`;
+};
+const log = [];
+const fail = [];
+const errors = [];
+const ok = (name, condition, detail = "") => {
+  (condition ? log : fail).push(`${condition ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`);
+  try { report("進行中"); } catch (e) {}
+};
+window.addEventListener("error", (event) => { errors.push(`window.error: ${event.message} @${event.filename}:${event.lineno}`); try { report("中斷"); } catch (e) {} });
+window.addEventListener("unhandledrejection", (event) => { errors.push(`rejection: ${event.reason && event.reason.stack ? event.reason.stack : event.reason}`); try { report("中斷"); } catch (e) {} });
+const nativeError = console.error.bind(console);
+console.error = (...args) => { errors.push(`console.error: ${args.join(" ")}`); nativeError(...args); };
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const settle = async (times = 24) => { for (let i = 0; i < times; i += 1) await wait(25); };
+const q = (selector) => document.querySelector(selector);
+const text = (node) => (node ? node.textContent.trim() : "");
+
+function fontScan(label) {
+  const walker = document.createTreeWalker(document.getElementById("app"), NodeFilter.SHOW_TEXT);
+  const small = new Set();
+  let node;
+  while ((node = walker.nextNode())) {
+    if (!node.nodeValue || !node.nodeValue.trim()) continue;
+    const parent = node.parentElement;
+    if (!parent) continue;
+    const size = parseFloat(getComputedStyle(parent).fontSize);
+    if (size < 12) small.add(`${parent.className || parent.tagName}:${size}px:${node.nodeValue.trim().slice(0, 12)}`);
+  }
+  ok(`${label} 沒有小於 12px 的字`, small.size === 0, [...small].join(" | "));
+}
+
+function overflowScan(label) {
+  const root = document.getElementById("app");
+  const width = document.documentElement.clientWidth;
+  const bad = [];
+  for (const el of root.querySelectorAll("*")) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0) continue;
+    if (rect.right > width + 1) bad.push(`${el.tagName}.${el.className}:${Math.round(rect.right)}`);
+  }
+  ok(`${label} 沒有元素超出視窗寬度`, bad.length === 0, bad.slice(0, 4).join(" | "));
+}
+
+const width = window.innerWidth;
+const { freshState } = await import("../js/state.js");
+const pin = await import("../js/pin.js");
+const state = freshState({ familyName: "測試家", kidNames: ["大寶", "二寶"], savingsRate: 30 });
+state.profiles[0].bankBalance = 5000;      // 省掉先記一筆零用錢的步驟，直接讓爸媽銀行有錢可買入
+state.profiles[0].spendingBalance = 300;
+localStorage.setItem("money-island.v1", JSON.stringify(state));
+await pin.setup("1234");
+location.hash = "#/parent";
+await import("../js/app.js");
+await settle();
+
+/* ---------- 1. 家長區：鎖定態 ---------- */
+ok("鎖定：有 appShell 的分頁列", !!q(".tabbar"));
+ok("鎖定：標題是家長區", text(q(".page-title")) === "家長區", text(q(".page-title")));
+ok("鎖定：只有解鎖表單", !!q(".parent-lock-card form[data-form='pin']"));
+ok("鎖定：沒有備份面板", !q(".parent-device-panel"));
+ok("鎖定：有 12px 說明句", text(q(".parent-lock-note")) === "解鎖後才能看到家長功能");
+fontScan(`鎖定@${width}`);
+overflowScan(`鎖定@${width}`);
+
+/* ---------- 2. 解鎖（走真正的表單） ---------- */
+const pinForm = q("form[data-form='pin']");
+pinForm.querySelector("input").value = "1234";
+pinForm.requestSubmit();
+await settle(60);
+ok("解鎖：頁首出現已解鎖連結", text(q(".parent-unlocked-link")).includes("已解鎖"), text(q(".parent-unlocked-link")));
+ok("解鎖：待辦卡在最前面", !!q(".parent-card-inbox"));
+ok("解鎖：空待辦文案", text(q(".parent-card-inbox .empty")) === "這個月都核對過了 ✓", text(q(".parent-card-inbox .empty")));
+ok("解鎖：快速動作三顆", q(".parent-quick-row").children.length === 3);
+ok("解鎖：備份面板出現", !!q(".parent-device-panel"));
+ok("解鎖：指南是抽屜", !!q("details.parent-guide"));
+
+const order = [...document.querySelectorAll(".page-body .card, .page-body details.card")]
+  .map((el) => ({ el, top: el.getBoundingClientRect().top, left: el.getBoundingClientRect().left }));
+const mobileOrder = order.filter((item) => Math.abs(item.left - order[0].left) < 2).map((item) => item.el.className.split(" ").find((c) => c.startsWith("parent-card-") || c.startsWith("parent-device") || c.startsWith("parent-guide")) || "?");
+ok(`版面順序@${width}`, true, mobileOrder.join(" → "));
+fontScan(`解鎖@${width}`);
+overflowScan(`解鎖@${width}`);
+
+/* ---------- 3. 比例 +5 並儲存 ---------- */
+q("[data-action='savings-up']").click();
+await settle(4);
+ok("比例：stepper 顯示 35%", text(q(".stepper output")) === "35%", text(q(".stepper output")));
+q("form[data-form='savings-rate']").requestSubmit();
+await settle(40);
+ok("比例：存進帳本", JSON.parse(localStorage.getItem("money-island.v1")).savingsRate === 35, String(JSON.parse(localStorage.getItem("money-island.v1")).savingsRate));
+ok("比例：按鈕變成已儲存", text(q(".savings-rate-save")) === "已儲存", text(q(".savings-rate-save")));
+
+/* ---------- 4. 新增一個家庭小專案 ---------- */
+const projectForm = q("form[data-form='project']");
+projectForm.querySelector("[data-draft='project-title']").value = "整理一箱舊玩具";
+projectForm.querySelector("[data-draft='project-title']").dispatchEvent(new Event("input", { bubbles: true }));
+projectForm.querySelector("[data-draft='project-description']").value = "整理好並分類裝箱";
+projectForm.querySelector("[data-draft='project-description']").dispatchEvent(new Event("input", { bubbles: true }));
+projectForm.requestSubmit();
+await settle(40);
+const afterProject = JSON.parse(localStorage.getItem("money-island.v1"));
+ok("專案：已寫進帳本", afterProject.projects.some((item) => item.title === "整理一箱舊玩具"), String(afterProject.projects.length));
+ok("專案：列表顯示出來", document.body.textContent.includes("整理一箱舊玩具"));
+
+/* ---------- 5. 校正撲滿 modal 的重繪存活 ---------- */
+q("[data-action='open-correction']").click();
+await settle(4);
+const balanceField = q("#modal-root [data-draft='piggy-balance']");
+ok("modal：校正撲滿打得開", !!balanceField);
+balanceField.value = "777";
+balanceField.dispatchEvent(new Event("input", { bubbles: true }));
+window.dispatchEvent(new HashChangeEvent("hashchange"));
+await settle(40);
+const afterRerender = q("#modal-root [data-draft='piggy-balance']");
+ok("modal：重繪後還在", !!afterRerender);
+ok("modal：輸入到一半的金額還在", afterRerender && afterRerender.value === "777", afterRerender ? afterRerender.value : "(沒了)");
+q("#modal-root [data-action='cancel-correction']").click();
+await settle(4);
+ok("modal：取消後關掉", !q("#modal-root .modal"));
+
+/* ---------- 6. 變更操作碼 modal ---------- */
+q("[data-action='toggle-pin-change']").click();
+await settle(4);
+ok("modal：變更操作碼打得開", !!q("#modal-root [data-field='current-pin']"));
+q("#modal-root [data-field='current-pin']").value = "1234";
+q("#modal-root [data-field='current-pin']").dispatchEvent(new Event("input", { bubbles: true }));
+window.dispatchEvent(new HashChangeEvent("hashchange"));
+await settle(40);
+ok("modal：變更操作碼重繪後回填", q("#modal-root [data-field='current-pin']") && q("#modal-root [data-field='current-pin']").value === "1234");
+q("#modal-root [data-modal-close]").click();
+await settle(4);
+
+/* ---------- 7. 投資子頁：買入 → 手動市值 ---------- */
+location.hash = "#/parent/investments";
+await settle(30);
+ok("投資頁：標題", text(q(".page-title")) === "投資管理", text(q(".page-title")));
+ok("投資頁：返回連結是第一個元素", q(".page-body").firstElementChild.classList.contains("parent-back"), q(".page-body").firstElementChild.className);
+ok("投資頁：單欄容器", !!q(".narrow"));
+fontScan(`投資頁@${width}`);
+overflowScan(`投資頁@${width}`);
+
+const purchaseForm = q("form[data-form='purchase']");
+const setField = (form, key, value) => {
+  const node = form.querySelector(`[data-draft='${key}']`);
+  node.value = value;
+  node.dispatchEvent(new Event("input", { bubbles: true }));
+};
+setField(purchaseForm, "purchase-symbol", "00646");
+setField(purchaseForm, "purchase-name", "元大 S&P 500");
+setField(purchaseForm, "purchase-units", "10");
+setField(purchaseForm, "purchase-total-cost", "1000");
+const confirmBox = purchaseForm.querySelector("[data-draft='purchase-confirm']");
+confirmBox.checked = true;
+confirmBox.dispatchEvent(new Event("change", { bubbles: true }));
+await settle(4);
+ok("買入：預覽金額跟著算", text(q("[data-planned-cost]")).includes("1,000"), text(q("[data-planned-cost]")));
+ok("買入：送出鈕解鎖", !q("[data-purchase-submit]").disabled);
+purchaseForm.requestSubmit();
+await settle(60);
+const afterBuy = JSON.parse(localStorage.getItem("money-island.v1"));
+ok("買入：持股寫進帳本", afterBuy.holdings.length === 1, JSON.stringify(afterBuy.holdings.map((h) => [h.symbol, h.units, h.costBasis])));
+ok("買入：爸媽銀行扣款", afterBuy.profiles[0].bankBalance === 4000, String(afterBuy.profiles[0].bankBalance));
+ok("買入：持股卡顯示出來", !!q(".holding-card"));
+
+const holdingId = afterBuy.holdings[0].id;
+const marketInput = q(`[data-draft='market-${holdingId}']`);
+marketInput.value = "1200";
+marketInput.dispatchEvent(new Event("input", { bubbles: true }));
+await settle(4);
+q(`[data-action='update-market-value'][data-id='${holdingId}']`).click();
+await settle(60);
+ok("市值：手動更新寫進帳本", JSON.parse(localStorage.getItem("money-island.v1")).holdings[0].marketValue === 1200, String(JSON.parse(localStorage.getItem("money-island.v1")).holdings[0].marketValue));
+ok("買入紀錄：出現一列", !!q(".purchase-entry"));
+fontScan(`投資頁有資料@${width}`);
+overflowScan(`投資頁有資料@${width}`);
+
+/* ---------- 8. 深連結 ?open=harvest ---------- */
+location.hash = "#/parent/investments?open=harvest";
+await settle(30);
+ok("深連結：收成面板自動展開", !!q(".harvest-panel[open]"));
+
+/* ---------- 9. 回家長區再看一次（重繪後狀態正常） ---------- */
+location.hash = "#/parent";
+await settle(30);
+ok("回家長區：仍然解鎖", !!q(".parent-unlocked-link"));
+ok("回家長區：投資入口顯示持股摘要", text(q(".parent-card-invest .card-sub")).includes("1 檔持股"), text(q(".parent-card-invest .card-sub")));
+
+report("全部跑完");
+</script>
+</body>
+</html>

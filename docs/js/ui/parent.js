@@ -1,12 +1,12 @@
 // 家長區（移植自 app/parent/page.tsx ＋ app/parent/device-trust-panel.tsx 的備份段落）。
 // 骨架換成 render/mount，內容、class 與文案照原專案；只有架構契約第 12 節列出的句子改寫成單機版。
 //
-// 手機優先重新設計（notes/mobile-redesign/spec.md 第 2.4／9 節，第 9 節「主線拍板」優先於前文）：
-// 投資整段（真實買入／持股／買入紀錄／過年收成）已搬到新路由 #/parent/investments
-// （docs/js/ui/parent-investments.js，自己的模組作用域）；這裡只剩 Hub 本身：
-// 迷你頂欄 → 待辦收件匣 → 快速動作 → 預先儲蓄比例 → 孩子資料 → 投資入口卡 →
-// 家庭小專案（管理）→ 資料與備份 → 理念與操作指南 → footer。
-// 未解鎖時只顯示 .parent-lock-card（不動），其餘 Hub 內容整段不渲染。
+// v2 重做（notes/redesign-v2/spec.md 第 3／5.5 節）：外殼換成 common.appShell()，
+// markup 換成 v2 的 .card／.btn／.field 這組 class；store 呼叫、operationId、busy 狀態、
+// 錯誤處理、校正撲滿 modal 的存活機制一律原樣沿用。
+// 未解鎖：只有一張解鎖表單 .card ＋ 一行「解鎖後才能看到家長功能」，不顯示備份面板。
+// 已解鎖（由上到下）：待辦 → 快速動作 → 預先儲蓄比例 → 孩子資料 → 投資入口 →
+// 家庭小專案 → 資料與備份 → 理念與操作指南；≥1100px 依規格 5.5 切 3:2 兩欄。
 
 import { html, raw, money, formatDate, formatDateTime, errorMessage, uuid } from "../util.js";
 import * as common from "./common.js";
@@ -22,7 +22,9 @@ const ui = {
   notice: "資料異動後會自動儲存",
   operationError: null,          // { scope, message }
   pinError: "",
-  pinChangeOpen: false,
+  pinChangeOpen: false,          // 變更操作碼 modal：是否「應該」開著（規格 4.3 的存活機制）
+  pinChangeModalKind: "",        // "" | "pin-change"
+  pinChangeDrafts: { "current-pin": "", "new-pin": "", "confirm-new-pin": "" },
   addProfileOpen: false,
   projectId: "",
   savingsRate: null,
@@ -32,7 +34,7 @@ const ui = {
   restoreSummary: null,
   restoreEnvelope: null,
   snapshots: null,               // null=尚未讀取、[]=沒有、false=不支援
-  openDetails: new Set(),        // "profile-editor" | "project-editor" | "guide" | "backup-file" | "snapshots" | "gist"
+  openDetails: new Set(),        // "guide" | "backup-file" | "snapshots" | "gist"（v2 只剩這四個抽屜）
   drafts: Object.create(null),
   piggyKey: "",
   identityKey: "",
@@ -100,8 +102,14 @@ function syncKeys(state, profile) {
 
 // ---------- 校正撲滿：共用欄位（同一段 markup／邏輯同時被孩子資料編輯的撲滿表單與快速動作 modal 呼叫） ----------
 function piggyCorrectionFields(profile) {
-  return html`<label>撲滿目前金額<input type="number" min="0" max="1000000" inputmode="numeric" data-draft="piggy-balance" value="${draft("piggy-balance", String(profile.spendingBalance))}" required /></label>
-      <label>校正原因（選填）<input data-draft="piggy-note" value="${draft("piggy-note")}" placeholder="例如：和實體撲滿核對" maxlength="100" /></label>`;
+  return html`${common.field({
+      label: "撲滿目前金額",
+      input: html`<input class="input" type="number" min="0" max="1000000" inputmode="numeric" data-draft="piggy-balance" value="${draft("piggy-balance", String(profile.spendingBalance))}" required />`,
+    })}
+      ${common.field({
+      label: "校正原因（選填）",
+      input: html`<input class="input" data-draft="piggy-note" value="${draft("piggy-note")}" placeholder="例如：和實體撲滿核對" maxlength="100" />`,
+    })}`;
 }
 
 function piggyCorrectionModalBody(profile) {
@@ -110,9 +118,31 @@ function piggyCorrectionModalBody(profile) {
     <p class="piggy-correction-context"><span>${raw(common.profileAvatar(profile.avatar))}</span><b>${profile.name}的撲滿</b></p>
     <form data-form="piggy-correction">
       ${piggyCorrectionFields(profile)}
-      <div class="piggy-correction-actions">
-        <button type="button" class="cancel-preset" data-action="cancel-correction">取消</button>
-        <button class="primary-button full-width" data-busy-label="儲存中…">儲存撲滿金額</button>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" data-action="cancel-correction">取消</button>
+        <button class="btn btn-primary" data-busy-label="儲存中…">儲存撲滿金額</button>
+      </div>
+    </form>
+  </div>`;
+}
+
+// ---------- 變更操作碼 modal（規格 5.5：頁首右插槽的小連結打開；存活機制照 common.createLockModal 的寫法） ----------
+function pinChangeField(label, key) {
+  return common.field({
+    label,
+    input: html`<input class="input" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits data-field="${key}" value="${ui.pinChangeDrafts[key] || ""}" required />`,
+  });
+}
+
+function pinChangeModalBody() {
+  return html`<div class="parent-pin-modal">
+    <h2 id="pin-change-title">變更操作碼</h2>
+    <form data-form="pin-change">
+      ${pinChangeField("目前操作碼", "current-pin")}
+      ${pinChangeField("新操作碼", "new-pin")}
+      ${pinChangeField("再輸入一次", "confirm-new-pin")}
+      <div class="form-actions">
+        <button class="btn btn-primary btn-block" data-busy-label="更新中…">確認變更</button>
       </div>
     </form>
   </div>`;
@@ -132,227 +162,289 @@ export function render(ctx) {
   // 規格 2.4 第 9 項：pinStatus==="setup" 時指南預設展開，使用者手動切換過後不再被蓋回。
   if (!ui.guideTouched && pinStatus === "setup") ui.openDetails.add("guide");
 
+  // 規格 5.5：已解鎖時頁首右插槽放「🔓 已解鎖 · 變更操作碼」小連結（點了開 modal）。
+  const right = unlocked
+    ? html`<button type="button" class="parent-unlocked-link" data-action="toggle-pin-change">🔓 已解鎖 · 變更操作碼</button>`
+    : "";
+
+  return common.appShell({
+    page: "parent",
+    title: "家長區",
+    ctx,
+    right,
+    body: unlocked ? unlockedBody(state, profile, holdings) : lockedBody(pinStatus),
+  });
+}
+
+// ---------- 未解鎖（規格 5.5：只有一張解鎖表單，不顯示備份面板） ----------
+function lockedBody(pinStatus) {
+  const setupMode = pinStatus === "setup";
+  return html`<section class="card parent-lock-card">
+      <h2 class="card-title">${setupMode ? "第一次使用：設定家長操作碼" : "輸入家長操作碼"}</h2>
+      <p class="parent-lock-copy">${setupMode ? "使用 4–8 位數字；操作碼不會顯示在孩子頁面。" : "編輯帳本、專案、投資與資料備份都需要驗證。"}</p>
+      <form data-form="pin">
+        ${common.field({
+          label: "家長操作碼",
+          id: "parent-pin",
+          input: html`<input id="parent-pin" class="input" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits placeholder="4–8 位數字" required />`,
+        })}
+        <div class="form-actions">
+          <button class="btn btn-primary btn-block" data-busy-label="驗證中…">${setupMode ? "設定並解鎖" : "解鎖"}</button>
+        </div>
+      </form>
+    </section>
+    <p class="parent-lock-note">解鎖後才能看到家長功能</p>`;
+}
+
+// ---------- 已解鎖（規格 5.5：手機單欄，≥1100px 左 3 右 2 兩欄） ----------
+function unlockedBody(state, profile, holdings) {
+  return html`<div class="parent-grid grid-2">
+      <div class="grid-2-col">
+        ${inboxCard(state)}
+        ${quickActionsCard()}
+        ${savingsRateCard(state)}
+        ${profileCard(state, profile)}
+        ${projectsCard(state)}
+      </div>
+      <div class="grid-2-col">
+        ${investmentEntryCard(holdings)}
+        ${dataPanelMarkup(state, true)}
+        ${guideMarkup()}
+      </div>
+    </div>`;
+}
+
+function inboxCard(state) {
   const waitingProjects = state.projects.filter((item) => item.status === "waiting");
   const pendingSavingsTransfers = state.savingsTransfers.filter((item) => item.status === "pending");
   const hasInboxItems = waitingProjects.length > 0 || pendingSavingsTransfers.length > 0;
+  return html`<section class="card parent-inbox parent-card-inbox">
+      <h2 class="card-title">待辦</h2>
+      <p class="card-sub">今天要處理的事</p>
+      ${hasInboxItems ? html`<div class="inbox-list">${pendingSavingsTransfers.map((transfer) => {
+          const kid = state.profiles.find((item) => item.id === transfer.profileId);
+          return html`<div class="inbox-item">
+            <div><b>${kid?.name ?? "小朋友"}想多存 ${money(transfer.amount)}</b><small>${transfer.note} · 批准後才會從撲滿轉入爸媽銀行</small></div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-primary" data-action="approve-transfer" data-id="${transfer.id}" data-busy-label="處理中…">確認存入</button>
+              <button type="button" class="btn btn-secondary" data-action="reject-transfer" data-id="${transfer.id}" data-busy-label="處理中…">不執行</button>
+            </div>
+          </div>`;
+        })}${waitingProjects.map((project) => {
+          const kid = state.profiles.find((item) => item.id === project.assignedProfileId);
+          return html`<div class="inbox-item">
+            <div><b>${kid?.name} · ${project.title}</b><small>${money(project.reward)}，確認後依 ${state.savingsRate}% / ${100 - state.savingsRate}% 分配</small></div>
+            <div class="btn-row">
+              <button type="button" class="btn btn-primary" data-action="approve-project" data-id="${project.id}" data-busy-label="發放中…">確認完成</button>
+            </div>
+          </div>`;
+        })}</div>` : html`<p class="empty">這個月都核對過了 ✓</p>`}
+    </section>`;
+}
+
+function quickActionsCard() {
+  return html`<section class="card parent-card-quick">
+      <h2 class="card-title">快速動作</h2>
+      <div class="btn-row parent-quick-row">
+        <a class="btn btn-secondary" href="#/parent/investments?open=purchase"><span aria-hidden="true">🌱</span>記買入</a>
+        <a class="btn btn-secondary" href="#/parent/investments?open=harvest"><span aria-hidden="true">🧧</span>記收成</a>
+        <button type="button" class="btn btn-secondary" data-action="open-correction"><span aria-hidden="true">🐷</span>校正撲滿</button>
+      </div>
+    </section>`;
+}
+
+function savingsRateCard(state) {
+  return html`<section class="card parent-card-rate">
+      <form data-form="savings-rate">
+        <span class="kicker">全家共用設定</span>
+        <h2 class="card-title">預先儲蓄比例</h2>
+        <div class="stepper" aria-label="調整預先儲蓄比例">
+          <button type="button" class="stepper-btn" aria-label="減少 5%" data-action="savings-down" ${ui.savingsRate <= 0 ? raw("disabled") : ""}>−</button>
+          <output aria-live="polite">${ui.savingsRate}%</output>
+          <button type="button" class="stepper-btn" aria-label="增加 5%" data-action="savings-up" ${ui.savingsRate >= 100 ? raw("disabled") : ""}>＋</button>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary btn-block savings-rate-save" data-busy-label="儲存中…" ${ui.savingsRate === state.savingsRate ? raw("disabled") : ""}>${ui.savingsRate === state.savingsRate ? "已儲存" : "儲存"}</button>
+        </div>
+      </form>
+    </section>`;
+}
+
+function profileCard(state, profile) {
+  return html`<section class="card parent-card-kids" id="profile-editor">
+      <h2 class="card-title">孩子資料</h2>
+      ${profileEditorMarkup(state, profile)}
+    </section>`;
+}
+
+function investmentEntryCard(holdings) {
   const latestHolding = holdings.find((item) => item.priceUpdatedAt) ?? holdings[0] ?? null;
   const investmentUpdatedAt = latestHolding ? (latestHolding.priceUpdatedAt ?? latestHolding.updatedAt) : "";
-
-  // 規格第 9 節「頂欄」＋ 2.4 第 1／1.5 項：🔓 已解鎖小字＋🔍 所有紀錄連結，只在已解鎖時顯示
-  // （底部三項 tab bar 本來就一律含「所有紀錄」，這裡是錦上添花的第二入口，不是唯一入口）。
-  const topbarRight = unlocked
-    ? html`<span class="parent-topbar-unlocked">🔓 已解鎖</span><a class="history-link" href="#/history">🔍 所有紀錄</a>`
-    : "";
-
-  return html`<main class="parent-shell" data-kid="${profile.id}" style="--kid-accent: ${profile.accent}">
-      ${raw(common.miniTopbar({ active: "parent", ctx, right: topbarRight }))}
-
-      ${!unlocked ? html`<section class="parent-hero-line"><span class="parent-kicker">所有家長功能集中在這裡</span></section>` : ""}
-
-      <section class="${unlocked ? "parent-lock-card is-unlocked" : "parent-lock-card"}">
-        <span class="lock-icon" aria-hidden="true">${unlocked ? "✓" : "🔒"}</span>
-        <div><b>${pinStatus === "setup" ? "第一次使用：設定家長操作碼" : unlocked ? "家長區已解鎖" : "輸入家長操作碼"}</b><small>${pinStatus === "setup" ? "使用 4–8 位數字；操作碼不會顯示在孩子頁面。" : unlocked ? "現在可以使用本頁所有家長功能。" : "編輯帳本、專案、投資與資料備份都需要驗證。"}</small></div>
-        ${!unlocked ? html`<form data-form="pin"><input type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits placeholder="4–8 位數字" required /><button data-busy-label="驗證中…">${pinStatus === "setup" ? "設定並解鎖" : "解鎖"}</button></form>` : ""}
-        ${unlocked ? html`<button class="pin-change-trigger" type="button" aria-expanded="${ui.pinChangeOpen ? "true" : "false"}" data-action="toggle-pin-change">變更操作碼 ${ui.pinChangeOpen ? "−" : "＋"}</button>` : ""}
-        ${unlocked && ui.pinChangeOpen ? html`<form class="pin-change-form" data-form="pin-change">
-          <label>目前操作碼<input type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits data-field="current-pin" required /></label>
-          <label>新操作碼<input type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits data-field="new-pin" required /></label>
-          <label>再輸入一次<input type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits data-field="confirm-new-pin" required /></label>
-          <button data-busy-label="更新中…">確認變更</button>
-        </form>` : ""}
-      </section>
-
-      ${unlocked ? html`
-      <section class="parent-approval-strip parent-inbox">
-        <span class="parent-kicker">待辦</span>
-        <h2>今天要處理的事</h2>
-        ${hasInboxItems ? html`${pendingSavingsTransfers.map((transfer) => {
-            const kid = state.profiles.find((item) => item.id === transfer.profileId);
-            return html`<article>
-              <span>${kid ? raw(common.profileAvatar(kid.avatar)) : "🌱"}</span>
-              <div><b>${kid?.name ?? "小朋友"}想多存 ${money(transfer.amount)}</b><small>${transfer.note} · 批准後才會從撲滿轉入爸媽銀行</small></div>
-              <div class="savings-approval-actions"><button type="button" data-action="approve-transfer" data-id="${transfer.id}" data-busy-label="處理中…">確認存入</button><button class="reject-transfer" type="button" data-action="reject-transfer" data-id="${transfer.id}" data-busy-label="處理中…">不執行</button></div>
-            </article>`;
-          })}${waitingProjects.map((project) => {
-            const kid = state.profiles.find((item) => item.id === project.assignedProfileId);
-            return html`<article><span>${kid ? raw(common.profileAvatar(kid.avatar)) : ""}</span><div><b>${kid?.name} · ${project.title}</b><small>${money(project.reward)}，確認後依 ${state.savingsRate}% / ${100 - state.savingsRate}% 分配</small></div><button data-action="approve-project" data-id="${project.id}" data-busy-label="發放中…">確認完成</button></article>`;
-          })}` : html`<p class="parent-inbox-empty">這個月都核對過了 ✓</p>`}
-      </section>
-
-      <div class="parent-quick-actions">
-        <a class="parent-quick-action" href="#/parent/investments?open=purchase"><span aria-hidden="true">🌱</span><b>記買入</b></a>
-        <a class="parent-quick-action" href="#/parent/investments?open=harvest"><span aria-hidden="true">🧧</span><b>記收成</b></a>
-        <button type="button" class="parent-quick-action" data-action="open-correction"><span aria-hidden="true">🐷</span><b>校正撲滿</b></button>
+  return html`<section class="card parent-card-invest">
+      <h2 class="card-title"><span aria-hidden="true">📈</span> 投資</h2>
+      <p class="card-sub">${holdings.length ? `${holdings.length} 檔持股 · 上次更新${investmentUpdatedAt ? formatDate(investmentUpdatedAt) : "尚未更新"}` : "尚未記錄任何持股"}</p>
+      <div class="form-actions">
+        <a class="btn btn-secondary btn-block" href="#/parent/investments">前往投資管理 →</a>
       </div>
+    </section>`;
+}
 
-      <form class="family-settings-panel savings-inline-panel" data-form="savings-rate">
-        <span class="settings-panel-copy"><small>全家共用設定</small><b>預先儲蓄比例</b></span>
-        <div class="savings-stepper" aria-label="調整預先儲蓄比例">
-          <button type="button" aria-label="減少 5%" data-action="savings-down" ${ui.savingsRate <= 0 ? raw("disabled") : ""}>−</button>
-          <output aria-live="polite">${ui.savingsRate}%</output>
-          <button type="button" aria-label="增加 5%" data-action="savings-up" ${ui.savingsRate >= 100 ? raw("disabled") : ""}>＋</button>
+function projectStatusText(status) {
+  return status === "open" ? "尚未接下" : status === "claimed" ? "進行中" : status === "waiting" ? "等待確認" : "已完成";
+}
+
+function projectsCard(state) {
+  return html`<section class="card parent-project-panel parent-card-projects" id="projects">
+      <div class="card-head">
+        <div><span class="kicker">家庭小專案</span><h2 class="card-title">專案與確認</h2></div>
+        ${raw(common.infoTip("只替額外、完整且事前約定的任務設定報酬；日常責任不標價。", { align: "right" }))}
+      </div>
+      <form class="parent-project-form" id="project-editor" data-form="project">
+        <h3 class="parent-subtitle">${ui.projectId ? "編輯尚未被接下的專案" : "新增一個小專案"}</h3>
+        ${common.field({
+          label: "專案名稱",
+          input: html`<input class="input" data-draft="project-title" value="${draft("project-title")}" placeholder="例如：整理一箱舊玩具" required minlength="2" maxlength="40" />`,
+        })}
+        ${common.field({
+          label: "完成條件",
+          input: html`<textarea class="textarea" data-draft="project-description" placeholder="清楚寫出範圍與成果" required minlength="4" maxlength="180">${draft("project-description")}</textarea>`,
+        })}
+        ${common.field({
+          label: "完成報酬",
+          input: html`<input class="input" type="number" inputmode="numeric" min="10" max="500" step="10" data-draft="project-reward" value="${draft("project-reward", ui.projectId ? "" : "50")}" required />`,
+        })}
+        <div class="form-actions">
+          <button class="btn btn-primary btn-block" data-busy-label="儲存中…">${ui.projectId ? "儲存修改" : "發布小專案"}</button>
+          ${ui.projectId ? html`<button class="btn btn-ghost btn-block" type="button" data-action="cancel-project-edit">取消編輯</button>` : ""}
         </div>
-        <button class="savings-rate-save" data-busy-label="儲存中…" ${ui.savingsRate === state.savingsRate ? raw("disabled") : ""}>${ui.savingsRate === state.savingsRate ? "已儲存" : "儲存"}</button>
       </form>
-
-      <details class="profile-editor-panel" id="profile-editor" data-open-key="profile-editor" ${isOpen("profile-editor") ? raw("open") : ""}>
-        <summary class="profile-editor-summary">
-          <span>${raw(common.profileAvatar(profile.avatar))}</span>
-          <span><small>孩子資料</small><b>編輯${profile.name}</b></span>
-          <strong><i class="profile-editor-closed-label">編輯 ＋</i><i class="profile-editor-open-label">收起 −</i></strong>
-        </summary>
-        ${profileEditorMarkup(state, profile)}
-      </details>
-
-      <a class="parent-investment-entry" href="#/parent/investments">
-        <span aria-hidden="true">📈</span>
-        <div><b>投資</b><small>${holdings.length ? `${holdings.length} 檔持股 · 上次更新${investmentUpdatedAt ? formatDate(investmentUpdatedAt) : "尚未更新"}` : "尚未記錄任何持股"}</small></div>
-        <strong>前往投資管理 →</strong>
-      </a>
-
-      <section class="parent-project-panel" id="projects">
-        <div class="parent-project-heading">
-          <div class="parent-project-copy"><div class="heading-help"><span class="parent-kicker">家庭小專案</span>${raw(common.infoTip("只替額外、完整且事前約定的任務設定報酬；日常責任不標價。"))}</div><h2>專案與確認</h2></div>
-        </div>
-        <details class="project-editor-panel" id="project-editor-panel" data-open-key="project-editor" ${isOpen("project-editor") ? raw("open") : ""}>
-          <summary class="project-editor-trigger">
-            <i class="project-editor-closed-label">新增專案 ＋</i>
-            <i class="project-editor-open-label">收起編輯 −</i>
-          </summary>
-          <form class="parent-project-form" id="project-editor" data-form="project">
-            <h3>${ui.projectId ? "編輯尚未被接下的專案" : "新增一個小專案"}</h3>
-            <label>專案名稱<input data-draft="project-title" value="${draft("project-title")}" placeholder="例如：整理一箱舊玩具" required minlength="2" maxlength="40" /></label>
-            <label>完成條件<textarea data-draft="project-description" placeholder="清楚寫出範圍與成果" required minlength="4" maxlength="180">${draft("project-description")}</textarea></label>
-            <label>完成報酬<input type="number" inputmode="numeric" min="10" max="500" step="10" data-draft="project-reward" value="${draft("project-reward", ui.projectId ? "" : "50")}" required /></label>
-            <button class="primary-button full-width" data-busy-label="儲存中…">${ui.projectId ? "儲存修改" : "發布小專案"}</button>
-            ${ui.projectId ? html`<button class="cancel-preset" type="button" data-action="cancel-project-edit">取消編輯</button>` : ""}
-          </form>
-        </details>
-        <div class="parent-project-list">
-          <div class="project-manage-group"><b>目前專案</b>${state.projects.length ? state.projects.map((project) => html`<article><div><strong>${project.title}</strong><small>${project.status === "open" ? "尚未接下" : project.status === "claimed" ? "進行中" : project.status === "waiting" ? "等待確認" : "已完成"} · ${money(project.reward)}</small></div>${project.status === "open" ? html`<button data-action="edit-project" data-id="${project.id}">編輯</button>` : ""}</article>`) : html`<p class="project-empty-state">目前沒有家庭小專案，需要時再新增即可。</p>`}</div>
-        </div>
-      </section>
-      ` : ""}
-
-      ${dataPanelMarkup(state, unlocked)}
-
-      ${unlocked ? guideMarkup() : ""}
-
-      <footer>
-        <strong>小小理財島 · 讓好習慣慢慢長大</strong>
-        <span class="footer-credit">著作注記 · <a href="https://www.facebook.com/profile.php?id=100084000897269" target="_blank" rel="noreferrer">fb/指數三寶飯</a></span>
-      </footer>
-
-      ${raw(common.primaryNav("parent"))}
-    </main>`;
+      <div class="parent-project-list">
+        <h3 class="parent-subtitle">目前專案</h3>
+        ${state.projects.length ? state.projects.map((project) => html`<div class="parent-row">
+            <div><b>${project.title}</b><small>${projectStatusText(project.status)} · ${money(project.reward)}</small></div>
+            ${project.status === "open" ? html`<button type="button" class="btn btn-secondary" data-action="edit-project" data-id="${project.id}">編輯</button>` : ""}
+          </div>`) : html`<p class="empty">目前沒有家庭小專案，需要時再新增即可。</p>`}
+      </div>
+    </section>`;
 }
 
 // ---------- 指南（只改契約第 12 節列出的句子） ----------
 function guideMarkup() {
-  return html`<details class="parent-guide" data-open-key="guide" ${isOpen("guide") ? raw("open") : ""}>
+  return html`<details class="card parent-guide" data-open-key="guide" ${isOpen("guide") ? raw("open") : ""}>
         <summary>
-          <span aria-hidden="true">🧭</span>
+          <span class="guide-mark" aria-hidden="true">🧭</span>
           <div><small>第一次使用可以從這裡開始</small><b>小小理財島：理念與操作指南</b></div>
-          <strong><i>查看指南</i><i>收起指南</i></strong>
+          <span class="summary-hint"><i class="summary-closed-label">查看指南</i><i class="summary-open-label">收起指南</i></span>
         </summary>
-        <div class="parent-guide-content">
-          <section class="guide-principle">
-            <span>我們想教的不是「賺最多」</span>
-            <h2>錢有限，所以每一次安排，都是在練習自己做選擇。</h2>
+        <div class="guide-body">
+          <section class="guide-block guide-principle">
+            <span class="kicker">我們想教的不是「賺最多」</span>
+            <h3>錢有限，所以每一次安排，都是在練習自己做選擇。</h3>
             <p>先照顧未來的自己，再安排現在想做的事；記帳與回顧是用來觀察和調整，不是考試，也不因為選錯就處罰。</p>
           </section>
 
-          <section class="guide-section guide-finance-section">
-            <span class="parent-kicker">五個核心理財觀念</span>
-            <div class="guide-finance-grid">
-              <article><b>1</b><h3>錢有限</h3><p>選擇一件想要的東西，也代表其他東西需要等待。</p></article>
-              <article><b>2</b><h3>先存再花</h3><p>每次收到錢，先依家庭比例留一部分給未來的自己。</p></article>
-              <article><b>3</b><h3>錢有不同任務</h3><p>撲滿、爸媽銀行與 ETF 是不同用途；互相搬動不是又賺一筆。</p></article>
-              <article><b>4</b><h3>投資會波動</h3><p>資產成長可能來自投入，也可能來自 ETF 漲跌，沒有保證。</p></article>
-              <article><b>5</b><h3>回顧再調整</h3><p>每月看看選擇的結果，找到下次想保留或換個做法的地方。</p></article>
+          <section class="guide-block">
+            <span class="kicker">五個核心理財觀念</span>
+            <div class="guide-grid">
+              <article><b>1</b><h4>錢有限</h4><p>選擇一件想要的東西，也代表其他東西需要等待。</p></article>
+              <article><b>2</b><h4>先存再花</h4><p>每次收到錢，先依家庭比例留一部分給未來的自己。</p></article>
+              <article><b>3</b><h4>錢有不同任務</h4><p>撲滿、爸媽銀行與 ETF 是不同用途；互相搬動不是又賺一筆。</p></article>
+              <article><b>4</b><h4>投資會波動</h4><p>資產成長可能來自投入，也可能來自 ETF 漲跌，沒有保證。</p></article>
+              <article><b>5</b><h4>回顧再調整</h4><p>每月看看選擇的結果，找到下次想保留或換個做法的地方。</p></article>
             </div>
           </section>
 
-          <section class="guide-section">
-            <span class="parent-kicker">第一次設定</span>
-            <div class="guide-step-grid">
-              <article><b>1</b><h3>建立家庭</h3><p>設定家長操作碼與孩子名字，並在「資料與備份」開啟雲端備份。</p></article>
-              <article><b>2</b><h3>設定孩子資料</h3><p>編輯孩子的名字、照片與撲滿金額，並調整預先儲蓄比例；預設是 30%。</p></article>
-              <article><b>3</b><h3>從第一筆錢開始</h3><p>孩子記錄收到的零用錢，系統會依比例分到「留給未來」與「可以自己決定」。</p></article>
-              <article><b>4</b><h3>一起核對</h3><p>家長定期確認實體金額、爸媽銀行與真實投資；需要修正時再解鎖家長功能。</p></article>
+          <section class="guide-block">
+            <span class="kicker">第一次設定</span>
+            <div class="guide-grid">
+              <article><b>1</b><h4>建立家庭</h4><p>設定家長操作碼與孩子名字，並在「資料與備份」開啟雲端備份。</p></article>
+              <article><b>2</b><h4>設定孩子資料</h4><p>編輯孩子的名字、照片與撲滿金額，並調整預先儲蓄比例；預設是 30%。</p></article>
+              <article><b>3</b><h4>從第一筆錢開始</h4><p>孩子記錄收到的零用錢，系統會依比例分到「留給未來」與「可以自己決定」。</p></article>
+              <article><b>4</b><h4>一起核對</h4><p>家長定期確認實體金額、爸媽銀行與真實投資；需要修正時再解鎖家長功能。</p></article>
             </div>
           </section>
 
-          <section class="guide-section">
-            <span class="parent-kicker">四個頁面怎麼用</span>
-            <div class="guide-page-grid">
-              <article><b>孩子首頁</b><p>記錄收到的錢與花費，查看撲滿、爸媽銀行、ETF 小森林和最近紀錄。</p></article>
-              <article><b>夢想與回顧</b><p>先看看每月存錢、資產與支出，再保留一個短期夢想和一個長期夢想。</p></article>
-              <article><b>所有紀錄</b><p>依名稱、日期或類型搜尋。家長解鎖後可以編輯或撤銷可調整的紀錄。</p></article>
-              <article><b>家長區</b><p>管理比例、照片、撲滿、家庭小專案、真實投資與資料備份。</p></article>
+          <section class="guide-block">
+            <span class="kicker">四個頁面怎麼用</span>
+            <div class="guide-grid">
+              <article><h4>孩子首頁</h4><p>記錄收到的錢與花費，查看撲滿、爸媽銀行、ETF 小森林和最近紀錄。</p></article>
+              <article><h4>夢想與回顧</h4><p>先看看每月存錢、資產與支出，再保留一個短期夢想和一個長期夢想。</p></article>
+              <article><h4>所有紀錄</h4><p>依名稱、日期或類型搜尋。家長解鎖後可以編輯或撤銷可調整的紀錄。</p></article>
+              <article><h4>家長區</h4><p>管理比例、照片、撲滿、家庭小專案、真實投資與資料備份。</p></article>
             </div>
           </section>
 
-          <section class="guide-section guide-account-section">
-            <span class="parent-kicker">三個帳戶的意思</span>
-            <div class="guide-account-grid">
-              <article><span>🐷</span><div><b>撲滿</b><p>孩子可以自己決定的錢，也是短期夢想的進度來源。</p></div></article>
-              <article><span>🏦</span><div><b>爸媽銀行</b><p>先存下的錢、自主多存與每月自動加入的爸媽存錢獎勵，準備留給較久以後。</p></div></article>
-              <article><span>🌳</span><div><b>ETF 小森林</b><p>爸媽實際買入後再記錄，市值會隨家長更新的真實金額變化。</p></div></article>
+          <section class="guide-block">
+            <span class="kicker">三個帳戶的意思</span>
+            <div class="guide-accounts">
+              <article><span aria-hidden="true">🐷</span><div><b>撲滿</b><p>孩子可以自己決定的錢，也是短期夢想的進度來源。</p></div></article>
+              <article><span aria-hidden="true">🏦</span><div><b>爸媽銀行</b><p>先存下的錢、自主多存與每月自動加入的爸媽存錢獎勵，準備留給較久以後。</p></div></article>
+              <article><span aria-hidden="true">🌳</span><div><b>ETF 小森林</b><p>爸媽實際買入後再記錄，市值會隨家長更新的真實金額變化。</p></div></article>
             </div>
-            <p class="guide-balance-note">總資產＝撲滿＋爸媽銀行＋ETF 小森林；帳戶之間搬錢不代表又賺到一筆錢。</p>
+            <p class="guide-note">總資產＝撲滿＋爸媽銀行＋ETF 小森林；帳戶之間搬錢不代表又賺到一筆錢。</p>
           </section>
 
-          <section class="guide-section guide-rhythm">
-            <div><span class="parent-kicker">建議的家庭節奏</span><ul><li>收到或花錢時：當下簡單記一筆。</li><li>每週：花 5 分鐘一起核對帳本。</li><li>每月：完成一次回顧，聊聊最滿意的選擇。</li><li>每年過年：可以選擇不提領，或最多收成投資的 5%。</li></ul></div>
-            <div><span class="parent-kicker">資料與救援</span><ul><li>每次異動會自動存在這台裝置並保留快照。</li><li>家長可下載備份檔，或開啟 GitHub 雲端備份。</li><li>換手機時用備份檔或雲端備份拿回來。</li><li>實體「好棒印章」不換現金，繼續保留生活鼓勵的味道。</li></ul></div>
+          <section class="guide-block">
+            <span class="kicker">建議的家庭節奏</span>
+            <ul class="guide-list"><li>收到或花錢時：當下簡單記一筆。</li><li>每週：花 5 分鐘一起核對帳本。</li><li>每月：完成一次回顧，聊聊最滿意的選擇。</li><li>每年過年：可以選擇不提領，或最多收成投資的 5%。</li></ul>
+          </section>
+
+          <section class="guide-block">
+            <span class="kicker">資料與救援</span>
+            <ul class="guide-list"><li>每次異動會自動存在這台裝置並保留快照。</li><li>家長可下載備份檔，或開啟 GitHub 雲端備份。</li><li>換手機時用備份檔或雲端備份拿回來。</li><li>實體「好棒印章」不換現金，繼續保留生活鼓勵的味道。</li></ul>
           </section>
         </div>
       </details>`;
 }
 
-// ---------- 孩子資料編輯（規格 2.4 第 5 項：外層改成 <details>，內容照原樣） ----------
+// ---------- 孩子資料編輯（規格 5.5：外層改成一張 .card，切換列改用共用的 profileChips） ----------
 function profileEditorMarkup(state, profile) {
   const canAddProfile = state.profiles.length < 5;
   const removable = state.profiles.length > 1
     && !state.activities.some((item) => item.profileId === profile.id)
     && !state.holdings.some((item) => item.profileId === profile.id)
     && !state.dreamJars.some((item) => item.profileId === profile.id);
-  return html`<div class="parent-profile-row profile-editor-switcher" aria-label="選擇要編輯的小朋友">
-          ${state.profiles.map((item) => html`<div class="parent-profile-shell" style="--profile-color: ${item.accent}">
-              <button
-                class="${item.id === profile.id ? "parent-profile is-active" : "parent-profile"}"
-                type="button"
-                data-action="open-profile-editor"
-                data-id="${item.id}"
-                aria-pressed="${item.id === profile.id ? "true" : "false"}"
-                aria-expanded="${item.id === profile.id ? "true" : "false"}"
-              >
-                <span>${raw(common.profileAvatar(item.avatar))}</span><b>${item.name}</b><small>${item.id === profile.id ? "再按一次收起編輯" : "切換並編輯這位小朋友"}</small>
-              </button>
-            </div>`)}
-          ${canAddProfile ? html`<div class="parent-profile-shell" style="--profile-color: var(--line)">
-              <button class="parent-profile" type="button" data-action="toggle-add-profile" aria-expanded="${ui.addProfileOpen ? "true" : "false"}">
-                <span aria-hidden="true">＋</span><b>新增小朋友</b><small>${ui.addProfileOpen ? "再按一次收起" : "最多 5 位，只要填名字"}</small>
-              </button>
-            </div>` : ""}
-        </div>
+  return html`${raw(common.profileChips(state.profiles, profile.id))}
+        ${canAddProfile ? html`<div class="form-actions">
+            <button class="btn btn-ghost" type="button" data-action="toggle-add-profile" aria-expanded="${ui.addProfileOpen ? "true" : "false"}">${ui.addProfileOpen ? "再按一次收起" : "＋ 新增小朋友（最多 5 位，只要填名字）"}</button>
+          </div>` : ""}
         <div class="profile-editor-forms">
           <form class="profile-identity-form" data-form="profile-identity">
-            <span class="profile-photo-preview">${raw(common.profileAvatar(ui.profilePreview || profile.avatar, draft("profile-name", profile.name) || profile.name))}</span>
-            <label>顯示名字<input data-draft="profile-name" value="${draft("profile-name", profile.name)}" minlength="1" maxlength="12" required /></label>
-            <label class="profile-photo-input">選擇照片<input type="file" accept="image/jpeg,image/png,image/webp" data-input="profile-photo" /></label>
-            <button data-busy-label="儲存中…">儲存照片與名字</button>
-            ${removable ? html`<button class="cancel-preset" type="button" data-action="remove-profile" data-busy-label="移除中…">移除這位小朋友</button>` : ""}
+            <h3 class="parent-subtitle">編輯${profile.name}</h3>
+            <div class="profile-photo-row">
+              <span class="profile-photo-preview">${raw(common.profileAvatar(ui.profilePreview || profile.avatar, draft("profile-name", profile.name) || profile.name))}</span>
+              <div class="profile-photo-fields">
+                ${common.field({
+                  label: "顯示名字",
+                  input: html`<input class="input" data-draft="profile-name" value="${draft("profile-name", profile.name)}" minlength="1" maxlength="12" required />`,
+                })}
+                ${common.field({
+                  label: "選擇照片",
+                  input: html`<input class="input file-input" type="file" accept="image/jpeg,image/png,image/webp" data-input="profile-photo" />`,
+                })}
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-primary" data-busy-label="儲存中…">儲存照片與名字</button>
+              ${removable ? html`<button class="btn btn-danger" type="button" data-action="remove-profile" data-busy-label="移除中…">移除這位小朋友</button>` : ""}
+            </div>
           </form>
           <form class="profile-piggy-form" data-form="piggy">
+            <h3 class="parent-subtitle">校正撲滿金額</h3>
             ${piggyCorrectionFields(profile)}
-            <button data-busy-label="儲存中…">儲存撲滿金額</button>
+            <div class="form-actions">
+              <button class="btn btn-primary" data-busy-label="儲存中…">儲存撲滿金額</button>
+            </div>
           </form>
           ${ui.addProfileOpen && canAddProfile ? html`<form class="profile-add-form" data-form="add-profile">
-            <label>新的小朋友名字<input data-draft="new-profile-name" value="${draft("new-profile-name")}" minlength="1" maxlength="12" placeholder="例如：小寶" required /></label>
-            <button data-busy-label="新增中…">新增小朋友</button>
-            <button class="cancel-preset" type="button" data-action="cancel-add-profile">取消</button>
+            ${common.field({
+              label: "新的小朋友名字",
+              input: html`<input class="input" data-draft="new-profile-name" value="${draft("new-profile-name")}" minlength="1" maxlength="12" placeholder="例如：小寶" required />`,
+            })}
+            <div class="form-actions">
+              <button class="btn btn-primary" data-busy-label="新增中…">新增小朋友</button>
+              <button class="btn btn-ghost" type="button" data-action="cancel-add-profile">取消</button>
+            </div>
           </form>` : ""}
         </div>`;
 }
@@ -360,18 +452,39 @@ function profileEditorMarkup(state, profile) {
 // ---------- 資料與備份（取代 DeviceTrustPanel） ----------
 function dataPanelMarkup(state, unlocked) {
   const healthy = state.backupHealth?.status !== "failed";
-  return html`<section class="parent-device-panel" id="devices">
-      <div class="parent-device-heading"><div><span class="parent-kicker">裝置與資料</span><h2>資料與備份</h2></div><span class="${healthy ? "device-status is-trusted" : "device-status"}">${common.backupStatusText(state)}</span></div>
-      <div class="parent-device-grid">
-        <details data-open-key="backup-file" ${isOpen("backup-file") ? raw("open") : ""}><summary>下載或上傳資料副本</summary><p>平時可下載帳本；換手機或搬到別的地方時，請下載包含孩子照片的完整可攜備份。兩種備份都不含家長操作碼。</p><div class="backup-download-actions"><button data-action="download-backup" data-kind="account" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載帳本備份</button><button data-action="download-backup" data-kind="portable" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載完整可攜備份</button></div><label class="backup-file-label">選擇備份檔<input type="file" accept="application/json,.json" data-input="backup-file" ${!unlocked ? raw("disabled") : ""} /></label>${ui.restoreSummary ? restoreSummaryMarkup(ui.restoreSummary, unlocked) : ""}</details>
-        <details data-open-key="snapshots" ${isOpen("snapshots") ? raw("open") : ""}><summary>本機快照</summary><p>每次記帳或修改，app 都會自動另外存一份完整快照，保留最近 20 份與每天最後一份（60 天）。誤刪、誤扣、資料出問題都可以從這裡救回來。</p><div class="device-list" data-snapshot-list>${snapshotListMarkup(unlocked)}</div></details>
-        <details data-open-key="gist" ${isOpen("gist") ? raw("open") : ""}><summary>GitHub 雲端備份</summary><div data-gist-root>${raw(gist.renderGistPanel())}</div></details>
+  return html`<section class="card parent-device-panel" id="devices">
+      <div class="card-head">
+        <div><span class="kicker">裝置與資料</span><h2 class="card-title">資料與備份</h2></div>
+        <span class="${healthy ? "backup-status" : "backup-status is-failed"}"><i aria-hidden="true"></i>${common.backupStatusText(state)}</span>
       </div>
+      <details class="subpanel" data-open-key="backup-file" ${isOpen("backup-file") ? raw("open") : ""}>
+        <summary>下載或上傳資料副本</summary>
+        <div class="subpanel-body">
+          <p>平時可下載帳本；換手機或搬到別的地方時，請下載包含孩子照片的完整可攜備份。兩種備份都不含家長操作碼。</p>
+          <div class="backup-download-actions">
+            <button type="button" class="btn btn-secondary" data-action="download-backup" data-kind="account" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載帳本備份</button>
+            <button type="button" class="btn btn-secondary" data-action="download-backup" data-kind="portable" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載完整可攜備份</button>
+          </div>
+          <label class="backup-file-label">選擇備份檔<input class="input file-input" type="file" accept="application/json,.json" data-input="backup-file" ${!unlocked ? raw("disabled") : ""} /></label>
+          ${ui.restoreSummary ? restoreSummaryMarkup(ui.restoreSummary, unlocked) : ""}
+        </div>
+      </details>
+      <details class="subpanel" data-open-key="snapshots" ${isOpen("snapshots") ? raw("open") : ""}>
+        <summary>本機快照</summary>
+        <div class="subpanel-body">
+          <p>每次記帳或修改，app 都會自動另外存一份完整快照，保留最近 20 份與每天最後一份（60 天）。誤刪、誤扣、資料出問題都可以從這裡救回來。</p>
+          <div class="device-list" data-snapshot-list>${snapshotListMarkup(unlocked)}</div>
+        </div>
+      </details>
+      <details class="subpanel" data-open-key="gist" ${isOpen("gist") ? raw("open") : ""}>
+        <summary>GitHub 雲端備份</summary>
+        <div class="subpanel-body" data-gist-root>${raw(gist.renderGistPanel())}</div>
+      </details>
     </section>`;
 }
 
 function restoreSummaryMarkup(summary, unlocked) {
-  return html`<div class="restore-summary"><b>${summary.family.name} · ${formatDateTime(summary.exportedAt)}</b><small>${summary.portable ? `完整可攜備份${summary.photoCount ? `，包含 ${summary.photoCount} 張照片` : ""}` : "帳本備份"}</small><small>${summary.counts.profiles} 位孩子、${summary.counts.activities} 筆紀錄、${summary.counts.dreams} 個夢想、${summary.counts.holdings} 個投資標的</small><button class="restore-button" data-action="restore-backup" data-busy-label="還原中…" ${!unlocked ? raw("disabled") : ""}>確認覆蓋並還原</button><small>確認後會先自動保存目前帳本，再以備份內容取代。</small></div>`;
+  return html`<div class="restore-summary"><b>${summary.family.name} · ${formatDateTime(summary.exportedAt)}</b><small>${summary.portable ? `完整可攜備份${summary.photoCount ? `，包含 ${summary.photoCount} 張照片` : ""}` : "帳本備份"}</small><small>${summary.counts.profiles} 位孩子、${summary.counts.activities} 筆紀錄、${summary.counts.dreams} 個夢想、${summary.counts.holdings} 個投資標的</small><button type="button" class="btn btn-primary restore-button" data-action="restore-backup" data-busy-label="還原中…" ${!unlocked ? raw("disabled") : ""}>確認覆蓋並還原</button><small>確認後會先自動保存目前帳本，再以備份內容取代。</small></div>`;
 }
 
 function snapshotSubtitle(record) {
@@ -388,9 +501,9 @@ function snapshotListMarkup(unlocked) {
   if (ui.snapshots === false) return html`<p class="empty-history">這台裝置不支援自動快照，請多用上面的手動備份。</p>`;
   if (!ui.snapshots.length) return html`<p class="empty-history">還沒有快照（第一次改動後幾秒就會出現）。</p>`;
   const shown = ui.snapshots.slice(0, 12);
-  return html`${shown.map((record) => html`<div>
-      <span><b>${formatDateTime(record.ts)}</b><small>${snapshotSubtitle(record)}</small></span>
-      <button type="button" data-action="restore-snapshot" data-ts="${record.ts}" data-busy-label="還原中…" ${!unlocked ? raw("disabled") : ""}>還原</button>
+  return html`${shown.map((record) => html`<div class="parent-row">
+      <div><b>${formatDateTime(record.ts)}</b><small>${snapshotSubtitle(record)}</small></div>
+      <button type="button" class="btn btn-secondary" data-action="restore-snapshot" data-ts="${record.ts}" data-busy-label="還原中…" ${!unlocked ? raw("disabled") : ""}>還原</button>
     </div>`)}${ui.snapshots.length > 12 ? html`<p class="empty-history">還有 ${ui.snapshots.length - 12} 份較早的快照。</p>` : ""}`;
 }
 
@@ -555,6 +668,66 @@ function openCorrectionModal(ctx) {
   }
 }
 
+// ---------- 變更操作碼 modal（存活機制照 common.createLockModal：reason === "rerender" 不清「該開」旗標） ----------
+async function submitPinChangeModal(ctx, form) {
+  const button = submitButtonOf(form);
+  const idleLabel = button ? button.textContent : "";
+  const currentPin = form.querySelector('[data-field="current-pin"]').value;
+  const newPin = form.querySelector('[data-field="new-pin"]').value;
+  const confirmNewPin = form.querySelector('[data-field="confirm-new-pin"]').value;
+  setDialogError(form, "");
+  if (newPin !== confirmNewPin) {
+    setDialogError(form, "兩次輸入的新操作碼不一致");
+    common.showStatus("兩次輸入的新操作碼不一致", "error");
+    return;
+  }
+  if (button) { button.disabled = true; if (button.dataset.busyLabel) button.textContent = button.dataset.busyLabel; }
+  try {
+    await pin.change(currentPin, newPin);
+    ui.parentPin = newPin;
+    ui.pinChangeOpen = false;
+    ui.pinChangeDrafts = { "current-pin": "", "new-pin": "", "confirm-new-pin": "" };
+    // 只呼叫 ctx.refresh()：它觸發的 render() 裡的 closeModal() 會收掉這個 modal（規格 4.3）。
+    common.showStatus("家長操作碼已更新；下次請使用新操作碼解鎖", "success");
+    ui.notice = "家長操作碼已更新；下次請使用新操作碼解鎖";
+    ctx.refresh();
+  } catch (caught) {
+    const message = errorMessage(caught, "無法變更操作碼");
+    setDialogError(form, message);
+    common.showStatus(message, "error");
+    if (button && button.isConnected) { button.disabled = false; button.textContent = idleLabel; }
+  }
+}
+
+function openPinChangeModal(ctx) {
+  const dialog = common.openModal(pinChangeModalBody(), {
+    labelledBy: "pin-change-title",
+    onClose: (reason) => {
+      if (ui.pinChangeModalKind !== "pin-change") return;
+      ui.pinChangeModalKind = "";
+      // 背景重繪不算使用者關閉：留著「該開」旗標，mount() 會補開並回填欄位。
+      if (reason !== "rerender") ui.pinChangeOpen = false;
+    },
+  });
+  if (!dialog) return;
+  ui.pinChangeModalKind = "pin-change";
+  dialog.addEventListener("input", (event) => {
+    const field = event.target;
+    if (!(field instanceof HTMLElement) || !field.dataset.field) return;
+    if (field.dataset.digits !== undefined) field.value = field.value.replace(/\D/g, "");
+    ui.pinChangeDrafts[field.dataset.field] = field.value;
+  });
+  const form = dialog.querySelector("form");
+  if (form) {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void submitPinChangeModal(ctxRef, form);
+    });
+    const input = form.querySelector('[data-field="current-pin"]');
+    if (input) input.focus();
+  }
+}
+
 // ---------- 照片壓縮 ----------
 async function compressPhoto(file) {
   const dataUrl = await new Promise((resolve, reject) => {
@@ -600,10 +773,6 @@ function syncSavingsRate(root, ctx) {
   }
 }
 
-function scrollTo(selector) {
-  window.setTimeout(() => document.querySelector(selector)?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 0);
-}
-
 async function loadSnapshots(root, ctx) {
   try {
     const list = await db.listSnapshots();
@@ -633,6 +802,8 @@ export function mount(root, ctx) {
 
   // 重繪之後把原本開著的校正撲滿 modal 補回來（規格 1.2／3.2）。
   if (ui.correctionOpen && ui.correctionModalKind !== "correction") openCorrectionModal(ctx);
+  // 變更操作碼 modal 同一套存活機制（規格 4.3）。
+  if (ctx.pinStatus === "unlocked" && ui.pinChangeOpen && ui.pinChangeModalKind !== "pin-change") openPinChangeModal(ctx);
 
   if (boundRoots.has(root)) return;
   boundRoots.add(root);
@@ -737,33 +908,8 @@ async function handleSubmit(root, ctx, form) {
     return;
   }
 
-  if (kind === "pin-change") {
-    const currentPin = form.querySelector('[data-field="current-pin"]').value;
-    const newPin = form.querySelector('[data-field="new-pin"]').value;
-    const confirmNewPin = form.querySelector('[data-field="confirm-new-pin"]').value;
-    ui.pinError = "";
-    paintOperationError(root);
-    if (newPin !== confirmNewPin) {
-      ui.pinError = "兩次輸入的新操作碼不一致";
-      paintOperationError(root);
-      common.showStatus("兩次輸入的新操作碼不一致", "error");
-      return;
-    }
-    startBusy(root, button);
-    try {
-      await pin.change(currentPin, newPin);
-      ui.parentPin = newPin;
-      ui.pinChangeOpen = false;
-      announce(root, "家長操作碼已更新；下次請使用新操作碼解鎖");
-      ctx.refresh();
-    } catch (caught) {
-      endBusy();
-      ui.pinError = errorMessage(caught, "無法變更操作碼");
-      paintOperationError(root);
-      common.showStatus(ui.pinError, "error");
-    }
-    return;
-  }
+  // 變更操作碼的表單已經搬進 modal（規格 5.5），由 submitPinChangeModal() 直接接手，
+  // 不再走 #app 的 submit 委派。
 
   if (kind === "savings-rate") {
     const ok = await runParentAction(root, ctx, { button, scope: "accounts" }, () => store.updateSavingsRate({ savingsRate: ui.savingsRate, parentPin: ui.parentPin }));
@@ -838,9 +984,9 @@ async function handleClick(root, ctx, button) {
 
   switch (action) {
     case "toggle-pin-change": {
-      ui.pinChangeOpen = !ui.pinChangeOpen;
       ui.pinError = "";
-      ctx.refresh();
+      ui.pinChangeOpen = true;
+      if (ui.pinChangeModalKind !== "pin-change") openPinChangeModal(ctx);
       return;
     }
     case "savings-up":
@@ -849,21 +995,8 @@ async function handleClick(root, ctx, button) {
       syncSavingsRate(root, ctx);
       return;
     }
-    case "open-profile-editor": {
-      if (id === profile.id) {
-        // 已經是目前正在編輯的小朋友：再按一次收起（原本按鈕的行為，details 化後改直接操作開合狀態）。
-        ui.openDetails.delete("profile-editor");
-        const details = root.querySelector("#profile-editor");
-        if (details) details.open = false;
-        return;
-      }
-      ui.openDetails.add("profile-editor");
-      ui.addProfileOpen = false;
-      ui.operationError = null;
-      ctx.chooseProfile(id);
-      scrollTo("#profile-editor");
-      return;
-    }
+    // 孩子切換改用共用的 profileChips（data-choose-profile，委派在 app.js），
+    // 孩子資料卡不再是收合面板，所以 open-profile-editor 這個動作在 v2 沒有對應的按鈕了。
     case "toggle-add-profile": {
       ui.addProfileOpen = !ui.addProfileOpen;
       ctx.refresh();

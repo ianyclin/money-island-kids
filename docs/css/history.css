@@ -1,1 +1,28 @@
-/* 頁面專屬樣式，由頁面建造者填寫 */
+/* 紀錄頁專屬樣式（規格 5.3）。.filters／.month-head／.record／.timeline-dot 都在 app.css，
+   這裡只補「列上的家長按鈕」與電腦版單欄寬度。主線整合時決定要不要併回 app.css。 */
+
+.history-list { display: flex; flex-direction: column; gap: var(--space-3); }
+
+/* 月份標頭之後的第一列不用再畫一條分隔線（標頭本身有底線） */
+.month-head + .record { border-top: 0; }
+
+/* 解鎖後列右側多一欄：手機一顆「⋯」，≥1100 換成兩顆 ghost（下面的 media query） */
+.page[data-page="history"] .record { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+.record-actions { display: none; }
+.record-menu { display: inline-flex; align-items: center; justify-content: center; }
+
+/* 「⋯」開的 modal：兩顆選項直排 */
+.record-menu-actions { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-5); }
+
+.load-more-button { margin-top: var(--space-2); }
+
+@media (min-width: 1100px) {
+  /* 規格 5.3「電腦」：單欄 max-width 760px 置中 */
+  .page[data-page="history"] .page-body { width: min(760px, 100%); }
+  .record-menu { display: none; }
+  .record-actions { display: flex; gap: var(--space-2); }
+  .record-actions .btn { padding-inline: 12px; }
+}
+
+/* 主線補回：每筆錢分別進了哪個錢包（原版 deltaText），12px 綠字 */
+.record-delta { display: block; margin-top: 3px; font-style: normal; font-size: 12px; font-weight: 700; color: var(--green); }
