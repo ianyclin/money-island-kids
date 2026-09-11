@@ -396,58 +396,6 @@ export function confirmDialog(message, options = {}) {
   });
 }
 
-// ---------- 小朋友切換列 ----------
-// render 產生字串、mount 才綁事件的模型下沒辦法直接把 onChoose 掛上去，
-// 所以按鈕帶 data-picker 編號，這裡用事件委派派回對應的 callback。
-let pickerSerial = 0;
-const pickerHandlers = new Map();
-
-function prunePickers() {
-  for (const key of Array.from(pickerHandlers.keys())) {
-    if (!document.querySelector(`[data-picker="${key}"]`)) pickerHandlers.delete(key);
-  }
-}
-
-// profilePicker(profiles, selectedId, onChoose, { variant: "chip" | "parent", label, caption })
-// v2 過渡用，頁面建造者改完後由主線刪除：現在兩種 variant 都輸出 v2 的 .profile-chips／.chip，
-// 只有 onChoose 走 pickerHandlers 的委派這件事沒變（不帶 data-choose-profile，不會重複觸發）。
-export function profilePicker(profiles, selectedId, onChoose, options = {}) {
-  prunePickers();
-  pickerSerial += 1;
-  const key = `p${pickerSerial}`;
-  if (typeof onChoose === "function") pickerHandlers.set(key, onChoose);
-  const list = Array.isArray(profiles) ? profiles : [];
-  const caption = typeof options.caption === "function" ? options.caption : null;
-
-  if (options.variant === "parent") {
-    return html`<div class="${classNames("profile-chips", options.className)}" aria-label="${options.label || "選擇要編輯的小朋友"}">${list.map((item) => {
-      const active = item.id === selectedId;
-      const text = caption ? caption(item, active) : "";
-      return html`<button
-        type="button"
-        class="${active ? "chip is-active" : "chip"}"
-        data-picker="${key}"
-        data-profile-id="${item.id}"
-        aria-pressed="${active ? "true" : "false"}"
-        style="--profile-color: ${item.accent}"
-      ><span>${profileAvatar(item.avatar, item.name)}</span><b>${item.name}</b>${text ? html`<small>${text}</small>` : ""}</button>`;
-    })}</div>`;
-  }
-
-  return html`<div class="profile-chips" aria-label="${options.label || "切換小朋友"}">${list.map((item) => {
-    const active = item.id === selectedId;
-    return html`<button
-      type="button"
-      class="${active ? "chip is-active" : "chip"}"
-      data-picker="${key}"
-      data-profile-id="${item.id}"
-      aria-pressed="${active ? "true" : "false"}"
-      aria-label="切換到${item.name}"
-      style="--profile-color: ${item.accent}"
-    ><span>${profileAvatar(item.avatar, item.name)}</span><b>${item.name}</b></button>`;
-  })}</div>`;
-}
-
 // profileChips(profiles, selectedId)：橫排的孩子切換列（規格 4.2 的 .profile-chips／.chip）。
 // 每顆按鈕帶 data-choose-profile="<id>"，委派由 app.js 統一接（見 app.js 的「孩子切換」段）。
 export function profileChips(profiles, selectedId, captionOf) {
@@ -465,41 +413,6 @@ export function sidebarKids(profiles, selectedId) {
     return html`<button type="button" class="${active ? "chip is-active" : "chip"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" aria-label="切換到${item.name}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b></button>`;
   })}</div>`;
 }
-
-// v2 過渡用，頁面建造者改完後由主線刪除。
-export function profileRow(profiles, selectedId, subtitleOf, className) {
-  return html`<div class="${classNames("profile-chips", className)}" aria-label="切換小朋友">${(profiles || []).map((item) => {
-    const active = item.id === selectedId;
-    const text = typeof subtitleOf === "function" ? subtitleOf(item, active) : "";
-    return html`<button type="button" class="${active ? "chip is-active" : "chip"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b>${text ? html`<small>${text}</small>` : ""}</button>`;
-  })}</div>`;
-}
-
-// ---------- v2 過渡用的相容層，頁面建造者改完後由主線刪除 ----------
-// 舊頁面（home／dreams／history／parent／parent-investments）還在呼叫這兩支；
-// v2 的殼由 appShell() 提供，這裡只保證過渡期間不會 crash、孩子切換仍然可用。
-export function miniTopbar({ active, ctx, right } = {}) {
-  const profiles = (ctx && (ctx.profiles || (ctx.state && ctx.state.profiles))) || [];
-  const selectedId = ctx && ctx.profile ? ctx.profile.id : null;
-  return html`<header class="page-head">
-    ${profileChips(profiles, selectedId)}
-    <div class="page-head-right">${right ? raw(String(right)) : ""}</div>
-  </header>`;
-}
-
-// v2 的導覽是 appShell() 的 .tabbar／.sidenav：舊頁面的第二條導覽直接消失。
-export function primaryNav(_active) {
-  return html``;
-}
-
-document.addEventListener("click", (event) => {
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  const button = target.closest("[data-picker][data-profile-id]");
-  if (!button) return;
-  const handler = pickerHandlers.get(button.getAttribute("data-picker"));
-  if (handler) handler(button.getAttribute("data-profile-id"));
-});
 
 // ---------- 開機／錯誤畫面 ----------
 let retryHandler = null;

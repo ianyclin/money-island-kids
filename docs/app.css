@@ -73,7 +73,7 @@ img { height: auto; display: block; }
   --font-serif: "Iowan Old Style", "Noto Serif TC", serif;
   --font-sans: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
 
-  --fs-display: 30px;   /* 首頁問候、頁面大標；≥768 34px；≥1100 40px */
+  --fs-display: 26px;   /* 首頁問候、頁面大標；≥768 34px；≥1100 40px。主線 9/11：30→26，真實名字的問候語在 343px 才不會折成兩行 */
   --fs-title: 20px;     /* 頁面標題、卡片標題 */
   --fs-body: 15px;
   --fs-small: 13px;

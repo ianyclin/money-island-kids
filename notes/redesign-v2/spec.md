@@ -275,7 +275,7 @@
 
 - 375、768、1100、1280 四個寬度，六個路由，零 console error。
 - 手機首頁第一屏看得到三個錢包與兩顆按鈕；整頁 ≤ 1.6 屏。
-- 沒有任何字小於 12px（用 JS 掃 `getComputedStyle` 全部文字節點）。
+- 沒有任何字小於 12px（用 JS 掃 `getComputedStyle` 全部文字節點）。**唯一例外**：折線圖座標軸標籤（`.chart-y-axis`、`.chart-x-axis`）維持 10px，這是圖表慣例；小島下方的「已經存給未來」與樹種選擇已由主線提到 12px。
 - 只有 `.tabbar`、`.toast`、modal 是 `position: fixed`。
 - 真實備份（作者 9/7 匯出）匯入後四頁正常。
 - 背景重繪時，記帳 modal 打到一半的金額仍在。

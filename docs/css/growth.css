@@ -111,3 +111,8 @@
   .growth-section[data-tab-panel="jar"] { grid-column: 1; grid-row: 2; }
   .growth-section[data-tab-panel="review"] { grid-column: 2; grid-row: 1 / span 2; }
 }
+
+/* 主線補：折線圖 x 軸 10 個取樣點各 min-width 30px，在 343px 卡片裡會撐出約 26px 的橫向溢出
+   （舊站靠外層 overflow:hidden 蓋住）。這裡不動原始圖表規則，只讓軸標籤在窄容器裡平分寬度。 */
+.asset-chart .chart-plot { min-width: 0; overflow: hidden; }
+.asset-chart .chart-x-axis > span { min-width: 0; flex: 1 1 0; }
