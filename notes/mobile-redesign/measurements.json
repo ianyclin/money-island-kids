@@ -1,0 +1,42 @@
+{
+  "viewport": "375x812 (iPhone), all <details> collapsed",
+  "pages": [
+    { "hash": "#/", "totalHeightPx": 4595, "screens": 5.7, "controls": 24,
+      "sections": [
+        { "sel": "header.topbar", "h": 132, "controls": 7, "text": "品牌 + 今天是誰？孩子切換 + 四個頁面導覽" },
+        { "sel": "section.hero", "h": 755, "controls": 9, "text": "大寶的理財小基地／大寶的錢，正在慢慢長大。／35% 先留給未來 65% 自己做選擇／記一筆零用錢／記一筆花費／小島花園（樹種選擇、已經存給未來 X、現在成長為 Y）" },
+        { "sel": "section.wallet-grid", "h": 402, "controls": 1, "text": "三張錢包卡：撲滿／爸媽銀行（我想多存一點）／ETF 小森林" },
+        { "sel": "section.content-grid", "h": 1314, "controls": 3, "text": "總資產折線圖（含夢想罐進度）＋ 最近紀錄時間軸（6 筆）" },
+        { "sel": "section.projects-section", "h": 990, "controls": 3, "text": "家庭小專案：說明段 + 專案卡片列表（每張含標題、描述、報酬、按鈕）" },
+        { "sel": "section.rules-section", "h": 630, "controls": 0, "text": "我們家的約定：四條規則（01 先存再花…04 一起記、一起想）" },
+        { "sel": "footer", "h": 132, "controls": 1, "text": "小小理財島 · 讓好習慣慢慢長大／著作注記" }
+      ] },
+    { "hash": "#/dreams", "totalHeightPx": 3184, "screens": 3.9, "controls": 24,
+      "sections": [
+        { "sel": "header.parent-topbar", "h": 132, "controls": 5, "text": "品牌 + 四個頁面導覽" },
+        { "sel": "section.dream-hero", "h": 281, "controls": 0, "text": "先問：這筆錢什麼時候要用？／近一點的夢想留現金，很久以後的夢想讓投資陪它長大。" },
+        { "sel": "section.parent-lock-card", "h": 152, "controls": 2, "text": "家長操作碼解鎖卡（家長可編輯或刪除夢想罐）" },
+        { "sel": "section.parent-profile-row", "h": 74, "controls": 2, "text": "孩子切換列（含撲滿金額）" },
+        { "sel": "section.dream-layout", "h": 2315, "controls": 15, "text": "每月回顧卡（月份切換、三個數字、三個 textarea、儲存）＋ 目前夢想（短期／長期兩張卡）＋ 新增夢想表單 ＋ 短期夢想罐清單 ＋ 已完成夢想罐" }
+      ] },
+    { "hash": "#/history", "totalHeightPx": 2634, "screens": 3.2, "controls": 26,
+      "sections": [
+        { "sel": "header.parent-topbar", "h": 132, "controls": 5, "text": "品牌 + 四個頁面導覽" },
+        { "sel": "section.history-hero", "h": 237, "controls": 0, "text": "所有紀錄都在這裡／大寶的錢，每一步都有故事。" },
+        { "sel": "section.parent-profile-row", "h": 74, "controls": 2, "text": "孩子切換列（含筆數）" },
+        { "sel": "section.history-layout", "h": 1994, "controls": 19, "text": "篩選欄（搜尋、類型、家長解鎖）＋ 紀錄列表（每列：圖示、名稱、日期·類型·備註、餘額變化、金額、編輯／刪除）＋ 載入更多" }
+      ] },
+    { "hash": "#/parent", "totalHeightPx": 3099, "screens": 3.8, "controls": 65,
+      "note": "投資買入表單、常用標的管理、過年收成、資料與備份的三個 details 全部收合時的高度；全部展開會超過 8 個螢幕",
+      "sections": [
+        { "sel": "header.parent-topbar", "h": 132, "controls": 5, "text": "品牌 + 四個頁面導覽" },
+        { "sel": "section.parent-hero", "h": 307, "controls": 1, "text": "所有家長功能集中在這裡／管理帳本、專案與投資，孩子頁面保持簡單。" },
+        { "sel": "section.parent-lock-card", "h": 138, "controls": 2, "text": "家長操作碼解鎖卡（含變更操作碼）" },
+        { "sel": "div.parent-settings-row", "h": 234, "controls": 5, "text": "理念與操作指南（details）＋ 預先儲蓄比例 stepper ＋ 編輯孩子資料觸發鈕（展開後：孩子切換、名字、照片、撲滿校正、新增／移除孩子）" },
+        { "sel": "section.parent-approval-strip（有待辦時才出現）", "h": 0, "controls": 0, "text": "自主多存申請：確認存入／不執行" },
+        { "sel": "section.parent-project-panel", "h": 440, "controls": 5, "text": "家庭小專案：新增專案編輯器 ＋ 等待確認群組 ＋ 目前專案列表" },
+        { "sel": "section.investment-layout", "h": 1098, "controls": 39, "text": "新增真實買入（details：常用標的、標的管理、買入表單、確認勾選）＋ 目前持有（自動更新說明、重新檢查收盤價、每檔持股卡＋手動市值輸入）＋ 最近買入紀錄（編輯／撤銷）＋ 過年投資收成日（details：額度、表單、歷史）" },
+        { "sel": "section.parent-device-panel", "h": 450, "controls": 8, "text": "資料與備份：下載／上傳（details）＋ 本機快照（details）＋ GitHub 雲端備份（details）" }
+      ] }
+  ]
+}

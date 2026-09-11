@@ -1,0 +1,168 @@
+/* #/parent（家長 Hub）與 #/parent/investments（投資子頁）的頁面專屬樣式。
+   只補共用層 docs/styles.css 沒有涵蓋的新結構；能沿用既有 class 的地方（.parent-lock-card、
+   .parent-approval-strip、.parent-project-panel、.holding-panel……）一律不重複定義。
+   對應 notes/mobile-redesign/spec.md 第 2.4／2.4.1／9 節。 */
+
+/* ---------- 未解鎖狀態：hero 精簡一行（spec 2.4／4「parent hero」列） ---------- */
+.parent-hero-line {
+  width: min(1180px, calc(100% - 40px));
+  margin: 14px auto 0;
+  padding: 0 4px;
+}
+
+/* ---------- 迷你頂欄右側：「🔓 已解鎖」小字（跟 .history-link 並排） ---------- */
+.parent-topbar-unlocked {
+  font-size: 11px;
+  font-weight: 900;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ---------- 待辦收件匣：沿用 .parent-approval-strip 卡片＋article 版型，兩種待辦合併陳列 ---------- */
+.parent-inbox-empty {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+/* 家庭小專案 waiting 項目原本用 .project-waiting-group 的 strong，併進來後改用 .parent-approval-strip 的 b／small 排版，
+   這裡把 b 的粗細跟 .parent-approval-strip article b 對齊即可，不用額外規則。 */
+
+/* ---------- 快速動作列（spec 2.4 第 3 項）：記買入／記收成／校正撲滿，三顆等寬 ---------- */
+.parent-quick-actions {
+  width: min(1180px, calc(100% - 40px));
+  margin: 16px auto 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.parent-quick-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 64px;
+  padding: 10px 6px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 900;
+  text-decoration: none;
+  cursor: pointer;
+}
+.parent-quick-action span { font-size: 18px; }
+.parent-quick-action:hover { border-color: var(--green); background: var(--theme-soft, #e5f0eb); }
+.parent-quick-action:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---------- 投資入口卡（spec 2.4 第 6 項） ---------- */
+.parent-investment-entry {
+  width: min(1180px, calc(100% - 40px));
+  margin: 14px auto 0;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--paper);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-decoration: none;
+  color: var(--ink);
+}
+.parent-investment-entry:hover { border-color: var(--green); background: var(--theme-soft, #e5f0eb); }
+.parent-investment-entry > span:first-child {
+  flex: 0 0 40px; width: 40px; height: 40px; border-radius: 13px;
+  display: grid; place-items: center; background: var(--theme-soft, #e5f0eb); font-size: 20px;
+}
+.parent-investment-entry > div { flex: 1; min-width: 0; }
+.parent-investment-entry b { display: block; font-size: 13px; }
+.parent-investment-entry small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.parent-investment-entry strong { flex: 0 0 auto; color: var(--green); font-size: 11px; font-weight: 900; white-space: nowrap; }
+
+/* ---------- 孩子資料編輯：<details> 化，summary 沿用原 .profile-settings-trigger 的視覺語言 ---------- */
+.profile-editor-panel > summary.profile-editor-summary {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 64px; margin: -20px -22px 14px; padding: 14px 22px;
+  list-style: none; cursor: pointer;
+  border-radius: 24px 24px 0 0;
+}
+.profile-editor-summary::-webkit-details-marker { display: none; }
+.profile-editor-summary > span:first-child {
+  flex: 0 0 40px; width: 40px; height: 40px; border-radius: 13px;
+  display: grid; place-items: center; overflow: hidden; background: var(--theme-soft, #e5f0eb); font-size: 22px;
+}
+.profile-editor-summary > span:nth-child(2) { flex: 1; min-width: 0; }
+.profile-editor-summary small { display: block; color: var(--green); font-size: 9px; font-weight: 900; letter-spacing: .07em; }
+.profile-editor-summary b { display: block; margin-top: 3px; font-size: 13px; }
+.profile-editor-summary strong { flex: 0 0 auto; color: var(--green); font-size: 10px; white-space: nowrap; }
+.profile-editor-open-label { display: none; }
+.profile-editor-panel[open] .profile-editor-closed-label { display: none; }
+.profile-editor-panel[open] .profile-editor-open-label { display: inline; }
+.profile-editor-panel[open] > summary.profile-editor-summary { background: var(--theme-soft, #e5f0eb); }
+
+/* ---------- 家庭小專案「新增專案」：從按鈕＋條件渲染改成 <details>（spec 2.4 第 7 項） ---------- */
+.project-editor-panel { margin-top: 14px; }
+.project-editor-panel > summary.project-editor-trigger {
+  list-style: none; display: inline-flex; align-items: center;
+}
+.project-editor-trigger::-webkit-details-marker { display: none; }
+.project-editor-open-label { display: none; }
+.project-editor-panel[open] .project-editor-closed-label { display: none; }
+.project-editor-panel[open] .project-editor-open-label { display: inline; }
+.project-editor-panel .parent-project-form { margin-top: 14px; }
+
+/* ---------- 校正撲滿 modal（spec 2.4 第 3 項；共用 piggyCorrectionFields，跟孩子資料編輯的撲滿表單同一段欄位） ---------- */
+.piggy-correction-modal h2 { margin: 4px 0 10px; font-family: "Iowan Old Style", "Noto Serif TC", serif; font-size: 22px; }
+.piggy-correction-context { display: flex; align-items: center; gap: 8px; margin: 0 0 16px; font-size: 12px; color: var(--muted); }
+.piggy-correction-context span { width: 32px; height: 32px; border-radius: 11px; display: grid; place-items: center; overflow: hidden; background: var(--theme-soft, #e5f0eb); font-size: 17px; }
+.piggy-correction-modal form { display: grid; gap: 12px; }
+.piggy-correction-modal label { font-size: 11px; font-weight: 900; }
+.piggy-correction-modal input { width: 100%; min-height: 44px; margin-top: 5px; border: 1px solid var(--line); border-radius: 11px; padding: 9px 10px; background: white; outline: none; }
+.piggy-correction-modal input:focus { border-color: var(--green); }
+.piggy-correction-modal button { min-height: 44px; }
+.piggy-correction-actions { display: flex; gap: 8px; }
+.piggy-correction-actions .cancel-preset { flex: 0 0 auto; }
+.piggy-correction-actions .primary-button { flex: 1; }
+
+/* ---------- #/parent/investments：買入表單不再收合（spec 2.4.1 第 2／6 項） ---------- */
+.investment-shell .investment-form-card.is-standalone {
+  padding: 32px;
+  overflow: visible;
+}
+.investment-shell .investment-summary {
+  min-height: 0; padding: 0 0 18px; cursor: default;
+}
+.investment-shell .investment-form-content {
+  padding: 0;
+}
+.investment-shell .investment-form-content::before {
+  display: none;
+}
+
+/* 單一持股簡化（spec 2.4.1 第 3／5 項） */
+.holding-panel.is-single .holding-heading > b { display: none; }
+.holding-sole-updated {
+  display: block; margin: -6px 0 6px; color: var(--muted); font-size: 11px; font-weight: 800;
+}
+.harvest-sole-holding {
+  display: grid; gap: 4px; padding: 12px 14px; margin-bottom: 2px;
+  border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--theme-soft, #e5f0eb) 45%, white);
+}
+.harvest-sole-holding span { font-size: 10px; font-weight: 900; color: var(--muted); text-transform: none; }
+.harvest-sole-holding b { font-size: 13px; }
+
+.back-home { display: inline-block; margin: 14px auto 0; }
+.investment-shell .back-home {
+  width: min(1180px, calc(100% - 40px));
+  margin-inline: auto;
+  display: block;
+  width: fit-content;
+}
+
+@media (max-width: 650px) {
+  .parent-quick-action { font-size: 10px; }
+  .parent-investment-entry { flex-wrap: wrap; }
+  .investment-shell .investment-form-card.is-standalone { padding: 22px 18px; }
+}

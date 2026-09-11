@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover：iPhone 瀏海機把安全區交給 CSS 的 env(safe-area-inset-*) 處理 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>小小理財島｜先存一點，夢想長大</title>
+<meta name="description" content="給家庭一起使用的兒童零用錢 App：先留一部分給未來、練習記錄與選擇，並為夢想慢慢累積。">
+<meta name="application-name" content="小小理財島">
+<meta name="theme-color" content="#f4f0e7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="小小理財島">
+<meta property="og:title" content="小小理財島｜先存一點，夢想長大">
+<meta property="og:description" content="給家庭一起使用的兒童零用錢 App：先留一部分給未來、練習記錄與選擇，並為夢想慢慢累積。">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="zh_TW">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="小小理財島｜先存一點，夢想長大">
+<meta name="twitter:description" content="給家庭一起使用的兒童零用錢 App：先留一部分給未來、練習記錄與選擇，並為夢想慢慢累積。">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./css/home.css">
+<link rel="stylesheet" href="./css/dreams.css">
+<link rel="stylesheet" href="./css/history.css">
+<link rel="stylesheet" href="./css/parent.css">
+</head>
+<body>
+<!-- 加到主畫面的提示：放在 #app 外面，整頁重繪不會把它連根拔掉（照 stamps 的作法） -->
+<div id="install-hint" hidden>
+  <div class="install-hint-body">
+    <span>用 Safari 的「分享 → 加入主畫面」把它裝成 app：資料才會跟 app 存在一起，也比較不會被 iPhone 自動清掉（偶爾還是要備份喔）。</span>
+    <button type="button" id="install-hint-close" aria-label="關閉這個提示">×</button>
+  </div>
+</div>
+
+<!-- 開機骨架：app.js 接手後會整個換掉。內容與 MoneyStateGate 的載入態一致 -->
+<div id="app">
+  <main class="money-state-gate" aria-live="polite">
+    <div class="money-state-gate-card">
+      <span class="brand-mark" aria-hidden="true">¢</span>
+      <div class="state-skeleton state-skeleton-title"></div>
+      <div class="state-skeleton"></div>
+      <div class="state-skeleton state-skeleton-short"></div>
+      <span class="sr-only">正在讀取家庭帳本</span>
+    </div>
+  </main>
+</div>
+
+<div id="toast-root"></div>
+<div id="modal-root"></div>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
