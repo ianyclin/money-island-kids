@@ -3,7 +3,6 @@ approve-project
 approve-transfer
 cancel-add-profile
 cancel-correction
-cancel-edit
 cancel-preset-edit
 cancel-project-edit
 choose-preset
@@ -24,17 +23,15 @@ edit-project
 load-more
 month-newer
 month-older
-open-allowance
+new-dream
 open-correction
 open-lock
-open-profile-editor
-open-save-more
-open-spend
 refresh-quotes
 reject-transfer
 remove-profile
 restore-backup
 restore-snapshot
+row-menu
 savings-down
 savings-up
 submit-project

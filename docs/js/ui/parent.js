@@ -638,9 +638,12 @@ function openCorrectionModal(ctx) {
     // 無法從這裡分辨誰觸發的），若在這裡也把 correctionOpen 設回 false，
     // 下面 mount() 的重開檢查就永遠等不到「該開」的訊號，背景重繪會直接把使用者輸入到一半的內容關掉，
     // 正是規格 1.2／3.2 要修的那個洞。
-    onClose: () => {
+    onClose: (reason) => {
       if (ui.correctionModalKind !== "correction") return;
       ui.correctionModalKind = "";
+      // 裁判 9/11：使用者按 ×／背景／Esc 也要清「該開」旗標，否則下次重繪會自己彈回來；
+      // 只有背景重繪（reason === "rerender"）才保留，讓 mount() 補開並回填。
+      if (reason !== "rerender") ui.correctionOpen = false;
     },
   });
   if (!dialog) return;

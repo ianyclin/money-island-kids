@@ -1,6 +1,6 @@
 // 小小理財島 PWA：孩子首頁（v2 規格 5.1）。
 // 版面重做：頁首＝孩子切換列（appShell 提供）、問候、三個錢包、兩顆記帳鈕、多存鈕、小森林、最近三筆。
-// 折線圖搬到成長頁（assetTimeline／assetGrowthChart 留在這裡 export 給 growth.js）；
+// 折線圖搬到成長頁（growth.js）；totalAssets／assetTimeline 在 common.js，兩頁共用；
 // 家庭小專案、我們家的約定、footer 搬到「更多」頁。
 // store 呼叫、operationId、錯誤處理、busy 狀態、modal 的重繪存活機制全部原樣沿用，只換 markup 的 class。
 
@@ -18,6 +18,7 @@ import {
   savedStatus,
 } from "./common.js";
 import * as store from "../store.js";
+import { totalAssets, assetTimeline } from "./common.js";
 
 // ---------- 頁面暫存（重繪後由 render 讀回） ----------
 let action = null;              // null | "allowance" | "spend"
@@ -40,10 +41,6 @@ let currentCtx = null;
 const boundRoots = new WeakSet();
 
 // ---------- 原檔的純函式（原樣移植） ----------
-export function totalAssets(profile) {
-  return profile.spendingBalance + profile.bankBalance + profile.marketValue;
-}
-
 const gardenOptions = [
   { value: "tree", emoji: "🌳", label: "綠葉樹" },
   { value: "cherry", emoji: "🌸", label: "櫻花樹" },
@@ -57,41 +54,6 @@ function gardenOption(value) {
   return gardenOptions.find((item) => item.value === value) ?? gardenOptions[0];
 }
 
-// 規格 1：折線圖整段原樣搬。成長頁（growth.js）會 import 這兩支，首頁自己不畫圖。
-export function assetTimeline(profile, activities) {
-  const monthly = new Map();
-  let running = 0;
-  const sorted = activities
-    .filter((item) => item.profileId === profile.id)
-    .sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.createdAt.localeCompare(b.createdAt));
-
-  for (const item of sorted) {
-    running = Math.max(0, running + item.spendDelta + item.bankDelta + item.marketDelta);
-    monthly.set(item.entryDate.slice(0, 7), running);
-  }
-
-  const currentMonth = taipeiMonth();
-  monthly.set(currentMonth, totalAssets(profile));
-
-  const all = Array.from(monthly, ([month, value]) => ({
-    month,
-    label: `${Number(month.slice(5, 7))}月`,
-    value,
-  })).sort((a, b) => a.month.localeCompare(b.month));
-  if (all.length <= 10) return all;
-  const sampled = Array.from({ length: 10 }, (_, index) => all[Math.round(index * (all.length - 1) / 9)]);
-  return sampled.filter((item, index) => index === 0 || item.month !== sampled[index - 1].month);
-}
-
-// 折線圖卡內原本重複的夢想罐進度小清單拿掉，改成一行連結；依 activeDreams.length 動態換文案。
-function dreamLinkMarkup(dreamsCount) {
-  return dreamsCount > 0
-    ? html`<a class="growth-dream-link" href="#/dreams">查看夢想進度 →</a>`
-    : html`<a class="growth-dream-link" href="#/dreams">還沒有夢想，去放進一個 →</a>`;
-}
-
-// 規格 2.1 第6項：取最近 limit 筆；若當月有一筆 kind==="reward" 的紀錄但不在這 limit 筆裡，
-// 把它換進最後一格（原本最後一筆往下讓路，不會整個消失，因為「看全部 →」本來就在）。
 function recentActivities(list, limit) {
   const top = list.slice(0, limit);
   if (top.some((item) => item.kind === "reward")) return top;
@@ -209,45 +171,6 @@ function islandGarden({ avatar, name, value, futureValue, futurePrincipal, speci
 }
 
 // 規格 1：折線圖整段原樣搬（首頁不畫，成長頁 import 這一支）。
-export function assetGrowthChart({ points, current, dreamsCount }) {
-  const maximum = Math.max(100, ...points.map((item) => item.value));
-  const ceiling = Math.max(1000, Math.ceil(maximum / 1000) * 1000);
-  const chartPoints = points.map((point, index) => {
-    const x = points.length === 1 ? 50 : 4 + (index / (points.length - 1)) * 92;
-    const y = 4 + (1 - point.value / ceiling) * 88;
-    return { ...point, x, y };
-  });
-  const polyline = chartPoints.map((point) => `${point.x},${point.y}`).join(" ");
-  const area = chartPoints.length > 1
-    ? `${chartPoints[0].x},92 ${polyline} ${chartPoints[chartPoints.length - 1].x},92`
-    : "";
-  const firstYear = Number(chartPoints[0]?.month.slice(0, 4) ?? new Date().getFullYear());
-  const lastYear = Number(chartPoints[chartPoints.length - 1]?.month.slice(0, 4) ?? firstYear);
-  const yearsAccumulating = Math.max(1, lastYear - firstYear + 1);
-  return html`
-          <div class="section-heading">
-            <div><span class="section-kicker">資產成長</span><h2>總資產折線圖</h2><small class="chart-year-count">從 ${firstYear} 年開始 · 累積第 ${yearsAccumulating} 年</small></div>
-            <strong>${money(current)}</strong>
-          </div>
-          <div class="asset-chart" role="img" aria-label="橫軸為時間、縱軸為金額；目前總資產 ${money(current)}">
-            <div class="chart-y-axis"><span>${money(ceiling)}</span><span>${money(Math.round(ceiling / 2))}</span><span>NT$0</span></div>
-            <div class="chart-plot">
-              <div class="line-chart-stage">
-                <svg viewBox="0 0 100 96" preserveAspectRatio="none" aria-hidden="true">
-                  <line x1="0" y1="4" x2="100" y2="4"></line>
-                  <line x1="0" y1="48" x2="100" y2="48"></line>
-                  <line x1="0" y1="92" x2="100" y2="92"></line>
-                  ${area ? html`<polygon points="${area}"></polygon>` : ""}
-                  ${polyline ? html`<polyline points="${polyline}"></polyline>` : ""}
-                </svg>
-                ${chartPoints.map((point) => html`<i class="chart-point" title="${point.month}：${money(point.value)}" style="left: ${point.x}%; top: ${point.y}%"></i>`)}
-              </div>
-              <div class="chart-x-axis">${chartPoints.map((point) => html`<span><b>${point.label}</b><small>${point.month.slice(0, 4)}</small></span>`)}</div>
-            </div>
-          </div>
-          ${dreamLinkMarkup(dreamsCount)}`;
-}
-
 // ---------- render ----------
 export function render(ctx) {
   const state = ctx.state;
@@ -298,10 +221,13 @@ export function render(ctx) {
               icon: "🌳",
               name: "ETF 小森林",
               value: profile.marketValue,
+              // 「長期投資，會漲也會跌」是理念句，有持股時也要看得到（規格第 1 節）：放第二行。
               caption: profileHoldings.length === 1
-                ? `${profileHoldings[0].symbol} · ${profileHoldings[0].units} 股 · ${returnRate >= 0 ? "+" : ""}${returnRate.toFixed(1)}%`
+                ? `${profileHoldings[0].symbol} · ${profileHoldings[0].units} 股 · ${returnRate >= 0 ? "+" : ""}${returnRate.toFixed(1)}%
+長期投資，會漲也會跌`
                 : profileHoldings.length > 1
-                  ? `${profileHoldings.length} 個標的 · ${returnRate >= 0 ? "+" : ""}${returnRate.toFixed(1)}%`
+                  ? `${profileHoldings.length} 個標的 · ${returnRate >= 0 ? "+" : ""}${returnRate.toFixed(1)}%
+長期投資，會漲也會跌`
                   : "長期投資，會漲也會跌",
             })}
           </div>

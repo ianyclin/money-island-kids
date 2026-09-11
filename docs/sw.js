@@ -9,7 +9,7 @@
    帳本資料都在 localStorage 與 IndexedDB，不經過這裡。 */
 'use strict';
 
-const VERSION = 'v6';
+const VERSION = 'v7';
 const PREFIX = 'money-island-';
 const CACHE = `${PREFIX}${VERSION}`;
 /* 核心：缺一個就不准啟用新版——網路不穩時，寧可繼續用完整的舊版，
@@ -80,6 +80,9 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
+  /* 本機開發（localhost）一律走網路：SW 的整組版本快取只在 VERSION 改動時更新，
+     開發時每改一行都得升版才看得到，太容易被舊檔騙；正式站（github.io）不受影響。 */
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return;
   const req = e.request;
   if (req.method !== 'GET') return;
   let url;

@@ -3,7 +3,7 @@
 // 結構與文案照原專案 app/primary-nav.tsx、status-toast.tsx、info-tip.tsx、profile-avatar.tsx、
 // money-state-cache.tsx（MoneyStateGate）；modal 的 inert／focus／Esc 行為照 ../stamps/index.html 1984–2076 行。
 
-import { html, raw, esc, classNames, formatDateTime, errorMessage } from "../util.js";
+import { html, raw, esc, classNames, formatDateTime, errorMessage, taipeiMonth } from "../util.js";
 import * as pin from "../pin.js";
 
 // ---------- 雲端狀態的橋接 ----------
@@ -413,6 +413,42 @@ export function sidebarKids(profiles, selectedId) {
     return html`<button type="button" class="${active ? "chip is-active" : "chip"}" data-choose-profile="${item.id}" aria-pressed="${active ? "true" : "false"}" aria-label="切換到${item.name}" style="--profile-color: ${item.accent}"><span>${profileAvatar(item.avatar)}</span><b>${item.name}</b></button>`;
   })}</div>`;
 }
+
+// ---------- 資產計算（首頁與成長頁共用；原本在 home.js） ----------
+export function totalAssets(profile) {
+  return profile.spendingBalance + profile.bankBalance + profile.marketValue;
+}
+
+
+// 規格 1：折線圖整段原樣搬。成長頁（growth.js）會 import 這兩支，首頁自己不畫圖。
+export function assetTimeline(profile, activities) {
+  const monthly = new Map();
+  let running = 0;
+  const sorted = activities
+    .filter((item) => item.profileId === profile.id)
+    .sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.createdAt.localeCompare(b.createdAt));
+
+  for (const item of sorted) {
+    running = Math.max(0, running + item.spendDelta + item.bankDelta + item.marketDelta);
+    monthly.set(item.entryDate.slice(0, 7), running);
+  }
+
+  const currentMonth = taipeiMonth();
+  monthly.set(currentMonth, totalAssets(profile));
+
+  const all = Array.from(monthly, ([month, value]) => ({
+    month,
+    label: `${Number(month.slice(5, 7))}月`,
+    value,
+  })).sort((a, b) => a.month.localeCompare(b.month));
+  if (all.length <= 10) return all;
+  const sampled = Array.from({ length: 10 }, (_, index) => all[Math.round(index * (all.length - 1) / 9)]);
+  return sampled.filter((item, index) => index === 0 || item.month !== sampled[index - 1].month);
+}
+
+
+// 規格 2.1 第6項：取最近 limit 筆；若當月有一筆 kind==="reward" 的紀錄但不在這 limit 筆裡，
+// 把它換進最後一格（原本最後一筆往下讓路，不會整個消失，因為「看全部 →」本來就在）。
 
 // ---------- 開機／錯誤畫面 ----------
 let retryHandler = null;

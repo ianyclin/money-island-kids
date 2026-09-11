@@ -516,7 +516,7 @@ details[open] > summary .summary-open-label { display: inline; }
   font-size: var(--fs-caption);
 }
 
-.panel-help { margin-top: var(--space-3); }
+.panel-help { margin-top: var(--space-3); display: flex; align-items: center; gap: 6px; font-size: var(--fs-caption); color: var(--muted); }
 
 /* 持股 */
 .market-quote-actions {
@@ -724,3 +724,6 @@ details[open] > summary .summary-open-label { display: inline; }
   font-size: var(--fs-caption);
   line-height: 1.65;
 }
+
+/* 裁判 9/11：「發布小專案」鈕與「目前專案」小標之間留白 */
+.parent-project-list { margin-top: var(--space-5); }

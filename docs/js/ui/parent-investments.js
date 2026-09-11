@@ -106,7 +106,15 @@ function soleHoldingUpdatedLabel(holding) {
 // ---------- render ----------
 export function render(ctx) {
   // 規格 1.2／2.4.1：新路由的解鎖保護。
-  if (!ctx.unlocked) return html`${common.stateGate("請先從家長區解鎖", () => ctx.navigate("#/parent"))}`;
+  if (!ctx.unlocked) {
+    // 裁判 9/11：不用 stateGate（它的大標是「暫時讀不到家庭帳本」，會誤導），改用殼包一張說明卡。
+    return common.appShell({ page: "parent", title: "投資管理", ctx, body: html`
+      <section class="card">
+        <p class="card-title">請先從家長區解鎖</p>
+        <p class="card-sub">投資管理需要家長操作碼。</p>
+        <a class="btn btn-primary" href="#/parent">前往家長區</a>
+      </section>` });
+  }
 
   const state = ctx.state;
   const profile = ctx.profile;
@@ -230,7 +238,7 @@ export function render(ctx) {
               </div>
             `;
           }) : html`<div class="empty-holding"><span>${raw(common.profileAvatar(profile.avatar))}</span><b>第一棵投資小樹還在等你</b><small>等爸媽完成第一次真實買入後，就會出現在這裡。</small></div>`}
-          <p class="panel-help">${raw(common.infoTip("按下更新會取得最新可用收盤價；也可以依券商畫面手動記錄今日市值。", { align: "right" }))}</p>
+          <p class="panel-help"><span>市值不是即時報價</span>${raw(common.infoTip("按下更新會取得最新可用收盤價；也可以依券商畫面手動記錄今日市值。", { align: "right" }))}</p>
         </section>
 
         <section class="card purchase-history">
@@ -278,7 +286,7 @@ export function render(ctx) {
             </span>
           </summary>
           <div class="harvest-content">
-            <p class="panel-help">${raw(common.infoTip("可以選擇完全不提領。若要使用，爸媽先在券商實際賣出，再把淨入帳金額放回撲滿；短期夢想罐的進度會自動更新。"))}</p>
+            <p class="panel-help"><span>一年一次，可以選擇不提領</span>${raw(common.infoTip("可以選擇完全不提領。若要使用，爸媽先在券商實際賣出，再把淨入帳金額放回撲滿；短期夢想罐的進度會自動更新。"))}</p>
             <div class="harvest-limit"><span>${raw(common.profileAvatar(profile.avatar))}</span><div><small>${currentYear} 年最高收成額度</small><strong>${money(maxHarvest)}</strong></div><b>${harvestedThisYear ? "今年已使用" : "今年尚未使用"}</b></div>
             <form data-form="harvest">
               ${soleHolding

@@ -8,7 +8,7 @@ import { html, raw, money, signedMoney, formatDate, formatDateTime, formatMonthL
 import * as common from "./common.js";
 import * as store from "../store.js";
 import * as pin from "../pin.js";
-import { totalAssets, assetTimeline } from "./home.js";   // 與首頁共用同一份，不重複
+import { totalAssets, assetTimeline } from "./common.js";   // 與首頁共用同一份
 
 // ---------- 頁面暫存（重繪後由 render 讀回） ----------
 let activeTab = "assets";       // "assets" | "jar" | "review"（規格 5.2：手機三段切換，預設「資產」）
@@ -86,7 +86,7 @@ function assetGrowthChart({ points, current }) {
                 </svg>
                 ${chartPoints.map((point) => html`<i class="chart-point" title="${point.month}：${money(point.value)}" style="left: ${point.x}%; top: ${point.y}%"></i>`)}
               </div>
-              <div class="chart-x-axis">${chartPoints.map((point) => html`<span><b>${point.label}</b><small>${point.month.slice(0, 4)}</small></span>`)}</div>
+              <div class="chart-x-axis">${chartPoints.map((point, index) => html`<span><b>${point.label}</b><small>${index === 0 || point.month.slice(0, 4) !== chartPoints[index - 1].month.slice(0, 4) ? point.month.slice(0, 4) : ""}</small></span>`)}</div>
             </div>
           </div>`;
 }
