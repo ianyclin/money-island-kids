@@ -2575,19 +2575,44 @@ footer strong { color: var(--green); }
 
 /* ---------- --dock：貼底固定列吃掉多少空間，唯一真相來源（規格 3.1／3.6） ----------
    app.js 的 render() 依當頁渲染出的固定元素種類設定 <html data-dock="...">。
-   桌機／不到 650px 沒有意義：--dock 預設只留安全區，四個 shell 的 padding-bottom
-   在下面的 650px 區塊才會真的吃到非零值。 */
+   2026-09-11 修：分頁列原本只在 650px 以下貼底固定，iPad 直式（768px）與桌機因此掉回
+   文件流，變成一顆靠左、跟著內容捲走的 400px 藥丸。改成所有寬度都固定：
+   手機＝滿版貼齊底緣（拇指區），平板／桌機＝置中浮起的藥丸。 */
 :root { --dock: env(safe-area-inset-bottom, 0px); }
+:root[data-dock="nav"],
+:root[data-dock="record"] { --dock: calc(92px + env(safe-area-inset-bottom, 0px)); }
+/* 平板／桌機的 .record-bar 是 display:none（記帳按鈕由 .hero-actions 承接），
+   所以 nav 與 record 兩種狀態在這個寬度下要留的空間一樣。 */
+
+.primary-nav {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  z-index: 40;
+  width: 400px;
+  max-width: calc(100% - 24px);
+  margin-inline: auto;
+  background: var(--paper);
+  box-shadow: 0 12px 32px rgba(19, 64, 59, .18);
+}
+
+/* 唯一的 padding-bottom 來源：四個 shell 全部改用 --dock，取代原本各自寫死的 80px，
+   也不再疊加任何通用 body 規則。所有寬度都要留，不然貼底列會蓋住頁尾。 */
+.site-shell,
+.parent-shell,
+.dream-shell,
+.history-shell { padding-bottom: var(--dock); }
 
 @media (max-width: 650px) {
   :root[data-dock="nav"]    { --dock: calc(56px + env(safe-area-inset-bottom, 0px)); }   /* 只有 tab bar 的頁 */
   :root[data-dock="record"] { --dock: calc(120px + env(safe-area-inset-bottom, 0px)); }  /* 首頁：record-bar + tab bar */
 
-  /* ---------- .primary-nav 貼底 tab bar（規格 3.1／1.3；內容改 3 項見上面 primaryNav 規則） ---------- */
+  /* 手機：滿版貼齊底緣，不留浮起的間隙 */
   .primary-nav {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
-    display: flex; width: 100%;
-    background: var(--paper); border-top: 1px solid var(--line);
+    bottom: 0;
+    display: flex; width: 100%; max-width: 100%;
+    border: 0; border-top: 1px solid var(--line); border-radius: 0;
+    box-shadow: none;
     padding: 4px 6px calc(6px + env(safe-area-inset-bottom));
   }
   .primary-nav a {
@@ -2604,12 +2629,6 @@ footer strong { color: var(--green); }
   }
   .record-bar button { flex: 1; min-height: 48px; border-radius: 16px; font-weight: 900; }
 
-  /* 唯一的 padding-bottom 來源：四個 shell 全部改用 --dock，取代原本各自寫死的 80px，
-     也不再疊加任何通用 body 規則 */
-  .site-shell,
-  .parent-shell,
-  .dream-shell,
-  .history-shell { padding-bottom: var(--dock); }
 }
 
 /* ---------- 桌機／iPad 用 .hero-actions，手機用貼底 .record-bar（規格 0.1／3.1，回應理念裁判擋下） ----------
