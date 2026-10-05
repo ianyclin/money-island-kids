@@ -19,7 +19,7 @@ import {
 import { GARDEN_SPECIES, MAX_PROFILES, rewardClaimedIn, sortAll } from "./state.js";
 import { assertParentPin } from "./pin.js";
 import { fetchTwseClosingQuotes, isTwseSymbol, TWSE_QUOTE_SOURCE } from "./quotes.js";
-import { hasBrokenLedger, preserveBrokenLedger, save, saveError, takeSnapshot } from "./db.js";
+import { ensureBrokenPreserved, hasBrokenLedger, save, saveError, saveErrorHint, takeSnapshot } from "./db.js";
 
 // ---------- 單例狀態與提交 ----------
 
@@ -71,10 +71,13 @@ export async function prepareReplace() {
     if (!saved) throw new Error("沒辦法先把目前的帳本另存一份快照，為了安全已經停止，帳本沒有被換掉；請先到家長區下載一份備份再試");
     return;
   }
-  if (hasBrokenLedger() && !preserveBrokenLedger()) {
-    throw new Error("沒辦法先把讀不出來的那份帳本另外留存（可能容量滿了），為了安全已經停止");
+  // 批 1 驗收 #3：讀不出來的原始內容改存 IndexedDB；留存失敗、家長也還沒下載走，就不准換
+  if (hasBrokenLedger() && !(await ensureBrokenPreserved())) {
+    throw new Error(BROKEN_NOT_PRESERVED);
   }
 }
+
+export const BROKEN_NOT_PRESERVED = "沒辦法先把讀不出來的那份帳本另外留存，為了安全已經停止；請先在「暫時讀不到家庭帳本」那一頁按「下載讀不出來的原始內容」存一份，再換帳本";
 
 export async function replaceState(next, reason) {
   await prepareReplace();
@@ -114,7 +117,12 @@ function recomputeHoldingTotals(next) {
 
 // db.save 回 false＝localStorage 沒寫進去：記憶體裡的帳本已經改了（畫面照樣顯示，快照與雲端也還會排程），
 // 但關掉 app 就沒了。所以照樣通知重繪（頁首會出現常駐標記），再丟錯讓呼叫端走失敗那條路，不准說「記好了」。
-export function commit(reason) {
+// 批 1 驗收 #2：expected＝呼叫端改的那一份帳本。等操作碼驗證（或其他 await）的期間，另一個分頁存檔、
+// 還原備份都會把 store 換成新的物件；這時呼叫端改的是舊物件，若照樣存「現在那份」，改動會默默不見，
+// 卻回報成功。所以傳進來的不是目前那份就丟錯、什麼都不存。
+export const STALE_LEDGER_ERROR = "另一個畫面剛改過帳本，這次沒有存，請再做一次";
+export function commit(reason, expected) {
+  if (expected !== undefined && expected !== state) throw new Error(STALE_LEDGER_ERROR);
   const next = requireState();
   recomputeHoldingTotals(next);
   ensureMeta(next).meta.updatedAt = nowIso();
@@ -122,7 +130,7 @@ export function commit(reason) {
   const saved = save(next, reason);
   notify();
   if (saved === false) {
-    throw new Error(`${saveError() || "存不進去"}。剛剛的改動還在畫面上，但還沒存進這台裝置，關掉 app 就會不見；請先到家長區下載備份`);
+    throw new Error(`${saveError() || "存不進去"}。剛剛的改動還在畫面上，但還沒存進這台裝置，關掉 app 就會不見；${saveErrorHint() || "請先到家長區下載備份"}`);
   }
   return next;
 }
@@ -216,6 +224,8 @@ export async function ensureMonthlySavingsRewards() {
 
 // money-store.ts addTransaction L1733–1811
 export async function addTransaction(input) {
+  // 批 1 驗收 #2：操作碼驗證（await）一律放在取帳本之前；之後到 commit 都是同步的，改的一定是「現在那份」
+  if (input.kind === "reward") await assertParentPin(input.parentPin);
   const next = requireState();
   const month = taipeiMonth();
   const operationId = input.kind === "reward"
@@ -244,7 +254,6 @@ export async function addTransaction(input) {
     spendDelta = -amount;
     label = String(input.label ?? "").trim() || "買了想要的東西";
   } else if (input.kind === "reward") {
-    await assertParentPin(input.parentPin);
     if (hasRewardThisMonth(profile.id, month)) throw new Error("這個月的爸媽獎勵已經領過了");
     recordedAmount = Math.min(100, Math.floor(profile.bankBalance * 0.1));
     if (recordedAmount <= 0) throw new Error("爸媽銀行累積到 10 元後就能得到獎勵");
@@ -271,7 +280,7 @@ export async function addTransaction(input) {
     operationId,
     createdAt: stamp,
   });
-  return commit(`${profile.name}：${label}`);
+  return commit(`${profile.name}：${label}`, next);
 }
 
 // money-store.ts setPiggyBankBalance L1813–1845
@@ -376,6 +385,8 @@ export async function updateSavingsRate(input) {
 
 // money-store.ts updateSavingsTransfer L1588–1682
 export async function updateSavingsTransfer(input) {
+  // 批 1 驗收 #2：核准／退回要操作碼；先驗完再取帳本（申請不用操作碼，原本就沒有 await）
+  if (input.action !== "request") await assertParentPin(input.parentPin);
   const next = requireState();
   const stamp = nowIso();
 
@@ -403,10 +414,9 @@ export async function updateSavingsTransfer(input) {
       updatedAt: stamp,
       resolvedAt: null,
     });
-    return commit(`${profile.name}提出自主存錢申請`);
+    return commit(`${profile.name}提出自主存錢申請`, next);
   }
 
-  await assertParentPin(input.parentPin);
   if (!input.transferId) throw new Error("找不到這筆自主存錢申請");
   const transfer = next.savingsTransfers.find((item) => item.id === input.transferId);
   if (!transfer) throw new Error("找不到這筆自主存錢申請");
@@ -421,7 +431,7 @@ export async function updateSavingsTransfer(input) {
     transfer.status = "rejected";
     transfer.resolvedAt = stamp;
     transfer.updatedAt = stamp;
-    return commit(`${profile.name}的自主存錢申請未執行`);
+    return commit(`${profile.name}的自主存錢申請未執行`, next);
   }
 
   if (input.action !== "approve") throw new Error("不支援的自主存錢操作");
@@ -445,7 +455,7 @@ export async function updateSavingsTransfer(input) {
   transfer.activityId = activity.id;
   transfer.resolvedAt = stamp;
   transfer.updatedAt = stamp;
-  return commit(`${profile.name}自主多存 ${transfer.amount} 元`);
+  return commit(`${profile.name}自主多存 ${transfer.amount} 元`, next);
 }
 
 // money-store.ts updateGardenSpecies L1684–1698（gardenSpecies 改存在 profile 上）
@@ -529,11 +539,12 @@ export async function removeProfile(input) {
 
 // money-store.ts updateFamilyProject L1847–1964
 export async function updateFamilyProject(input) {
+  // 批 1 驗收 #2：發布、修改、核准要操作碼；先驗完再取帳本，之後到 commit 都是同步的
+  if (["create", "update", "approve"].includes(input.action)) await assertParentPin(input.parentPin);
   const next = requireState();
   const stamp = nowIso();
 
   if (input.action === "create") {
-    await assertParentPin(input.parentPin);
     const title = String(input.title ?? "").trim();
     const description = String(input.description ?? "").trim();
     const reward = Math.round(Number(input.reward ?? 0));
@@ -551,7 +562,7 @@ export async function updateFamilyProject(input) {
       updatedAt: stamp,
       completedAt: null,
     });
-    return commit(`家長發布小專案：${title}`);
+    return commit(`家長發布小專案：${title}`, next);
   }
 
   if (!input.projectId) throw new Error("找不到這個小專案");
@@ -559,7 +570,6 @@ export async function updateFamilyProject(input) {
   if (!project) throw new Error("找不到這個小專案");
 
   if (input.action === "update") {
-    await assertParentPin(input.parentPin);
     if (project.status !== "open") throw new Error("只有尚未被接下的專案可以修改");
     const title = String(input.title ?? "").trim();
     const description = String(input.description ?? "").trim();
@@ -571,7 +581,7 @@ export async function updateFamilyProject(input) {
     project.description = description;
     project.reward = reward;
     project.updatedAt = stamp;
-    return commit(`家長修改小專案：${title}`);
+    return commit(`家長修改小專案：${title}`, next);
   }
 
   if (input.action === "claim") {
@@ -581,7 +591,7 @@ export async function updateFamilyProject(input) {
     project.status = "claimed";
     project.assignedProfileId = profile.id;
     project.updatedAt = stamp;
-    return commit(`${profile.name}接下小專案：${project.title}`);
+    return commit(`${profile.name}接下小專案：${project.title}`, next);
   }
 
   if (input.action === "submit") {
@@ -590,11 +600,10 @@ export async function updateFamilyProject(input) {
     }
     project.status = "waiting";
     project.updatedAt = stamp;
-    return commit(`等待家長確認：${project.title}`);
+    return commit(`等待家長確認：${project.title}`, next);
   }
 
   if (input.action === "approve") {
-    await assertParentPin(input.parentPin);
     if (project.status !== "waiting" || !project.assignedProfileId) throw new Error("這個小專案還沒有等待確認");
     const profile = next.profiles.find((item) => item.id === project.assignedProfileId);
     if (!profile) throw new Error("找不到完成專案的小朋友");
@@ -618,7 +627,7 @@ export async function updateFamilyProject(input) {
       source: "app",
       createdAt: stamp,
     });
-    return commit(`${profile.name}完成小專案：${project.title}`);
+    return commit(`${profile.name}完成小專案：${project.title}`, next);
   }
 
   throw new Error("不支援的操作");
@@ -1153,12 +1162,15 @@ function clearHarvestDestinations(next, dreamId) {
 
 // money-store.ts updateDreamJar L2201–2355
 export async function updateDreamJar(input) {
+  // 批 1 驗收 #2：除了孩子自己建立夢想，其餘都要操作碼；先驗完再取帳本與孩子，之後到 commit 都是同步的
+  if (["update-completed", "update", "complete", "activate", "delete"].includes(input.action)) {
+    await assertParentPin(input.parentPin);
+  }
   const next = requireState();
   const profile = findProfile(input.profileId);
   const stamp = nowIso();
 
   if (input.action === "update-completed") {
-    await assertParentPin(input.parentPin);
     if (!input.dreamId) throw new Error("找不到這個夢想罐");
     const current = next.dreamJars.find((dream) => dream.id === input.dreamId && dream.profileId === profile.id);
     if (!current || current.status !== "completed") throw new Error("找不到這筆已完成夢想");
@@ -1181,11 +1193,10 @@ export async function updateDreamJar(input) {
     current.createdAt = new Date(createdAtMs).toISOString();
     current.completedAt = new Date(completedAtMs).toISOString();
     current.updatedAt = stamp;
-    return commit(`${profile.name}編輯已完成夢想：${title}`);
+    return commit(`${profile.name}編輯已完成夢想：${title}`, next);
   }
 
   if (input.action === "create" || input.action === "update") {
-    if (input.action === "update") await assertParentPin(input.parentPin);
     const title = String(input.title ?? "").trim();
     const kind = input.kind === "long" ? "long" : "short";
     const targetAmount = Math.round(Number(input.targetAmount ?? 0));
@@ -1224,11 +1235,10 @@ export async function updateDreamJar(input) {
       current.status = current.status === "queued" ? "queued" : "active";
       current.updatedAt = stamp;
     }
-    return commit(`${profile.name}${input.action === "create" ? "建立" : "編輯"}${kind === "short" ? "短期" : "長期"}夢想：${title}`);
+    return commit(`${profile.name}${input.action === "create" ? "建立" : "編輯"}${kind === "short" ? "短期" : "長期"}夢想：${title}`, next);
   }
 
   if (input.action === "complete") {
-    await assertParentPin(input.parentPin);
     if (!input.dreamId) throw new Error("找不到這個夢想罐");
     const jar = next.dreamJars.find((dream) => dream.id === input.dreamId && dream.profileId === profile.id);
     if (!jar || jar.status !== "active") throw new Error("只有目前進行中的夢想可以完成");
@@ -1249,11 +1259,10 @@ export async function updateDreamJar(input) {
       source: "app",
       createdAt: stamp,
     });
-    return commit(`${profile.name}完成夢想：${jar.title}`);
+    return commit(`${profile.name}完成夢想：${jar.title}`, next);
   }
 
   if (input.action === "activate") {
-    await assertParentPin(input.parentPin);
     if (!input.dreamId) throw new Error("找不到這個夢想罐");
     const jar = next.dreamJars.find((dream) => dream.id === input.dreamId && dream.profileId === profile.id);
     if (!jar || jar.status !== "queued" || jar.kind !== "short") throw new Error("只有短期夢想清單中的項目可以開始");
@@ -1261,11 +1270,10 @@ export async function updateDreamJar(input) {
     if (active) throw new Error("請先完成目前的短期夢想，再開始下一個");
     jar.status = "active";
     jar.updatedAt = stamp;
-    return commit(`${profile.name}開始短期夢想：${jar.title}`);
+    return commit(`${profile.name}開始短期夢想：${jar.title}`, next);
   }
 
   if (input.action === "delete") {
-    await assertParentPin(input.parentPin);
     if (!input.dreamId) throw new Error("找不到這個夢想罐");
     const jar = next.dreamJars.find((dream) => dream.id === input.dreamId && dream.profileId === profile.id);
     if (!jar) throw new Error("找不到這個夢想罐");
@@ -1273,7 +1281,7 @@ export async function updateDreamJar(input) {
       if (harvest.destinationDreamId === jar.id) harvest.destinationDreamId = null;
     }
     next.dreamJars = next.dreamJars.filter((dream) => dream.id !== jar.id);
-    return commit(`${profile.name}刪除夢想罐：${jar.title}`);
+    return commit(`${profile.name}刪除夢想罐：${jar.title}`, next);
   }
 
   throw new Error("不支援的夢想罐操作");

@@ -26,6 +26,14 @@ export function saveError() {
   return lastError;
 }
 
+export function saveErrorHint() {
+  return "請先到家長區下載備份";
+}
+
+export const INVALID_LEDGER_CLOUD_TEXT = "帳本有地方不對，暫停上傳；請先下載原始內容";
+export const SNAPSHOT_READ_ERROR = "快照讀不出來（這台裝置的瀏覽器資料庫有問題），請改用備份檔";
+export function isRestorable() { return true; }
+
 export async function takeSnapshot(state, reason, options = {}) {
   const raw = JSON.stringify(state);
   await Promise.resolve();
@@ -38,8 +46,9 @@ export function hasBrokenLedger() {
   return control.broken;
 }
 
-export function preserveBrokenLedger() {
+export async function ensureBrokenPreserved() {
   control.preserved += 1;
+  await Promise.resolve();
   return control.keepBroken;
 }
 

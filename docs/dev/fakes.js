@@ -30,7 +30,7 @@ export function createFakeStorage() {
 // 交易與請求都用 setTimeout 非同步觸發，順序跟瀏覽器一樣是先 request.onsuccess、後 transaction.oncomplete。
 export function createFakeIndexedDB() {
   const databases = new Map();
-  const control = { failOpen: false, failWrites: false };
+  const control = { failOpen: false, failWrites: false, failReads: false };
   const later = (fn) => setTimeout(fn, 0);
   const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -83,6 +83,10 @@ export function createFakeIndexedDB() {
             if (direction === "prev") keys.reverse();
             let index = 0;
             const req = { onsuccess: null, onerror: null, result: null };
+            if (control.failReads) {      // 批 1 驗收 #8：模擬瀏覽器資料庫讀到一半出錯
+              later(() => { if (req.onerror) req.onerror({ target: req }); });
+              return req;
+            }
             const step = () => later(() => {
               if (index >= keys.length) { req.result = null; if (req.onsuccess) req.onsuccess({ target: req }); return; }
               const key = keys[index];

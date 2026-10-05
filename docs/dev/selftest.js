@@ -368,7 +368,7 @@ export async function runSelfTest(report) {
       db.control.broken = true;
       db.control.keepBroken = false;
       await assertThrows("讀不出來的帳本：留存不了就不另建",
-        "沒辦法先把讀不出來的那份帳本另外留存（可能容量滿了），為了安全已經停止",
+        store.BROKEN_NOT_PRESERVED,
         () => store.replaceState(twoKids(), "建立新帳本"));
       assertEqual("讀不出來的帳本：沒留存就維持原狀", store.getState(), null);
       db.control.keepBroken = true;
@@ -415,9 +415,25 @@ export async function runSelfTest(report) {
       assert("真 db：記得帳本讀不出來", realDb.hasBrokenLedger());
       realDb.load();
       realDb.load();
-      assertEqual("真 db：開三次也只留一份原始內容",
-        fakes.storage.keys().filter((key) => key.startsWith("money-island.v1.broken")), ["money-island.v1.broken"]);
-      assertEqual("真 db：留存的是原始內容", fakes.storage.getItem("money-island.v1.broken"), "{壞掉的 JSON");
+      assertEqual("真 db（驗收 #3）：原始內容留存成功", await realDb.ensureBrokenPreserved(), true);
+      const brokenCopies = () => fakes.idb.dump("money_island_broken", "ledgers").sort((a, b) => a.ts - b.ts).map((record) => record.raw);
+      assertEqual("真 db（驗收 #3）：開三次也只留一份原始內容（存在 IndexedDB）", brokenCopies(), ["{壞掉的 JSON"]);
+      assertEqual("真 db（驗收 #3）：不再佔 localStorage", fakes.storage.keys().filter((key) => key.startsWith("money-island.v1.broken")), []);
+      assertEqual("真 db（驗收 #3）：出路畫面看得到已留存", realDb.brokenCopyStatus(), "preserved");
+      for (const raw of ["{第二份壞掉", "{第三份壞掉", "{第四份壞掉"]) {
+        fakes.storage.setItem("money-island.v1", raw);
+        realDb.load();
+        await realDb.ensureBrokenPreserved();
+      }
+      assertEqual("真 db（驗收 #6）：後來壞掉的不會蓋掉先前那份，最多留最近 3 份", brokenCopies(), ["{第二份壞掉", "{第三份壞掉", "{第四份壞掉"]);
+      fakes.idb.control.failOpen = true;
+      fakes.storage.setItem("money-island.v1", "{留存不了的那一份");
+      realDb.load();
+      assertEqual("真 db（驗收 #3）：IndexedDB 也不行就回報沒有安全副本", await realDb.ensureBrokenPreserved(), false);
+      assertEqual("真 db（驗收 #3）：出路畫面據此要求先下載", realDb.brokenCopyStatus(), "failed");
+      realDb.markBrokenDownloaded(realDb.brokenRaw());
+      assertEqual("真 db（驗收 #3）：家長下載走之後才准換帳本", await realDb.ensureBrokenPreserved(), true);
+      fakes.idb.control.failOpen = false;
       const missing = clone(validEnvelope.state);
       delete missing.activities;
       fakes.storage.setItem("money-island.v1", JSON.stringify(missing));
@@ -480,6 +496,9 @@ export async function runSelfTest(report) {
         store.hydrate(bad);
         assertEqual("雲端：還原不回來的帳本不上傳", await gist.syncCloud(), false);
         assertEqual("雲端：完全沒有 PATCH／POST", net.calls.filter((call) => call.method !== "GET").length, 0);
+        assertEqual("雲端（驗收 #5）：驗證不過時狀態寫「暫停上傳」，不寫稍後重試", common.backupStatusText({ latestBackup: null }), "等待第一次儲存 · 雲端暫停上傳");
+        assert("雲端（驗收 #5）：家長區面板寫出原因與下一步", gist.renderGistPanel().includes("帳本有地方不對，暫停上傳；請先下載原始內容"));
+        assertEqual("雲端（驗收 #5）：記帳後的提示也一樣", common.savedStatus({}, "記好了").message, "記好了；帳本有地方不對，暫停上傳；請先下載原始內容");
         store.hydrate(normalize(clone(validEnvelope)));
         assertEqual("雲端：好帳本照常上傳", await gist.syncCloud(), true);
         assertEqual("雲端：好帳本真的送出 PATCH", net.calls.filter((call) => call.method === "PATCH").length, 1);
@@ -517,6 +536,11 @@ export async function runSelfTest(report) {
         assert("雲端拿回：第一按只讀不換", Boolean(armedPull && armedPull.armed));
         store.hydrate(twoKids());
         const localFamily = store.getState().family.id;
+        const tooSoon = await gist.pullFromCloud();
+        assert("雲端拿回（驗收 #4）：600ms 內的第二按當成連點，不換", Boolean(tooSoon && tooSoon.tooSoon) && store.getState().family.id === localFamily);
+        assertEqual("雲端拿回（驗收 #4）：連點之後仍在等第二按", gist.armState("pull"), "warming");
+        await wait(650);
+        assertEqual("雲端拿回（驗收 #10）：600ms 後才進入「再按一次」", gist.armState("pull"), "armed");
         db.control.failSnapshot = true;
         const failedPull = await gist.pullFromCloud();
         assert("雲端拿回：還原前快照存不進去就取消", Boolean(failedPull && failedPull.error));
@@ -561,9 +585,13 @@ export async function runSelfTest(report) {
         deleteButton().click();
         await wait(30);
         assertEqual("刪除雲端備份：連點兩下不會執行", net.calls.filter((call) => call.method === "DELETE").length, 0);
+        assertEqual("兩段確認（驗收 #10）：武裝後 600ms 內寫「稍等…」而且不能按", [deleteButton().textContent, deleteButton().disabled], ["稍等…", true]);
+        panel.innerHTML = gist.renderGistPanel();      // 模擬家長區整頁重繪
+        assertEqual("兩段確認（驗收 #10）：稍等期間重繪也一樣", [deleteButton().textContent, deleteButton().disabled], ["稍等…", true]);
+        await wait(650);
+        assertEqual("兩段確認（驗收 #10）：600ms 後才變「再按一次」並恢復可按", [deleteButton().textContent, deleteButton().disabled], ["再按一次：真的刪除雲端備份", false]);
         panel.innerHTML = gist.renderGistPanel();      // 模擬家長區整頁重繪
         assertEqual("刪除雲端備份：重繪後仍看得到「再按一次」", deleteButton().textContent, "再按一次：真的刪除雲端備份");
-        await wait(650);
         deleteButton().click();
         await wait(50);
         assertEqual("刪除雲端備份：看到提示再按才刪", net.calls.filter((call) => call.method === "DELETE").length, 1);
@@ -773,6 +801,132 @@ export async function runSelfTest(report) {
         ["‹", "month-older", "›", "month-newer"]);
       assertEqual("月份箭頭：停在這個月時只有「較新」不能按", [left && left.disabled, right && right.disabled], [false, true]);
       db.reset();
+    });
+
+    // ================= 批 1 驗收後修正（2026-10-05）=================
+    const hashStr = (text) => { let h2 = 5381; for (let i = 0; i < text.length; i++) h2 = ((h2 << 5) + h2 + text.charCodeAt(i)) >>> 0; return text.length + "." + h2.toString(36); };
+
+    await section("驗收 #1 帳本讀不出來後換帳本，不准自動覆蓋雲端", async () => {
+      const cloudBody = JSON.stringify(normalize(clone(validEnvelope)), null, 1);
+      const runScenario = async (freeze) => {
+        db.reset();
+        // 雲端版本戳等於本機記的那一個，而且雲端那份就是這台以前傳上去的（指紋相符）
+        connectGist({ remoteStamp: "2026-01-01T00:00:00Z", lastSyncAt: "2026-01-01T00:00:00Z", lastPush: hashStr(cloudBody), pendingPush: null });
+        const net = installFakeFetch((url, options) => (String(options.method || "GET").toUpperCase() === "PATCH"
+          ? jsonResponse(200, { id: "selftest-gist", updated_at: "2026-01-09T00:00:00Z" })
+          : jsonResponse(200, { id: "selftest-gist", updated_at: "2026-01-01T00:00:00Z", files: { "money-island-backup.json": { content: cloudBody } } })));
+        try {
+          store.hydrate(null);
+          db.control.broken = true;
+          if (freeze) gist.freezeForLedgerSwap();
+          await store.replaceState(twoKids(), "建立新帳本");
+          db.control.broken = false;
+          await gist.syncCloud();
+          return { writes: net.calls.filter((call) => call.method === "PATCH" || call.method === "POST").length, info: gist.cloudInfo() };
+        } finally {
+          net.restore();
+          gist.disconnect();
+        }
+      };
+      const unfrozen = await runScenario(false);
+      assertEqual("對照組：換帳本前沒凍結的話，下一次同步就把新帳本蓋到雲端", unfrozen.writes, 1);
+      const frozen = await runScenario(true);
+      assertEqual("讀不出來後另外建立：下一次同步 0 次 PATCH／POST", frozen.writes, 0);
+      assertEqual("讀不出來後另外建立：出「要用哪一份」拍板卡", frozen.info.card, "decide");
+      assertEqual("讀不出來後另外建立：上傳凍結（落地的待決旗標）", frozen.info.pending, true);
+      db.reset();
+    });
+
+    await section("驗收 #2 等操作碼的期間帳本被換掉", async () => {
+      db.reset();
+      store.hydrate(twoKids());
+      const owner = () => kidNamed("阿甲");
+      await store.addTransaction({ profileId: owner().id, kind: "allowance", amount: 1000, operationId: "selftest-fix2-allowance" });
+      await store.updateDreamJar({ action: "create", profileId: owner().id, title: "買拼圖", kind: "short", targetAmount: 300 });
+      const jarId = store.getState().dreamJars.find((dream) => dream.title === "買拼圖").id;
+      await store.updateSavingsTransfer({ action: "request", profileId: owner().id, amount: 100, operationId: "selftest-fix2-transfer" });
+      const transferId = store.getState().savingsTransfers.find((item) => item.operationId === "selftest-fix2-transfer").id;
+      // 呼叫之後、驗操作碼的那一下，另一個分頁存了檔：store 換成新的物件（內容一樣）
+      const swapDuring = async (label, run, check) => {
+        const pending = run();
+        store.hydrate(clone(store.getState()));
+        await pending;
+        assert(label, check(store.getState()));
+      };
+      await swapDuring("小專案：發布的專案寫進現在那份帳本，沒有丟掉",
+        () => store.updateFamilyProject({ action: "create", title: "擦窗戶", description: "把客廳窗戶擦乾淨。", reward: 50, parentPin: PARENT_PIN }),
+        (current) => current.projects.some((project) => project.title === "擦窗戶"));
+      await swapDuring("家長發獎勵：獎勵寫進現在那份帳本",
+        () => store.addTransaction({ profileId: owner().id, kind: "reward", parentPin: PARENT_PIN }),
+        (current) => current.activities.some((activity) => activity.kind === "reward" && activity.profileId === owner().id));
+      await swapDuring("夢想罐改名：改動寫進現在那份帳本",
+        () => store.updateDreamJar({ action: "update", profileId: owner().id, dreamId: jarId, title: "買大拼圖", kind: "short", targetAmount: 300, parentPin: PARENT_PIN }),
+        (current) => current.dreamJars.some((dream) => dream.title === "買大拼圖"));
+      await swapDuring("自主存錢核准：改動寫進現在那份帳本",
+        () => store.updateSavingsTransfer({ action: "approve", transferId, parentPin: PARENT_PIN }),
+        (current) => current.savingsTransfers.find((item) => item.id === transferId).status === "approved");
+      const stale = store.getState();
+      store.hydrate(clone(stale));
+      const savesBefore = db.calls.length;
+      await assertThrows("commit 防線：傳入的不是目前那份就丟錯", "另一個畫面剛改過帳本，這次沒有存，請再做一次", () => store.commit("不該存", stale));
+      assertEqual("commit 防線：丟錯時什麼都沒存", db.calls.length, savesBefore);
+      db.reset();
+    });
+
+    await section("驗收 #5 驗證不過的帳本", async () => {
+      const ghost = clone(validEnvelope.state);
+      ghost.harvests[0].destinationDreamId = "selftest-ghost-dream";
+      let strict = "";
+      try { normalize(clone(ghost)); } catch (error) { strict = error.message; }
+      assertEqual("前提：收成指向不存在的夢想，完整驗證不過", strict, "備份檔內容不正確：收成目的夢想關聯錯誤");
+      const repaired = coerceLedger(clone(ghost));
+      assertEqual("開機自動修：指向不存在的夢想 → 清空收成目的地", repaired.harvests[0].destinationDreamId, null);
+      assert("開機自動修：修完就是一份完整驗證得過的帳本", Boolean(normalize(clone(repaired))));
+      assertEqual("開機自動修：金額一個都沒動", repaired.profiles.map((profile) => [profile.spendingBalance, profile.bankBalance]), ghost.profiles.map((profile) => [profile.spendingBalance, profile.bankBalance]));
+      const longDream = clone(validEnvelope.state);
+      const target = longDream.dreamJars.find((dream) => dream.id === longDream.harvests[0].destinationDreamId);
+      target.kind = "long";
+      target.status = "queued";
+      const untouched = coerceLedger(clone(longDream));
+      assertEqual("其他驗證失敗不自動修（指向存在、但是長期的夢想）", untouched.harvests[0].destinationDreamId, target.id);
+      let exportError = "";
+      try { backup.exportEnvelope(untouched); } catch (error) { exportError = error.message; }
+      assert("匯出被擋時改指向「下載原始內容」", exportError.includes("下載原始內容") && exportError.includes("不是正式備份"), `實際：${exportError}`);
+      fakes.storage.quota = 200;
+      realDb.save(clone(untouched), "測試");
+      assert("存檔失敗（驗證不過的帳本）：提示改指向下載原始內容，不叫人去下載正式備份",
+        common.savedStatus(untouched, "記好了").message.includes("下載原始內容") && !common.savedStatus(untouched, "記好了").message.includes("下載備份"));
+      realDb.save(clone(validEnvelope.state), "測試");
+      assert("存檔失敗（正常的帳本）：照舊叫人去下載備份", common.savedStatus(validEnvelope.state, "記好了").message.includes("請先到家長區下載備份"));
+      fakes.storage.quota = Infinity;
+      assertEqual("容量回來就存得進去", realDb.save(clone(validEnvelope.state), "測試"), true);
+    });
+
+    await section("驗收 #7 不認得的欄位不丟", async () => {
+      const future = clone(validEnvelope.state);
+      future.meta.selftestFutureFlag = "留著";
+      future.selftestFutureTop = { nested: [1, 2, 3] };
+      const once = normalize(clone(future));
+      assertEqual("normalize：meta 不認得的欄位留著", once.meta.selftestFutureFlag, "留著");
+      assertEqual("normalize：最上層不認得的欄位留著", once.selftestFutureTop, { nested: [1, 2, 3] });
+      assertEqual("normalize：已知欄位照樣覆蓋（選中的孩子不存在就換成第一位）",
+        normalize(Object.assign(clone(future), { meta: { ...future.meta, selectedProfileId: "nobody" } })).meta.selectedProfileId, future.profiles[0].id);
+      fakes.storage.setItem("money-island.v1", JSON.stringify(future));
+      const loaded = realDb.load();
+      realDb.save(loaded, "測試");
+      const reloaded = realDb.load();
+      assertEqual("load → save → load：meta 不認得的欄位仍在", reloaded && reloaded.meta.selftestFutureFlag, "留著");
+      assertEqual("load → save → load：最上層不認得的欄位仍在", reloaded && reloaded.selftestFutureTop, { nested: [1, 2, 3] });
+      const restoredBack = normalize(backup.exportEnvelope(reloaded));
+      assertEqual("匯出 → 還原：不認得的欄位仍在", restoredBack.meta.selftestFutureFlag, "留著");
+      fakes.storage.removeItem("money-island.v1");
+    });
+
+    await section("驗收 #8 快照讀不出來和沒有快照分開講", async () => {
+      fakes.idb.control.failReads = true;
+      await assertThrows("快照讀不出來：丟錯，不再回「沒有快照」", "快照讀不出來（這台裝置的瀏覽器資料庫有問題），請改用備份檔", () => realDb.listSnapshots());
+      fakes.idb.control.failReads = false;
+      assert("讀得到時照常回清單", Array.isArray(await realDb.listSnapshots()));
     });
 
     // ---------- 20. 操作碼鎖定（放最後，會把操作碼鎖住 15 分鐘）----------

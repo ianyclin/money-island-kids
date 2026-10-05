@@ -525,6 +525,8 @@ function profileEditorMarkup(state, profile) {
 // ---------- 資料與備份（取代 DeviceTrustPanel） ----------
 function dataPanelMarkup(state, unlocked) {
   const healthy = state.backupHealth?.status !== "failed";
+  // 批 1 驗收 #5：帳本畫得出來但驗證不過時，正式備份會被匯出前驗證擋下；給一顆「下載原始內容」，不讓家長卡在死路
+  const restorable = db.isRestorable(state);
   return html`<section class="card parent-device-panel" id="devices">
       <div class="card-head">
         <div><span class="kicker">裝置與資料</span><h2 class="card-title">資料與備份</h2></div>
@@ -538,6 +540,10 @@ function dataPanelMarkup(state, unlocked) {
             <button type="button" class="btn btn-secondary" data-action="download-backup" data-kind="account" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載帳本備份</button>
             <button type="button" class="btn btn-secondary" data-action="download-backup" data-kind="portable" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載完整可攜備份</button>
           </div>
+          ${restorable ? "" : html`<p class="form-error">這份帳本有地方對不起來，正式備份下載不了（下載了也還原不回來）。先下載原始內容留一份，修復時用得到。</p>
+          <div class="backup-download-actions">
+            <button type="button" class="btn btn-secondary" data-action="download-raw" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載原始內容（不是正式備份，給修復用）</button>
+          </div>`}
           <label class="backup-file-label">選擇備份檔<input class="input file-input" type="file" accept="application/json,.json" data-input="backup-file" ${!unlocked ? raw("disabled") : ""} /></label>
           ${ui.restoreSummary ? restoreSummaryMarkup(ui.restoreSummary, unlocked) : ""}
         </div>
@@ -571,7 +577,8 @@ function snapshotSubtitle(record) {
 
 function snapshotListMarkup(unlocked) {
   if (ui.snapshots === null) return html`<p class="empty-history">讀取中…</p>`;
-  if (ui.snapshots === false) return html`<p class="empty-history">這台裝置不支援自動快照，請多用上面的手動備份。</p>`;
+  // 批 1 驗收 #8：讀不到（瀏覽器資料庫出錯）跟「還沒有快照」講成不同的話
+  if (ui.snapshots === false) return html`<p class="empty-history">${db.SNAPSHOT_READ_ERROR}。</p>`;
   if (!ui.snapshots.length) return html`<p class="empty-history">還沒有快照（第一次改動後幾秒就會出現）。</p>`;
   const shown = ui.snapshots.slice(0, 12);
   return html`${shown.map((record) => html`<div class="parent-row">
@@ -1156,6 +1163,20 @@ async function handleClick(root, ctx, button) {
       } catch (caught) {
         endBusy();
         reportOperationError(root, "backup", caught, "備份下載失敗");
+      }
+      return;
+    }
+    case "download-raw": {
+      startBusy(root, button);
+      clearOperationError(root, "backup");
+      try {
+        const filename = `小小理財島原始內容（不是正式備份）-${new Date().toISOString().slice(0, 10)}.txt`;
+        const result = await backup.shareOrDownload(JSON.stringify(state, null, 1), filename, { type: "text/plain", title: "小小理財島原始內容" });
+        endBusy();
+        if (result !== "cancelled") common.showStatus(result === "clipboard" ? "原始內容已複製到剪貼簿" : "原始內容已經下載（不是正式備份，修復時用）", "success");
+      } catch (caught) {
+        endBusy();
+        reportOperationError(root, "backup", caught, "原始內容下載失敗");
       }
       return;
     }

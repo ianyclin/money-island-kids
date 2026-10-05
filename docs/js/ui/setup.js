@@ -160,9 +160,12 @@ async function createLedger(form, ctx) {
     ctx.refresh();
     const next = freshState({ familyName, kidNames, savingsRate });
     // 帳本讀不出來後另建時，這台裝置早就有操作碼了：驗原本那一組，不重設（pin.setup 會擋「已經設定」）
-    if (needsPinSetup()) await pin.setup(parentPin); else await pin.assert(parentPin);
+    const firstPin = needsPinSetup();
+    if (!firstPin) await pin.assert(parentPin);
     // 讀不出來的那份會在 replaceState 裡先留存，留存不了就丟錯、不另建
     await store.replaceState(next, "建立新帳本");
+    // 批 1 驗收 #3：新的操作碼等帳本真的換好了才設——以前先設，換帳本失敗時操作碼已經變了、帳本卻沒建
+    if (firstPin) await pin.setup(parentPin);
     busy = "";
     showStatus(`${familyName}的帳本建好了，開始記第一筆吧`, "success");
     location.hash = "#/";
@@ -200,9 +203,10 @@ async function restoreLedger(form, ctx) {
     const parentPin = needsPinSetup() ? readPin(form, "restore") : "";
     busy = "restore";
     ctx.refresh();
-    if (parentPin) await pin.setup(parentPin);
     // backup.restore 內部已經 setState 並存檔。
     await backup.restore(parsed);
+    // 批 1 驗收 #3：還原真的成功了才設操作碼，不先設
+    if (parentPin) await pin.setup(parentPin);
     busy = "";
     summary = null;
     parsed = null;

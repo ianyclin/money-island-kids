@@ -19,15 +19,21 @@ function cloudStatus() {
 // 同樣的理由（db → common 已經有相依），由 db.js 在載入時把「最近一次存檔失敗的原因」掛進來。
 // 有值＝畫面上的改動還沒存進這台裝置：頁首放常駐標記，成功提示一律改講還沒存好。
 let saveErrorProvider = null;
-export function setSaveErrorProvider(fn) { saveErrorProvider = fn; }
+let saveHintProvider = null;
+export function setSaveErrorProvider(fn, hintFn) { saveErrorProvider = fn; saveHintProvider = typeof hintFn === "function" ? hintFn : null; }
 export function saveErrorText() {
   try { return saveErrorProvider ? String(saveErrorProvider() || "") : ""; } catch (e) { return ""; }
+}
+// 批 1 驗收 #5：存不進去時該叫家長去做什麼。帳本驗證不過時正式備份下載不了，db.js 會改成指向「下載原始內容」。
+export function saveErrorHint() {
+  try { return (saveHintProvider && String(saveHintProvider() || "")) || "請先到家長區下載備份"; } catch (e) { return "請先到家長區下載備份"; }
 }
 
 function saveErrorFlag() {
   const problem = saveErrorText();
   if (!problem) return "";
-  return html`<p class="save-error-flag" role="alert"><span aria-hidden="true">!</span><span>${problem}：剛剛的改動還沒存進這台裝置，關掉 app 就會不見。</span><a href="#/parent">去備份</a></p>`;
+  const rawOnly = saveErrorHint().includes("原始內容");
+  return html`<p class="save-error-flag" role="alert"><span aria-hidden="true">!</span><span>${problem}：剛剛的改動還沒存進這台裝置，關掉 app 就會不見。</span><a href="#/parent">${rawOnly ? "去下載原始內容" : "去備份"}</a></p>`;
 }
 
 // ---------- v2 的殼（規格 3.1／3.2／3.3） ----------
@@ -572,14 +578,16 @@ export function backupStatusText(state) {
   else base = `${new Intl.DateTimeFormat("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Taipei" }).format(new Date(value))} 已儲存`;
   const cloud = cloudStatus();
   if (!cloud) return base;
-  return `${base} · ${cloud === "synced" ? "雲端已同步" : "雲端待同步"}`;
+  return `${base} · ${cloud === "synced" ? "雲端已同步" : cloud === "invalid" ? "雲端暫停上傳" : "雲端待同步"}`;
 }
 
 // savedStatus(state, message)：Gist 開啟且同步失敗時才加後綴。
 // 本機存檔失敗時不准講「已經記好」：改成錯誤，跟頁首的常駐標記講同一件事。
 export function savedStatus(state, message) {
   const problem = saveErrorText();
-  if (problem) return { message: `${problem}：剛剛的改動還沒存進這台裝置，請先到家長區下載備份`, tone: "error" };
+  if (problem) return { message: `${problem}：剛剛的改動還沒存進這台裝置，${saveErrorHint()}`, tone: "error" };
+  // 批 1 驗收 #5：帳本驗證不過而暫停上傳時，不要一直說「稍後重試」——重試幾次都一樣，要家長先把原始內容帶走
+  if (cloudStatus() === "invalid") return { message: `${message}；帳本有地方不對，暫停上傳；請先下載原始內容`, tone: "waiting" };
   if (cloudStatus() === "failed") return { message: `${message}；雲端備份稍後重試`, tone: "waiting" };
   return { message, tone: "success" };
 }

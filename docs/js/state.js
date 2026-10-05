@@ -572,7 +572,11 @@ export function normalize(raw) {
   };
   validateBackupEnvelope(envelope);
   const source = envelope.state;
+  // 批 1 驗收 #7：最上層與 meta 先整份展開保留，再覆蓋已知欄位——以前只挑認得的欄位抄，
+  // 之後版本新增的欄位（或別台裝置較新版本寫進來的）匯入、還原、雲端拿回一次就被默默丟掉。
+  const sourceMeta = isPlainRecord(source.meta) ? source.meta : {};
   const state = {
+    ...source,
     version: 1,
     family: source.family ?? envelope.family,
     profiles: source.profiles.map((profile) => ({ ...profile })),
@@ -589,6 +593,7 @@ export function normalize(raw) {
     latestBackup: source.latestBackup ?? null,
     backupHealth: source.backupHealth ?? { status: "pending" },
     meta: {
+      ...sourceMeta,
       createdAt: source.meta?.createdAt ?? nowIso(),
       updatedAt: source.meta?.updatedAt ?? nowIso(),
       selectedProfileId: source.profiles.some((profile) => profile.id === source.meta?.selectedProfileId)
@@ -597,11 +602,18 @@ export function normalize(raw) {
       installHintDismissed: Boolean(source.meta?.installHintDismissed),
     },
   };
+  // 這兩個欄位維持原本「有內容才留、而且是複本」的寫法（上面整份展開會把原物件或空陣列帶進來）
+  delete state.quoteRefresh;
+  delete state.deletedRewardOperationIds;
   if (source.quoteRefresh) state.quoteRefresh = { ...source.quoteRefresh };
   if (Array.isArray(source.deletedRewardOperationIds) && source.deletedRewardOperationIds.length) {
     state.deletedRewardOperationIds = [...source.deletedRewardOperationIds];
   }
   return sortAll(state);
+}
+
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 // ---------- 開機讀帳本（批 1 資料安全） ----------
@@ -625,7 +637,30 @@ export function coerceLedger(value) {
   try {
     return normalize(value);
   } catch (error) {
-    if (isUsableLedger(value)) return value;
-    throw error;
+    if (!isUsableLedger(value)) throw error;
+    // 批 1 驗收 #5：已知安全的情況才自動修，修完再完整驗一次；其他驗證失敗一律不動、照常打開。
+    if (repairKnownSafe(value)) {
+      try { return normalize(value); } catch (stillBroken) { /* 還有別的地方不對：照寬鬆標準打開 */ }
+    }
+    return value;
   }
+}
+
+// 只修一種：收成的目的地指向一個已經不存在的夢想。錢在收成當下就進了撲滿，
+// destinationDreamId 只是畫面上「這筆收成要給哪個夢想」的顯示欄位，清掉不會動到任何金額。
+// 指向存在、但類型或孩子不對的夢想不在這裡修（那不是「已不存在」，要家長自己看）。
+function repairKnownSafe(value) {
+  const dreamIds = new Set(value.dreamJars
+    .filter((dream) => dream && typeof dream === "object" && typeof dream.id === "string")
+    .map((dream) => dream.id));
+  let changed = false;
+  for (const harvest of value.harvests) {
+    if (!harvest || typeof harvest !== "object") continue;
+    const target = harvest.destinationDreamId;
+    if (typeof target === "string" && target && !dreamIds.has(target)) {
+      harvest.destinationDreamId = null;
+      changed = true;
+    }
+  }
+  return changed;
 }

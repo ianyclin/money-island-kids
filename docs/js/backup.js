@@ -80,7 +80,8 @@ function assertRestorable(envelope, validate) {
   try {
     validate(envelope);
   } catch (error) {
-    throw new Error(`這份帳本有資料對不起來，匯出的檔案會還原不回來，所以先不匯出（${error instanceof Error ? error.message : "未知的錯誤"}）`);
+    // 批 1 驗收 #5：只說「不匯出」是死路。改指向家長區的「下載原始內容」：不是正式備份，但修復時用得到。
+    throw new Error(`這份帳本有資料對不起來，匯出的檔案會還原不回來，所以先不匯出（${error instanceof Error ? error.message : "未知的錯誤"}）。請改按「下載原始內容」留一份（不是正式備份，給修復用）`);
   }
   return envelope;
 }
@@ -280,13 +281,16 @@ export async function restore(parsed) {
 
 // ../stamps/index.html 3858–3879：先試分享表（iOS 主畫面 app 沒有下載管理器），
 // 再試 <a download>，最後複製到剪貼簿。
-export async function shareOrDownload(json, filename) {
+// 批 1 驗收 #3、#5：讀不出來／驗證不過的原始內容用 .txt（options.type＝"text/plain"）下載，
+// 跟正式備份（.json）分開，還原畫面的檔案選擇也不會把它當成備份。
+export async function shareOrDownload(json, filename, options = {}) {
   const text = typeof json === "string" ? json : JSON.stringify(json, null, 1);
+  const type = options.type || "application/json";
   try {
     if (typeof File !== "undefined" && navigator.canShare) {
-      const file = new File([text], filename, { type: "application/json" });
+      const file = new File([text], filename, { type });
       if (navigator.canShare({ files: [file] })) {
-        await navigator.share({ files: [file], title: "小小理財島備份" });
+        await navigator.share({ files: [file], title: options.title || "小小理財島備份" });
         return "share";
       }
     }
@@ -294,7 +298,7 @@ export async function shareOrDownload(json, filename) {
     if (error && error.name === "AbortError") return "cancelled";
   }
   try {
-    const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    const url = URL.createObjectURL(new Blob([text], { type }));
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = filename;

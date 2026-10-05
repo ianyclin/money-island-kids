@@ -7,9 +7,10 @@ import * as store from "./store.js";
 import * as pin from "./pin.js";
 import { derive } from "./state.js";
 import * as gist from "./gist.js";
+import * as backup from "./backup.js";
 import * as setup from "./ui/setup.js";
 import { stateGate, showStatus, closeModal, confirmDialog, isModalOpen, syncModalBackdrop, timestampText } from "./ui/common.js";
-import { html } from "./util.js";
+import { html, raw } from "./util.js";
 
 // ---------- 路由表 ----------
 // hash 路由：GitHub Pages 沒有伺服器可以改寫網址，所有頁面共用同一份 index.html。
@@ -110,13 +111,29 @@ async function render() {
     if (!mount) return;
     const hash = currentHash();
     const state = readState();
+    const recovering = (!state || !Array.isArray(state.profiles)) && db.hasState() && hash !== "#/setup";
+
+    // 批 5：換了路由（上一頁、分頁列、彈窗裡的連結）＝使用者自己離開，用 "navigate" 關彈窗，
+    // 各頁會清掉「該開」旗標，回原頁不會自己彈回；同一頁重繪才用 "rerender"（保留旗標，mount() 再補開）。
+    // 只比路由本身（# 後、? 前）：?open= 這種同頁參數不算換頁。
+    // 批 1 驗收 #12：移到所有提早 return 的分支之前——以前出路畫面、導去第一次使用這幾條路不經過這裡，
+    // 開著的確認框換頁後還留著，在別頁按確定照樣執行。出路畫面本身算同一頁（不管網址是哪個），重繪不關確認框。
+    const routeKey = recovering ? "recovery" : hash;
+    const navigated = routeKey !== lastRenderedRoute;
+    lastRenderedRoute = routeKey;
+    // 批 1 驗收 #11：同一頁重繪（例如另一個分頁存檔）會把開著的彈窗關掉再補開，補開時焦點固定跳到第一個欄位；
+    // 先記下焦點在哪個欄位、游標在哪，畫完再還回去
+    const focusMemo = navigated ? null : rememberModalFocus();
+    closeModal(navigated ? "navigate" : "rerender");
 
     // 還沒有帳本：一律先走第一次使用。
-    // 帳本讀不出來：給三條出路（批 1 #7）；其中「從備份檔還原」與「另外建立」借用第一次使用那一頁，所以放行 #/setup。
+    // 帳本讀不出來：給四條出路（批 1 #7、驗收 #1）；其中「從備份檔還原」與「另外建立」借用第一次使用那一頁，所以放行 #/setup。
     if (!state || !Array.isArray(state.profiles)) {
-      if (db.hasState() && hash !== "#/setup") {
+      if (recovering) {
         mount.innerHTML = String(recoveryGate());
+        syncModalBackdrop();
         void loadRecoverySnapshots();
+        void refreshBrokenCopyText();
         return;
       }
       if (hash !== "#/setup") { location.hash = "#/setup"; return; }
@@ -138,12 +155,6 @@ async function render() {
     }
 
     const ctx = buildContext(state);
-    // 批 5：換了路由（上一頁、分頁列、彈窗裡的連結）＝使用者自己離開，用 "navigate" 關彈窗，
-    // 各頁會清掉「該開」旗標，回原頁不會自己彈回；同一頁重繪才用 "rerender"（保留旗標，mount() 再補開）。
-    // 只比路由本身（# 後、? 前）：?open= 這種同頁參數不算換頁。
-    const navigated = hash !== lastRenderedRoute;
-    lastRenderedRoute = hash;
-    closeModal(navigated ? "navigate" : "rerender");
     /* 整頁重繪時換掉整個 #app 節點：頁面模組在 mount() 裡綁的事件委派會跟著舊節點一起消失，
        不會每重繪一次就疊一層監聽器（模組自己不用管解綁）。 */
     try {
@@ -159,12 +170,34 @@ async function render() {
       if (current) current.innerHTML = String(stateGate(`這一頁畫不出來（${error && error.message ? error.message : "未知的錯誤"}）`, () => { void render(); }));
     }
     syncModalBackdrop();      // 確認框不跟著重繪關掉，新的 #app 要重新鎖住
+    restoreModalFocus(focusMemo);
     // 批 5：換頁捲回頂端；同一頁重繪不動捲動位置（深連結 ?open= 自己會在下一拍捲到區塊）
     if (navigated) window.scrollTo(0, 0);
     updateInstallHint();
   } finally {
     rendering = false;
     if (pendingRender) { pendingRender = false; void render(); }
+  }
+}
+
+function rememberModalFocus() {
+  const host = document.getElementById("modal-root");
+  const active = document.activeElement;
+  if (!host || !active || !active.id || !host.contains(active)) return null;
+  let start = null;
+  let end = null;
+  try { start = active.selectionStart; end = active.selectionEnd; } catch (e) {}   // type=number 沒有游標位置可讀
+  return { id: active.id, start, end };
+}
+
+function restoreModalFocus(memo) {
+  if (!memo || !isModalOpen()) return;
+  const host = document.getElementById("modal-root");
+  const target = host ? host.querySelector(`#${CSS.escape(memo.id)}`) : null;
+  if (!target || target.disabled) return;
+  try { target.focus({ preventScroll: true }); } catch (e) {}
+  if (typeof memo.start === "number" && typeof memo.end === "number") {
+    try { target.setSelectionRange(memo.start, memo.end); } catch (e) {}
   }
 }
 
@@ -198,11 +231,13 @@ function safePinStatus() {
   try { return pin.status(); } catch (e) { return "locked"; }
 }
 
-// ---------- 帳本讀不出來（批 1 #7） ----------
+// ---------- 帳本讀不出來（批 1 #7；驗收 #1、#3、#8） ----------
 // 以前只有「再試一次」，而重新整理永遠讀到同一份壞資料：家長區進不去、連備份都下載不了。
-// 這裡給三條出路，三條都會先把讀不出來的原始內容另外留存（store.prepareReplace），不會被蓋掉。
-let recoverySnapshots = null;    // null＝讀取中、false＝讀不到快照、[]＝沒有
+// 這裡給四條出路（快照、備份檔、雲端、另外建立），外加一顆無論如何都在的「下載讀不出來的原始內容」。
+// 換帳本之前一律：原始內容要先有安全的副本（另外留存成功，或家長已經下載），雲端同步要先凍結（gist.freezeForLedgerSwap）。
+let recoverySnapshots = null;    // null＝讀取中、false＝讀不到快照（瀏覽器資料庫出錯）、[]＝沒有
 let bootProblem = "";
+let recoveryCloudNote = "";      // 「從雲端拿回」第一按之後的說明（雲端那份有幾筆）
 
 function recoveryDetail() {
   return db.loadError() || bootProblem;
@@ -210,27 +245,58 @@ function recoveryDetail() {
 
 function recoverySnapshotList() {
   if (recoverySnapshots === null) return html`<p class="empty-history">正在找這台裝置上的快照…</p>`;
-  if (recoverySnapshots === false || !recoverySnapshots.length) return html`<p class="empty-history">這台裝置上沒有可以用的快照。</p>`;
+  if (recoverySnapshots === false) return html`<p class="empty-history">${db.SNAPSHOT_READ_ERROR}。</p>`;
+  if (!recoverySnapshots.length) return html`<p class="empty-history">這台裝置上沒有快照。</p>`;
   return html`${recoverySnapshots.slice(0, 5).map((record) => html`<div class="parent-row">
       <div><b>${timestampText(record.ts)}</b><small>${[record.reason, typeof record.activities === "number" ? `${record.activities} 筆紀錄` : ""].filter(Boolean).join(" · ")}</small></div>
       <button type="button" data-recovery-snapshot="${record.ts}">還原</button>
     </div>`)}`;
 }
 
+function brokenCopyText() {
+  switch (db.brokenCopyStatus()) {
+    case "preserved": return "讀不出來的原始內容已經另外留存在這台裝置（最多留最近 3 份），換帳本也不會被蓋掉。";
+    case "downloaded": return "讀不出來的原始內容你已經下載了一份。";
+    case "failed": return "讀不出來的原始內容沒辦法另外留存在這台裝置（瀏覽器資料庫有問題）。換帳本之前，請先按下面這顆鈕下載一份。";
+    case "none": return "";
+    default: return "正在把讀不出來的原始內容另外留存…";
+  }
+}
+
+async function refreshBrokenCopyText() {
+  await db.ensureBrokenPreserved();
+  const node = document.querySelector("[data-recovery-copy]");
+  if (node) node.textContent = brokenCopyText();
+}
+
+function recoveryCloudButton() {
+  const arm = gist.armState("pull");
+  const label = arm === "warming" ? "稍等…" : arm === "armed" ? "再按一次：從雲端還原" : "從雲端拿回備份";
+  return html`<button type="button" data-recovery="cloud"${arm === "warming" ? raw(" disabled") : ""}>${label}</button>`;
+}
+
 function recoveryGate() {
   const detail = recoveryDetail();
+  const cloud = gist.cloudOn();
   return stateGate(
-    `這台裝置上的帳本讀不出來${detail ? `（${detail}）` : ""}。原始內容會先另外留存一份，不會被蓋掉。可以用下面其中一種方式繼續：`,
+    `這台裝置上的帳本讀不出來${detail ? `（${detail}）` : ""}。可以用下面其中一種方式繼續：`,
     () => { location.reload(); },
     html`<div class="recovery-routes">
+      <h2>讀不出來的原始內容</h2>
+      <p data-recovery-copy>${brokenCopyText()}</p>
+      <button type="button" data-recovery="download-raw">下載讀不出來的原始內容</button>
       <h2>從本機快照還原</h2>
       <p>app 每次記帳後都會自動另存一份快照，選一份最近的，就能回到那時候的樣子。</p>
       <div class="device-list" data-recovery-snapshots>${recoverySnapshotList()}</div>
       <h2>從備份檔還原</h2>
       <p>用以前在家長區下載的帳本備份或完整可攜備份（.json）。</p>
       <button type="button" data-recovery="file">選擇備份檔</button>
+      ${cloud ? html`<h2>從 GitHub 雲端拿回</h2>
+      <p>用雲端那份備份取代讀不出來的帳本。按一下先讀雲端、告訴你有幾筆紀錄，5 秒內再按一次才會換。</p>
+      ${recoveryCloudButton()}
+      ${recoveryCloudNote && gist.armState("pull") !== "idle" ? html`<p role="status">${recoveryCloudNote}</p>` : ""}` : ""}
       <h2>另外建立新帳本</h2>
-      <p>從頭開始記。讀不出來的那份會先留在這台裝置裡，但新帳本不會有以前的紀錄。</p>
+      <p>從頭開始記，新帳本不會有以前的紀錄。${cloud ? "雲端那份備份不會被動到，之後會問你要用哪一份。" : ""}</p>
       <button type="button" data-recovery="new">另外建立新帳本</button>
     </div>`,
   );
@@ -256,22 +322,70 @@ document.addEventListener("click", (event) => {
   else if (snapshot) void restoreRecoverySnapshot(Number(snapshot.getAttribute("data-recovery-snapshot")), snapshot);
 });
 
+// 換帳本前的關卡：讀不出來的原始內容要先有安全的副本（另外留存成功，或家長已經下載）。
+// store.prepareReplace 換的那一刻還會再驗一次；這裡先擋，家長才不會填完表單才被退回。
+async function readyToReplace() {
+  if (await db.ensureBrokenPreserved()) return true;
+  void refreshBrokenCopyText();
+  showStatus("讀不出來的原始內容還沒有安全的副本：請先按「下載讀不出來的原始內容」存一份，再換帳本", "error", { ms: 8000 });
+  return false;
+}
+
+async function downloadBrokenRaw() {
+  const text = db.brokenRaw();
+  if (text === null) { showStatus("這台裝置上已經沒有讀不出來的內容了", "waiting"); return; }
+  const filename = `小小理財島讀不出來的原始內容-${new Date().toISOString().slice(0, 10)}.txt`;
+  try {
+    const result = await backup.shareOrDownload(text, filename, { type: "text/plain", title: "小小理財島讀不出來的原始內容" });
+    if (result === "share" || result === "download") {
+      db.markBrokenDownloaded(text);
+      showStatus("已經下載讀不出來的原始內容（.txt）", "success");
+    } else if (result === "clipboard") {
+      showStatus("下載不了，已經把原始內容複製到剪貼簿；請先貼到備忘錄存起來", "waiting", { ms: 8000 });
+    }
+  } catch (error) {
+    showStatus("下載不了讀不出來的原始內容", "error");
+  }
+  void refreshBrokenCopyText();
+}
+
+// 第四條路（驗收 #1）：沿用家長區同一套「從雲端拿回」——第一按只讀、武裝 5 秒，600ms 內的第二按不算；
+// 第二按換之前先存「還原前」（帳本讀不出來時就是先確認原始內容有副本），存不進去就取消。
+async function pullRecoveryCloud(button) {
+  if (gist.armState("pull") === "idle") {
+    if (!(await readyToReplace())) return;
+    if (button && button.isConnected) { button.disabled = true; button.textContent = "讀取中…"; }
+  }
+  const result = await gist.pullFromCloud();
+  if (result && result.tooSoon) return;
+  if (result && result.applied) {
+    recoveryCloudNote = "";
+    if (location.hash !== "#/") location.hash = "#/"; else void render();
+    return;
+  }
+  recoveryCloudNote = result && result.armed ? `雲端那份有 ${result.activities} 筆紀錄；5 秒內再按一次就會換成雲端那份` : "";
+  void render();
+}
+
 async function runRecoveryRoute(kind, button) {
+  if (kind === "download-raw") { await downloadBrokenRaw(); return; }
+  if (kind === "cloud") { await pullRecoveryCloud(button); return; }
   if (kind === "file") {
+    if (!(await readyToReplace())) return;
+    gist.freezeForLedgerSwap();
     setup.presetMode("restore");
     location.hash = "#/setup";
     return;
   }
   if (kind !== "new") return;
-  const ok = await confirmDialog("新帳本會從零開始，以前的紀錄不會出現在新帳本裡。讀不出來的那份會先另外留存在這台裝置，不會刪掉；之後如果找到備份檔，還是可以用「從備份檔還原」換回來。確定要另外建立嗎？", {
+  const cloudNote = gist.cloudOn() ? "雲端那份備份不會被動到，之後會問你要用哪一份。" : "";
+  const ok = await confirmDialog(`新帳本會從零開始，以前的紀錄不會出現在新帳本裡。讀不出來的那份會另外留存在這台裝置（或由你先下載一份），不會刪掉；之後如果找到備份檔，還是可以用「從備份檔還原」換回來。${cloudNote}確定要另外建立嗎？`, {
     title: "另外建立新帳本",
     confirmLabel: "另外建立",
   });
   if (!ok) return;
-  if (!db.preserveBrokenLedger()) {
-    showStatus("沒辦法先把讀不出來的那份另外留存（可能容量滿了），為了安全先不另建", "error");
-    return;
-  }
+  if (!(await readyToReplace())) return;
+  gist.freezeForLedgerSwap();
   if (button && button.isConnected) button.disabled = true;
   setup.presetMode("create");
   location.hash = "#/setup";
@@ -284,9 +398,11 @@ async function restoreRecoverySnapshot(ts, button) {
     danger: true,
   });
   if (!ok) return;
+  if (!(await readyToReplace())) return;
   if (button && button.isConnected) { button.disabled = true; button.textContent = "還原中…"; }
   try {
     const restored = await db.restoreSnapshot(ts);
+    gist.freezeForLedgerSwap();
     await store.replaceState(restored, "還原本機快照");
     showStatus(`已還原到 ${timestampText(ts)} 的樣子`, "success");
     if (location.hash !== "#/") location.hash = "#/"; else void render();

@@ -8,7 +8,7 @@
 import { normalize } from "./state.js";
 import * as store from "./store.js";
 import * as pin from "./pin.js";
-import { setCloudBridge, KEY } from "./db.js";
+import { setCloudBridge, KEY, INVALID_LEDGER_CLOUD_TEXT } from "./db.js";
 import { showStatus, closeModal, setCloudStatusProvider } from "./ui/common.js";
 
 /* ───────── 雲端自動備份（GitHub Gist） ─────────
@@ -164,6 +164,21 @@ function uploadableState() {
   if (!current) return null;
   try { normalize(JSON.parse(JSON.stringify(current))); return current; }
   catch (e) { return null; }
+}
+/* 批 1 驗收 #1：帳本讀不出來時，出路畫面上任何「換帳本」動作（另外建立、從備份檔還原、從快照還原）之前呼叫。
+   換上去的那一份跟雲端那份是兩回事：以前換完存檔、15 秒後自動同步時，雲端版本戳跟上次記的一樣，
+   就直接把新帳本（常常是空的）PATCH 上去，雲端那份「還救得回來」的備份就沒了。
+   這裡把「本機已經反映過的雲端版本」（remoteStamp）與自己上傳過的指紋全部清掉：
+   下一次同步一定先讀雲端、判定兩邊不同，凍結上傳並出「要用哪一份」拍板卡，由家長決定。
+   指紋一定要清：留著的話，雲端那份（以前這台傳的）會被認成「自己的回音」而放行上傳。 */
+export function freezeForLedgerSwap() {
+  if (!cloudOn()) return false;
+  clearTimeout(cloudTimer);
+  gist.remoteStamp = null;
+  gist.lastPush = null;
+  gist.pendingPush = null;
+  saveGist();
+  return true;
 }
 export function scheduleCloudSync() {
   if (!cloudOn() || cloudFrozen()) return;
@@ -351,6 +366,8 @@ export function cloudInfo() {
 // db.save 靠這個決定 latestBackup.copyStatus；common.js 的儲存狀態文字也靠它
 function bridgeStatus() {
   if (!cloudOn()) return null;
+  /* 批 1 驗收 #5：帳本驗證不過而暫停上傳，跟「網路失敗、稍後重試」是兩回事，畫面要講對 */
+  if (gist.lastError === LOCAL_NOT_UPLOADABLE) return "invalid";
   if (gist.lastError || (gist.pending && !pendingCloud && !gist.gistId)) return "failed";
   if (cloudFrozen()) return "pending";
   return gist.lastSyncAt ? "synced" : "pending";
@@ -562,6 +579,8 @@ export async function syncNow() {
 let pullCache = null;
 export async function pullFromCloud() {
   if (pullCache) {
+    /* 批 1 驗收 #4：跟其他兩段式確認一樣，武裝後 600ms 內的第二按當成連點，不執行（也不解除武裝） */
+    if (Date.now() - pullCache.at < ARM_MIN_MS) return { tooSoon: true };
     /* 第二按：套用第一按讀到的那一份，不重抓。換之前先存「還原前」快照，存不進去就整個取消 */
     clearTimeout(pullTimer);
     const cached = pullCache;
@@ -602,7 +621,7 @@ export async function pullFromCloud() {
     }
     if (!r || !r.raw) { pullFreeze = false; toast("雲端沒有讀到備份", { ms: 3000 }); return { empty: true }; }
     const s = normalize(JSON.parse(r.raw));
-    pullCache = { s, stamp: r.stamp };
+    pullCache = { s, stamp: r.stamp, at: Date.now() };
     pullFreeze = true;                   /* 重申一次：中途若被別的路徑動過，武裝期一定是凍的 */
     clearTimeout(pullTimer);
     pullTimer = setTimeout(() => {
@@ -610,6 +629,8 @@ export async function pullFromCloud() {
       /* 武裝期內若家長區重繪過，狀態列還寫著暫停、「立刻同步」也還藏著：到期補畫一次 */
       refreshSettings();
     }, 5000);
+    /* 600ms 的「稍等…」過了，按鈕才換成「再按一次」並可以按（家長區面板與出路畫面都靠這一下重畫） */
+    setTimeout(() => { if (pullCache) { paintArmed(null); refreshSettings(); } }, ARM_MIN_MS + 10);
     refreshSettings();
     return { armed: true, activities: (s.activities || []).length };
   } catch (e) {
@@ -655,26 +676,47 @@ const armed = new Map();        /* key → { timer, at }；武裝中的按鈕會
 /* 批 1：武裝後這麼短的時間內的第二按當成連點（雙擊、手抖），不執行——
    家長要真的看到「再按一次」才算確認。以前連點兩下就直接刪掉雲端備份 */
 const ARM_MIN_MS = 600;
+/* 批 1 驗收 #10：武裝後這 600ms 裡按鈕寫「稍等…」、看起來不能按（真的 disabled）；過了才換成「再按一次…」。
+   以前一按下去文案立刻變「再按一次」，家長照著按卻因為太快被當成連點，看起來像壞掉 */
+const WARMING_LABEL = "稍等…";
 function arm(key, ms, root) {
   const entry = armed.get(key);
   if (entry) return Date.now() - entry.at >= ARM_MIN_MS;   /* 第二按；太快就還不算 */
   armed.set(key, { at: Date.now(), timer: setTimeout(() => { armed.delete(key); paintArmed(root); }, ms) });
+  setTimeout(() => paintArmed(root), ARM_MIN_MS + 10);     /* 稍等期過了：換成「再按一次」並恢復可按 */
   paintArmed(root);
   return false;
 }
 function disarm(key) { const entry = armed.get(key); if (entry) clearTimeout(entry.timer); armed.delete(key); }
 const isArmed = (key) => (key === "pull" ? !!pullCache : armed.has(key));
+function armedAt(key) {
+  if (key === "pull") return pullCache ? pullCache.at || 0 : 0;
+  const entry = armed.get(key);
+  return entry ? entry.at : 0;
+}
+const isWarming = (key) => { const at = armedAt(key); return Boolean(at) && Date.now() - at < ARM_MIN_MS; };
+/* 出路畫面（app.js）的「從雲端拿回」鈕也照這三種狀態畫："idle"／"warming"／"armed" */
+export function armState(key) { return isWarming(key) ? "warming" : isArmed(key) ? "armed" : "idle"; }
 /* 家長區重繪過的話，當初武裝的那個面板節點已經不在畫面上：改找現在的那一個 */
 function paintArmed(root) {
   const live = root && root.isConnected ? root : document.querySelector("[data-gist-root]");
   if (!live) return;
   live.querySelectorAll("[data-arm-label]").forEach((button) => {
     const key = button.getAttribute("data-gist");
+    if (isWarming(key)) {
+      button.textContent = WARMING_LABEL;
+      button.disabled = true;
+      button.dataset.warming = "1";
+      return;
+    }
     button.textContent = isArmed(key) ? button.getAttribute("data-arm-label") : button.getAttribute("data-idle-label");
+    /* 只放開自己為了「稍等」而鎖住的按鈕；正在送出（handler 自己鎖的）不動 */
+    if (button.dataset.warming) { delete button.dataset.warming; button.disabled = false; }
   });
 }
 /* render 時就照武裝狀態畫文案，重繪後才不會「看起來沒武裝、其實按一下就執行」 */
-const armedText = (key, idle, armedLabel) => escapeHtml(isArmed(key) ? armedLabel : idle);
+const armedText = (key, idle, armedLabel) => escapeHtml(isWarming(key) ? WARMING_LABEL : isArmed(key) ? armedLabel : idle);
+const warmAttr = (key) => (isWarming(key) ? ' disabled data-warming="1"' : "");
 const escapeHtml = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function whenText(iso) {
   if (!iso) return "還沒同步過";
@@ -698,6 +740,7 @@ export function renderGistPanel() {
     : info.card === "decide" ? "等你決定要用哪一份，自動上傳暫停"
     : info.card === "gone" ? "雲端那份備份不見了，自動上傳暫停"
     : info.card === "stale" ? "還沒跟雲端比對完，自動上傳暫停"
+    : info.lastError === LOCAL_NOT_UPLOADABLE ? INVALID_LEDGER_CLOUD_TEXT
     : info.lastError ? `上次同步失敗：${info.lastError}`
     : `上次同步 ${whenText(info.lastSyncAt)}`;
   let card = "";
@@ -705,8 +748,8 @@ export function renderGistPanel() {
     card = `<div class="restore-summary"><b>雲端跟這台裝置都有資料，要用哪一份？</b>
       ${summaryHtml("雲端那份", info.cloudSummary)}${summaryHtml("這台裝置", info.localSummary)}
       <div class="backup-download-actions">
-        <button type="button" class="restore-button" data-gist="adopt-cloud" data-arm-label="再按一次：用雲端的" data-idle-label="用雲端的（覆蓋這台裝置）">${armedText("adopt-cloud", "用雲端的（覆蓋這台裝置）", "再按一次：用雲端的")}</button>
-        <button type="button" data-gist="adopt-local" data-arm-label="再按一次：用這台裝置的" data-idle-label="用這台裝置的（覆蓋雲端）">${armedText("adopt-local", "用這台裝置的（覆蓋雲端）", "再按一次：用這台裝置的")}</button>
+        <button type="button" class="restore-button" data-gist="adopt-cloud" data-arm-label="再按一次：用雲端的" data-idle-label="用雲端的（覆蓋這台裝置）"${warmAttr("adopt-cloud")}>${armedText("adopt-cloud", "用雲端的（覆蓋這台裝置）", "再按一次：用雲端的")}</button>
+        <button type="button" data-gist="adopt-local" data-arm-label="再按一次：用這台裝置的" data-idle-label="用這台裝置的（覆蓋雲端）"${warmAttr("adopt-local")}>${armedText("adopt-local", "用這台裝置的（覆蓋雲端）", "再按一次：用這台裝置的")}</button>
       </div><small>按一下後 4 秒內再按一次才會執行。</small></div>`;
   } else if (info.card === "gone") {
     card = `<div class="restore-summary"><b>雲端那份備份不見了</b><small>可能在 GitHub 被刪掉，或另一台裝置改用了別份。</small>
@@ -720,12 +763,12 @@ export function renderGistPanel() {
     ${card}
     <div class="backup-download-actions">
       ${info.frozen ? "" : `<button type="button" data-gist="sync">立刻同步</button>`}
-      <button type="button" data-gist="pull" data-arm-label="再按一次：從雲端還原" data-idle-label="從雲端拿回備份">${info.pullArmed ? "再按一次：從雲端還原" : "從雲端拿回備份"}</button>
+      <button type="button" data-gist="pull" data-arm-label="再按一次：從雲端還原" data-idle-label="從雲端拿回備份"${warmAttr("pull")}>${armedText("pull", "從雲端拿回備份", "再按一次：從雲端還原")}</button>
     </div>
     <details><summary>進階</summary>
       <p>刪除雲端備份會把 GitHub 上那份 Gist 整個刪掉並中斷連線；中斷連線只是這台裝置不再上傳，雲端那份會留著。</p>
       <div class="backup-download-actions">
-        <button type="button" class="is-danger" data-gist="delete" data-arm-label="再按一次：真的刪除雲端備份" data-idle-label="刪除雲端備份">${armedText("delete", "刪除雲端備份", "再按一次：真的刪除雲端備份")}</button>
+        <button type="button" class="is-danger" data-gist="delete" data-arm-label="再按一次：真的刪除雲端備份" data-idle-label="刪除雲端備份"${warmAttr("delete")}>${armedText("delete", "刪除雲端備份", "再按一次：真的刪除雲端備份")}</button>
         <button type="button" data-gist="disconnect">中斷連線</button>
       </div>
     </details>`;
@@ -764,6 +807,7 @@ export function mountGistPanel(root) {
       if (action === "delete") { if (!arm("delete", 5000, root)) { button.disabled = false; return; } disarm("delete"); say("刪除中…"); await deleteCloudBackup(); return; }
     } finally {
       if (button.isConnected) button.disabled = false;
+      paintArmed(root);        /* 剛武裝、還在「稍等…」的按鈕要維持鎖住的樣子 */
     }
   });
 }
