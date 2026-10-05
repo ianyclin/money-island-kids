@@ -8,7 +8,8 @@ import * as pin from "./pin.js";
 import { derive } from "./state.js";
 import * as gist from "./gist.js";
 import * as setup from "./ui/setup.js";
-import { stateGate, showStatus, closeModal } from "./ui/common.js";
+import { stateGate, showStatus, closeModal, confirmDialog, isModalOpen, syncModalBackdrop, timestampText } from "./ui/common.js";
+import { html } from "./util.js";
 
 // ---------- 路由表 ----------
 // hash 路由：GitHub Pages 沒有伺服器可以改寫網址，所有頁面共用同一份 index.html。
@@ -98,9 +99,11 @@ async function render() {
     const state = readState();
 
     // 還沒有帳本：一律先走第一次使用。
+    // 帳本讀不出來：給三條出路（批 1 #7）；其中「從備份檔還原」與「另外建立」借用第一次使用那一頁，所以放行 #/setup。
     if (!state || !Array.isArray(state.profiles)) {
-      if (db.hasState()) {
-        mount.innerHTML = String(stateGate("這台裝置上的帳本讀不出來，原始內容已另外保留。", () => { location.reload(); }));
+      if (db.hasState() && hash !== "#/setup") {
+        mount.innerHTML = String(recoveryGate());
+        void loadRecoverySnapshots();
         return;
       }
       if (hash !== "#/setup") { location.hash = "#/setup"; return; }
@@ -125,12 +128,19 @@ async function render() {
     closeModal("rerender");   // 背景重繪：頁面模組的 onClose 會保留「該開」旗標，mount() 再補開
     /* 整頁重繪時換掉整個 #app 節點：頁面模組在 mount() 裡綁的事件委派會跟著舊節點一起消失，
        不會每重繪一次就疊一層監聽器（模組自己不用管解綁）。 */
-    const next = document.createElement("div");
-    next.id = "app";
-    next.innerHTML = String(mod.render(ctx));
-    mount.replaceWith(next);
-    // v2 的殼不用 --dock：貼底補償由 app.css 的 .page-body 直接算（規格 3.1）。
-    if (typeof mod.mount === "function") mod.mount(next, ctx);
+    try {
+      const next = document.createElement("div");
+      next.id = "app";
+      next.innerHTML = String(mod.render(ctx));
+      mount.replaceWith(next);
+      // v2 的殼不用 --dock：貼底補償由 app.css 的 .page-body 直接算（規格 3.1）。
+      if (typeof mod.mount === "function") mod.mount(next, ctx);
+    } catch (error) {
+      /* 帳本裡有頁面畫不動的資料：不要卡在骨架或半張畫面，至少留一顆「再試一次」 */
+      const current = root();
+      if (current) current.innerHTML = String(stateGate(`這一頁畫不出來（${error && error.message ? error.message : "未知的錯誤"}）`, () => { void render(); }));
+    }
+    syncModalBackdrop();      // 確認框不跟著重繪關掉，新的 #app 要重新鎖住
     updateInstallHint();
   } finally {
     rendering = false;
@@ -166,6 +176,103 @@ function safeUnlocked() {
 
 function safePinStatus() {
   try { return pin.status(); } catch (e) { return "locked"; }
+}
+
+// ---------- 帳本讀不出來（批 1 #7） ----------
+// 以前只有「再試一次」，而重新整理永遠讀到同一份壞資料：家長區進不去、連備份都下載不了。
+// 這裡給三條出路，三條都會先把讀不出來的原始內容另外留存（store.prepareReplace），不會被蓋掉。
+let recoverySnapshots = null;    // null＝讀取中、false＝讀不到快照、[]＝沒有
+let bootProblem = "";
+
+function recoveryDetail() {
+  return db.loadError() || bootProblem;
+}
+
+function recoverySnapshotList() {
+  if (recoverySnapshots === null) return html`<p class="empty-history">正在找這台裝置上的快照…</p>`;
+  if (recoverySnapshots === false || !recoverySnapshots.length) return html`<p class="empty-history">這台裝置上沒有可以用的快照。</p>`;
+  return html`${recoverySnapshots.slice(0, 5).map((record) => html`<div class="parent-row">
+      <div><b>${timestampText(record.ts)}</b><small>${[record.reason, typeof record.activities === "number" ? `${record.activities} 筆紀錄` : ""].filter(Boolean).join(" · ")}</small></div>
+      <button type="button" data-recovery-snapshot="${record.ts}">還原</button>
+    </div>`)}`;
+}
+
+function recoveryGate() {
+  const detail = recoveryDetail();
+  return stateGate(
+    `這台裝置上的帳本讀不出來${detail ? `（${detail}）` : ""}。原始內容會先另外留存一份，不會被蓋掉。可以用下面其中一種方式繼續：`,
+    () => { location.reload(); },
+    html`<div class="recovery-routes">
+      <h2>從本機快照還原</h2>
+      <p>app 每次記帳後都會自動另存一份快照，選一份最近的，就能回到那時候的樣子。</p>
+      <div class="device-list" data-recovery-snapshots>${recoverySnapshotList()}</div>
+      <h2>從備份檔還原</h2>
+      <p>用以前在家長區下載的帳本備份或完整可攜備份（.json）。</p>
+      <button type="button" data-recovery="file">選擇備份檔</button>
+      <h2>另外建立新帳本</h2>
+      <p>從頭開始記。讀不出來的那份會先留在這台裝置裡，但新帳本不會有以前的紀錄。</p>
+      <button type="button" data-recovery="new">另外建立新帳本</button>
+    </div>`,
+  );
+}
+
+async function loadRecoverySnapshots() {
+  try {
+    const list = await db.listSnapshots();
+    recoverySnapshots = Array.isArray(list) ? list : false;
+  } catch (e) {
+    recoverySnapshots = false;
+  }
+  const container = document.querySelector("[data-recovery-snapshots]");
+  if (container) container.innerHTML = String(recoverySnapshotList());
+}
+
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const route = target.closest("[data-recovery]");
+  const snapshot = target.closest("[data-recovery-snapshot]");
+  if (route) void runRecoveryRoute(route.getAttribute("data-recovery"), route);
+  else if (snapshot) void restoreRecoverySnapshot(Number(snapshot.getAttribute("data-recovery-snapshot")), snapshot);
+});
+
+async function runRecoveryRoute(kind, button) {
+  if (kind === "file") {
+    setup.presetMode("restore");
+    location.hash = "#/setup";
+    return;
+  }
+  if (kind !== "new") return;
+  const ok = await confirmDialog("新帳本會從零開始，以前的紀錄不會出現在新帳本裡。讀不出來的那份會先另外留存在這台裝置，不會刪掉；之後如果找到備份檔，還是可以用「從備份檔還原」換回來。確定要另外建立嗎？", {
+    title: "另外建立新帳本",
+    confirmLabel: "另外建立",
+  });
+  if (!ok) return;
+  if (!db.preserveBrokenLedger()) {
+    showStatus("沒辦法先把讀不出來的那份另外留存（可能容量滿了），為了安全先不另建", "error");
+    return;
+  }
+  if (button && button.isConnected) button.disabled = true;
+  setup.presetMode("create");
+  location.hash = "#/setup";
+}
+
+async function restoreRecoverySnapshot(ts, button) {
+  const ok = await confirmDialog(`要用 ${timestampText(ts)} 的快照取代讀不出來的帳本嗎？讀不出來的那份會先另外留存。`, {
+    title: "從本機快照還原",
+    confirmLabel: "還原",
+  });
+  if (!ok) return;
+  if (button && button.isConnected) { button.disabled = true; button.textContent = "還原中…"; }
+  try {
+    const restored = await db.restoreSnapshot(ts);
+    await store.replaceState(restored, "還原本機快照");
+    showStatus(`已還原到 ${timestampText(ts)} 的樣子`, "success");
+    if (location.hash !== "#/") location.hash = "#/"; else void render();
+  } catch (error) {
+    showStatus(error && error.message ? error.message : "這份快照讀不出來", "error");
+    if (button && button.isConnected) { button.disabled = false; button.textContent = "還原"; }
+  }
 }
 
 // ---------- 每月獎勵 ----------
@@ -259,7 +366,7 @@ function setupInstallHint() {
     if (state) {
       if (!state.meta) state.meta = {};
       state.meta.installHintDismissed = true;
-      store.commit("關閉安裝提示");
+      try { store.commit("關閉安裝提示"); } catch (e) {}   // 存不進去時 db.save 自己會提示，頁首也有常駐標記
     }
   });
 }
@@ -293,12 +400,32 @@ function askPersist() {
 }
 
 // ---------- 開機 ----------
+// 讀帳本進 store：讀不出來、或放進去時排序就炸，都當成「讀不出來」（批 1 #7），由 render 顯示出路畫面。
+function hydrateFromStorage() {
+  bootProblem = "";
+  try {
+    store.hydrate(db.load());
+  } catch (error) {
+    bootProblem = error && error.message ? error.message : "內容不是帳本";
+    db.markBroken(bootProblem);
+    store.hydrate(null);
+  }
+}
+
+// 另一個分頁改了帳本（批 1 #4）：重讀、重繪；正開著彈窗的話說一聲，免得家長以為自己填的東西被吃掉。
+function reloadFromOtherTab() {
+  const hadModal = isModalOpen();
+  hydrateFromStorage();          // hydrate 會通知 subscribe → refresh 整頁重繪
+  if (hadModal) showStatus("另一個分頁更新了帳本，畫面已重新整理", "waiting", { ms: 6000 });
+}
+
 async function boot() {
   // 先把 localStorage 的帳本放進 store（不回寫）；讀不到就維持 null，render 會導去第一次使用。
-  store.hydrate(db.load());
+  hydrateFromStorage();
   gist.loadGist();
   gist.setRefreshHandler(() => { void refresh(); });
   store.subscribe(() => { void refresh(); });
+  db.watchExternalChanges(reloadFromOtherTab);
   window.addEventListener("hashchange", () => { void render(); });
   registerServiceWorker();
   setupInstallHint();
@@ -307,8 +434,9 @@ async function boot() {
 
   if (readState()) await runMonthlyRewards();
   await render();
-  /* 開 app 也排一次，把上次沒傳成的補上；待決的回音先靜默比對 */
-  if (gist.cloudOn()) { gist.retryEcho().catch(() => {}); gist.scheduleCloudSync(); }
+  /* 開 app 也排一次，把上次沒傳成的補上；待決的回音先靜默比對。
+     帳本讀不出來時不排：沒有東西可以傳，傳了只會蓋掉雲端那份（批 1 #1；syncCloud 自己也會再擋一次） */
+  if (gist.cloudOn() && readState()) { gist.retryEcho().catch(() => {}); gist.scheduleCloudSync(); }
   void refreshAutomaticMarketQuotes();
 }
 

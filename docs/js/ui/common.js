@@ -15,6 +15,21 @@ function cloudStatus() {
   try { return cloudStatusProvider ? cloudStatusProvider() : null; } catch (e) { return null; }
 }
 
+// ---------- 本機存檔失敗的橋接（批 1 資料安全） ----------
+// 同樣的理由（db → common 已經有相依），由 db.js 在載入時把「最近一次存檔失敗的原因」掛進來。
+// 有值＝畫面上的改動還沒存進這台裝置：頁首放常駐標記，成功提示一律改講還沒存好。
+let saveErrorProvider = null;
+export function setSaveErrorProvider(fn) { saveErrorProvider = fn; }
+export function saveErrorText() {
+  try { return saveErrorProvider ? String(saveErrorProvider() || "") : ""; } catch (e) { return ""; }
+}
+
+function saveErrorFlag() {
+  const problem = saveErrorText();
+  if (!problem) return "";
+  return html`<p class="save-error-flag" role="alert"><span aria-hidden="true">!</span><span>${problem}：剛剛的改動還沒存進這台裝置，關掉 app 就會不見。</span><a href="#/parent">去備份</a></p>`;
+}
+
 // ---------- v2 的殼（規格 3.1／3.2／3.3） ----------
 // appShell({ page, title, ctx, right, body })：四個分頁頁面與家長頁都用它包起來（setup 不用）。
 // 同一份 markup，CSS 切換：< 768px 顯示底部 .tabbar、≥ 768px 顯示左側 .sidebar。
@@ -43,6 +58,7 @@ export function appShell({ page, title, ctx, right, body } = {}) {
       ${sidebarKids(profiles, selectedId)}
     </aside>
     <main class="page" data-page="${active}">
+      ${saveErrorFlag()}
       <header class="page-head">
         ${heading ? html`<h1 class="page-title">${heading}</h1>` : profileChips(profiles, selectedId)}
         <div class="page-head-right">${right ? raw(String(right)) : ""}</div>
@@ -313,7 +329,11 @@ export function openModal(content, options = {}) {
       ${raw(String(content))}
     </div>
   </div>`);
-  modalSession = { onClose: typeof options.onClose === "function" ? options.onClose : null, opener };
+  modalSession = {
+    onClose: typeof options.onClose === "function" ? options.onClose : null,
+    opener,
+    keepOnRerender: Boolean(options.keepOnRerender),
+  };
   backdropInert(true);
   const dialog = root.querySelector(".modal");
   /* 焦點帶進對話框，輔助科技才不會還停在被遮住的按鈕上 */
@@ -326,7 +346,10 @@ export function openModal(content, options = {}) {
 // 開著的 modal；頁面模組的 onClose 看到 "rerender" 時只清「DOM 目前開著」的旗標，
 // 不清「應該開著」的旗標，mount() 才能把 modal 補開並回填輸入（規格 1.2／3.2 的存活機制）。
 // 使用者主動關（關閉鈕、背景、Esc）reason 為 undefined，兩個旗標都清。
+// 開的時候帶 keepOnRerender（確認框）的 modal 不跟著背景重繪關掉：它不屬於任何頁面，
+// 沒有頁面會把它補開，關掉就等於替使用者按了「取消」。重繪後由 app.js 呼叫 syncModalBackdrop() 把新的 #app 鎖回去。
 export function closeModal(reason) {
+  if (reason === "rerender" && modalSession && modalSession.keepOnRerender) return;
   const root = document.getElementById("modal-root");
   const session = modalSession;
   modalSession = null;
@@ -342,6 +365,11 @@ export function closeModal(reason) {
 }
 
 export function isModalOpen() { return !!modalSession; }
+
+// 整頁重繪換掉了 #app 節點，留下來的 modal 要把新節點也設成 inert
+export function syncModalBackdrop() {
+  if (modalSession) backdropInert(true);
+}
 
 document.addEventListener("mousedown", (event) => {
   if (!modalSession) return;
@@ -384,6 +412,7 @@ export function confirmDialog(message, options = {}) {
       </div>`, {
       labelledBy: "confirm-dialog-title",
       className: "confirm-dialog",
+      keepOnRerender: true,
       onClose: () => finish(false),
     });
     if (!dialog) { finish(false); return; }
@@ -453,14 +482,15 @@ export function assetTimeline(profile, activities) {
 // ---------- 開機／錯誤畫面 ----------
 let retryHandler = null;
 
-// stateGate(error, onRetry)：error 為空＝載入骨架；有 error＝錯誤卡加「再試一次」。
-export function stateGate(error, onRetry) {
+// stateGate(error, onRetry, extra)：error 為空＝載入骨架；有 error＝錯誤卡加「再試一次」。
+// extra（html 片段）接在錯誤卡最後：帳本讀不出來時，app.js 用它放三條出路。
+export function stateGate(error, onRetry, extra) {
   retryHandler = typeof onRetry === "function" ? onRetry : null;
   return html`<main class="money-state-gate" aria-live="polite">
     <div class="money-state-gate-card">
       <span class="brand-mark" aria-hidden="true">¢</span>
       ${error
-        ? html`<h1>暫時讀不到家庭帳本</h1><p>${error}</p>${onRetry ? html`<button type="button" data-state-retry>再試一次</button>` : ""}`
+        ? html`<h1>暫時讀不到家庭帳本</h1><p>${error}</p>${onRetry ? html`<button type="button" data-state-retry>再試一次</button>` : ""}${extra || ""}`
         : html`<div class="state-skeleton state-skeleton-title"></div>
           <div class="state-skeleton"></div>
           <div class="state-skeleton state-skeleton-short"></div>
@@ -494,7 +524,10 @@ export function backupStatusText(state) {
 }
 
 // savedStatus(state, message)：Gist 開啟且同步失敗時才加後綴。
+// 本機存檔失敗時不准講「已經記好」：改成錯誤，跟頁首的常駐標記講同一件事。
 export function savedStatus(state, message) {
+  const problem = saveErrorText();
+  if (problem) return { message: `${problem}：剛剛的改動還沒存進這台裝置，請先到家長區下載備份`, tone: "error" };
   if (cloudStatus() === "failed") return { message: `${message}；雲端備份稍後重試`, tone: "waiting" };
   return { message, tone: "success" };
 }

@@ -185,13 +185,28 @@ export function futurePrincipalOf(activities, profileId) {
   return Math.max(0, Math.round(amount));
 }
 
+// 「這個月的爸媽獎勵領過了沒」：原版（money-store.ts ensureMonthlySavingsRewards L1498–1568）
+// 看的是 activities 表裡「原始的」entry_date，而且刪除只是在 activity_changes 標記，原列還在。
+// 單機版直接改日期、直接移除那一筆，所以改用 operationId（reward:<孩子>:<月份>，記著發放當月）判斷，
+// 刪掉的獎勵記在 deletedRewardOperationIds；沒有 reward: 操作碼的舊資料（試算表匯入）照原本看日期。
+export function rewardOperationId(profileId, month) {
+  return `reward:${profileId}:${month}`;
+}
+
+export function rewardClaimedIn(state, profileId, month) {
+  const operationId = rewardOperationId(profileId, month);
+  if ((state.deletedRewardOperationIds || []).includes(operationId)) return true;
+  return state.activities.some((activity) => activity.profileId === profileId && activity.kind === "reward"
+    && (activity.operationId === operationId
+      || (!String(activity.operationId ?? "").startsWith("reward:") && String(activity.entryDate).slice(0, 7) === month)));
+}
+
 // getMoneyState L1461–1473：rewardClaimedThisMonth／shortDreamBalance／gardenSpecies／futurePrincipal
 export function derive(state) {
   const month = taipeiMonth();
   const profiles = state.profiles.map((profile) => ({
     ...profile,
-    rewardClaimedThisMonth: state.activities.some((activity) =>
-      activity.profileId === profile.id && activity.kind === "reward" && activity.entryDate.slice(0, 7) === month),
+    rewardClaimedThisMonth: rewardClaimedIn(state, profile.id, month),
     shortDreamBalance: profile.spendingBalance,
     gardenSpecies: profile.gardenSpecies ?? DEFAULT_GARDENS[profile.id] ?? "tree",
     futurePrincipal: futurePrincipalOf(state.activities, profile.id),
@@ -534,6 +549,12 @@ export function validateBackupEnvelope(value) {
     if (!Array.isArray(refresh.updatedSymbols) || !Array.isArray(refresh.unavailableSymbols)) invalidBackup("行情標的清單格式錯誤");
     for (const symbol of [...refresh.updatedSymbols, ...refresh.unavailableSymbols]) backupString(symbol, "行情標的", 1, 12);
   }
+  // 單機版新增（批 1 資料安全）：刪掉的每月獎勵，見 rewardClaimedIn 的說明。舊備份沒有這個欄位。
+  if (state.deletedRewardOperationIds !== undefined) {
+    const deleted = state.deletedRewardOperationIds;
+    if (!Array.isArray(deleted) || deleted.length > 10000) invalidBackup("已刪除獎勵清單格式錯誤");
+    for (const operationId of deleted) backupString(operationId, "已刪除獎勵操作 ID", 8, 120);
+  }
   return root;
 }
 
@@ -577,5 +598,34 @@ export function normalize(raw) {
     },
   };
   if (source.quoteRefresh) state.quoteRefresh = { ...source.quoteRefresh };
+  if (Array.isArray(source.deletedRewardOperationIds) && source.deletedRewardOperationIds.length) {
+    state.deletedRewardOperationIds = [...source.deletedRewardOperationIds];
+  }
   return sortAll(state);
+}
+
+// ---------- 開機讀帳本（批 1 資料安全） ----------
+// 先用 normalize 的完整規則驗；不過的話，只要結構還能用（該有的陣列都在、孩子有 id、紀錄有日期），
+// 就照修之前的寬鬆標準照常打開——不能因為驗證器比以前嚴，就把一份昨天還打得開的帳本擋在門外。
+// 連結構都不對（缺陣列、不是物件）才丟錯，交給開機的「讀不出來」畫面。
+const LEDGER_ARRAYS = ["profiles", "activities", "projects", "holdings", "purchases", "investmentPresets",
+  "dreamJars", "reflections", "harvests", "savingsTransfers"];
+
+function isUsableLedger(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || "format" in value) return false;
+  if (!value.family || typeof value.family !== "object") return false;
+  if (!LEDGER_ARRAYS.every((key) => Array.isArray(value[key]))) return false;
+  if (!value.profiles.length) return false;
+  return value.profiles.every((profile) => profile && typeof profile === "object" && typeof profile.id === "string")
+    && value.activities.every((activity) => activity && typeof activity === "object"
+      && typeof activity.profileId === "string" && typeof activity.entryDate === "string");
+}
+
+export function coerceLedger(value) {
+  try {
+    return normalize(value);
+  } catch (error) {
+    if (isUsableLedger(value)) return value;
+    throw error;
+  }
 }

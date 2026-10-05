@@ -30,7 +30,7 @@
 </head>
 <body>
 <h1>小小理財島：引擎自我測試</h1>
-<p class="hint">store.js 的 db.js 已換成 db-mock.js，這一頁不會動到真正的帳本；只有家長操作碼會暫時寫進 localStorage，跑完會清掉。</p>
+<p class="hint">store.js 的 db.js 已換成 db-mock.js；測試期間 localStorage、IndexedDB、網路請求也都換成 dev/fakes.js 的替身，這一頁不會動到真正的帳本、快照、雲端設定與家長操作碼。</p>
 <ol id="results"></ol>
 <script type="module">
   import { runSelfTest } from "./selftest.js";

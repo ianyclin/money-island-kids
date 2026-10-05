@@ -21,7 +21,7 @@ import {
   normalize,
   validateBackupEnvelope,
 } from "./state.js";
-import { setState } from "./store.js";
+import { replaceState } from "./store.js";
 
 const PHOTO_MAX_EDGE = 256;
 const PHOTO_QUALITY = 0.82;
@@ -74,16 +74,27 @@ function exportableState(state) {
   return JSON.parse(JSON.stringify(state));
 }
 
+// 批 1：匯出前先用還原時同一套規則驗一次。驗不過的檔案日後一定還原不回來，
+// 與其讓家長以為手上有備份，不如現在就說清楚。
+function assertRestorable(envelope, validate) {
+  try {
+    validate(envelope);
+  } catch (error) {
+    throw new Error(`這份帳本有資料對不起來，匯出的檔案會還原不回來，所以先不匯出（${error instanceof Error ? error.message : "未知的錯誤"}）`);
+  }
+  return envelope;
+}
+
 // money-store.ts createBackupEnvelope L3051–3063
 export function exportEnvelope(state) {
   const copy = exportableState(state);
-  return {
+  return assertRestorable({
     format: "money-island-backup",
     version: 1,
     exportedAt: nowIso(),
     family: copy.family,
     state: copy,
-  };
+  }, validateBackupEnvelope);
 }
 
 // money-store.ts createPortableBackupEnvelope L3089–3124
@@ -105,14 +116,14 @@ export function exportPortableEnvelope(state) {
     photos.push({ profileId: profile.id, contentType: parsed.contentType, base64: parsed.base64 });
     profile.avatar = `/api/profile-photo?profileId=${encodeURIComponent(profile.id)}`;
   }
-  return {
+  return assertRestorable({
     format: "money-island-portable-backup",
     version: 1,
     exportedAt: nowIso(),
     family: copy.family,
     state: copy,
     photos,
-  };
+  }, validatePortableEnvelope);
 }
 
 // ---------- 檢查 ----------
@@ -261,7 +272,8 @@ export async function restore(parsed) {
   source.latestBackup = null;
   source.backupHealth = { status: "pending", message: "等待還原後建立新的備份" };
   const state = normalize(source);
-  return setState(state, "已由上傳檔案還原");
+  // 換帳本前先存「還原前」快照，存不進去就丟錯、不還原（store.replaceState）
+  return replaceState(state, "已由上傳檔案還原");
 }
 
 // ---------- 分享／下載 ----------

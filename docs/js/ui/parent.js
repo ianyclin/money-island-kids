@@ -801,7 +801,8 @@ export function mount(root, ctx) {
   const gistRoot = root.querySelector("[data-gist-root]");
   if (gistRoot) gist.mountGistPanel(gistRoot);
 
-  if (isOpen("snapshots") && ui.snapshots === null) void loadSnapshots(root, ctx);
+  // 批 1 #8：以前整個 app 開著的期間只讀一次，之後的改動、還原前快照都看不到。抽屜開著就每次重讀。
+  if (isOpen("snapshots")) void loadSnapshots(root, ctx);
 
   // 重繪之後把原本開著的校正撲滿 modal 補回來（規格 1.2／3.2）。
   if (ui.correctionOpen && ui.correctionModalKind !== "correction") openCorrectionModal(ctx);
@@ -817,7 +818,7 @@ export function mount(root, ctx) {
     if (!(element instanceof HTMLElement) || element.tagName !== "DETAILS" || !element.dataset.openKey) return;
     const key = element.dataset.openKey;
     if (element.open) ui.openDetails.add(key); else ui.openDetails.delete(key);
-    if (key === "snapshots" && element.open && ui.snapshots === null) void loadSnapshots(root, ctxRef);
+    if (key === "snapshots" && element.open) void loadSnapshots(root, ctxRef);
     if (key === "guide") ui.guideTouched = true;
   }, true);
 
@@ -1106,8 +1107,10 @@ async function handleClick(root, ctx, button) {
       startBusy(root, button);
       clearOperationError(root, "backup");
       try {
+        // 讀不到快照會丟錯（不再什麼都沒換卻說已還原）；換帳本前先存「還原前」快照，存不進去也丟錯
         const restored = await db.restoreSnapshot(ts);
-        if (restored && Array.isArray(restored.profiles)) store.setState(restored, "還原本機快照");
+        await store.replaceState(restored, "還原本機快照");
+        ui.snapshots = null;
         announce(root, `已還原到 ${formatDateTime(ts)} 的樣子`);
         ctx.refresh();
       } catch (caught) {

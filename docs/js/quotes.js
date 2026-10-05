@@ -46,18 +46,27 @@ function quoteNameFromTitle(title, symbol) {
   return name || symbol;
 }
 
+// 收盤價的合理範圍（元）：臺灣上市股價目前最高也只有幾千元；超過就當成欄位對錯了，不寫進帳本。
+const MAX_REASONABLE_PRICE = 100000;
+
 // 取 data 中最後一列日期格式為 ROC/MM/DD 的資料（最後一列是「月平均收盤價」，要略過）。
+// 批 1：欄位位置一律照 fields 找「日期」「收盤價」，不再固定取第 0、1 欄——
+// 證交所若加欄或換順序，固定取 row[1] 會把成交量之類的數字當成價格寫進帳本。找不到這兩欄就當格式不正確。
 export function parseStockDayAvg(payload, symbol) {
   if (!payload || typeof payload !== "object") throw new Error("證交所行情格式不正確");
   if (payload.stat && payload.stat !== "OK") return null;
   if (!Array.isArray(payload.data)) return null;
+  const fields = Array.isArray(payload.fields) ? payload.fields.map((field) => String(field ?? "").trim()) : [];
+  const dateIndex = fields.indexOf("日期");
+  const priceIndex = fields.indexOf("收盤價");
+  if (dateIndex < 0 || priceIndex < 0) throw new Error("證交所行情格式不正確");
   for (let index = payload.data.length - 1; index >= 0; index -= 1) {
     const row = payload.data[index];
-    if (!Array.isArray(row) || row.length < 2) continue;
-    const asOf = rocDateToIso(row[0]);
+    if (!Array.isArray(row) || row.length <= Math.max(dateIndex, priceIndex)) continue;
+    const asOf = rocDateToIso(row[dateIndex]);
     if (!asOf) continue;
-    const price = Number(String(row[1] ?? "").replaceAll(",", "").trim());
-    if (!Number.isFinite(price) || price <= 0) continue;
+    const price = Number(String(row[priceIndex] ?? "").replaceAll(",", "").trim());
+    if (!Number.isFinite(price) || price <= 0 || price > MAX_REASONABLE_PRICE) continue;
     return {
       symbol,
       name: quoteNameFromTitle(payload.title, symbol),

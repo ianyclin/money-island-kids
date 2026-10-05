@@ -23,6 +23,14 @@ function needsPinSetup() {
   try { return pin.status() === "setup"; } catch (e) { return true; }
 }
 
+// 帳本讀不出來的出路畫面（app.js）帶家長來這裡時，直接切到對應的那一條路。
+export function presetMode(next) {
+  mode = next === "restore" ? "restore" : "create";
+  error = "";
+  summary = null;
+  parsed = null;
+}
+
 function pinFields(prefix) {
   return html`${field({
       label: "家長操作碼",
@@ -72,6 +80,7 @@ function createForm() {
           <label class="sr-only" for="setup-kid-3">小朋友 3</label><input class="input" id="setup-kid-3" name="kid" placeholder="小朋友 3" maxlength="12">
         </div>
       </div>
+      ${needsPinSetup() ? "" : html`<p class="setup-help">這台裝置已經設定過家長操作碼，請輸入原本那一組。</p>`}
       ${pinFields("create")}
       ${field({ label: "預先儲蓄比例", input: html`<input class="input" type="number" name="savingsRate" value="30" min="0" max="100" step="5" inputmode="numeric" required>` })}
       <p class="setup-help">零用錢進來時，這個比例會先留給未來（存進爸媽銀行），其餘由孩子自己安排。預設 30%，以 5% 為單位。</p>
@@ -150,8 +159,10 @@ async function createLedger(form, ctx) {
     busy = "create";
     ctx.refresh();
     const next = freshState({ familyName, kidNames, savingsRate });
-    await pin.setup(parentPin);
-    store.setState(next, "建立新帳本");
+    // 帳本讀不出來後另建時，這台裝置早就有操作碼了：驗原本那一組，不重設（pin.setup 會擋「已經設定」）
+    if (needsPinSetup()) await pin.setup(parentPin); else await pin.assert(parentPin);
+    // 讀不出來的那份會在 replaceState 裡先留存，留存不了就丟錯、不另建
+    await store.replaceState(next, "建立新帳本");
     busy = "";
     showStatus(`${familyName}的帳本建好了，開始記第一筆吧`, "success");
     location.hash = "#/";

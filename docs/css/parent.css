@@ -727,3 +727,41 @@ details[open] > summary .summary-open-label { display: inline; }
 
 /* 裁判 9/11：「發布小專案」鈕與「目前專案」小標之間留白 */
 .parent-project-list { margin-top: var(--space-5); }
+
+/* ─────────────────────────────────────────────────────────
+   批 1 資料安全（2026-10-05）新增。放這裡是因為派工規定新樣式不進 app.css；
+   parent.css 每一頁都會載入，所以頁首標記與開機出路畫面也能用。
+   ───────────────────────────────────────────────────────── */
+
+/* common.appShell 的頁首常駐標記：本機存檔失敗時才出現，直到下一次存成功 */
+.save-error-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-2) var(--space-4) 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  background: #f8dfe5;
+  color: #913e58;
+  font-size: var(--fs-caption);
+  font-weight: 800;
+  line-height: 1.55;
+}
+.save-error-flag > span:first-child {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: #913e58;
+  color: #fff;
+  font-weight: 900;
+}
+.save-error-flag > span:nth-child(2) { flex: 1 1 auto; min-width: 0; }
+.save-error-flag a { flex: 0 0 auto; color: #913e58; font-weight: 900; text-decoration: underline; }
+
+/* app.js 帳本讀不出來時的三條出路（接在 common.stateGate 的錯誤卡裡） */
+.recovery-routes { margin-top: var(--space-5); border-top: 1px solid var(--line); }
+.recovery-routes h2 { margin-top: var(--space-5); font-size: var(--fs-body); font-weight: 900; }
+.recovery-routes > p { margin-top: var(--space-1); font-size: var(--fs-small); }
+.recovery-routes .parent-row button { margin-top: 0; }

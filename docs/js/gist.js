@@ -156,6 +156,15 @@ async function freezeForGone(g) {
   refreshSettings();
   toast("雲端那份備份不見了——到家長區決定要重傳一份還是中斷", { ms: 6000, action: "去看", onAction: goToBackupPanel });
 }
+/* 批 1：上傳前先驗這台裝置的帳本。帳本讀不出來（null）或連還原都過不了的內容，
+   傳上去只會把雲端那份「還救得回來」的備份蓋掉——以前會把 null 傳上去還標同步成功。 */
+const LOCAL_NOT_UPLOADABLE = "這台裝置的帳本讀不出來或資料對不起來，先暫停上傳，以免蓋掉雲端那份備份";
+function uploadableState() {
+  const current = store.getState();
+  if (!current) return null;
+  try { normalize(JSON.parse(JSON.stringify(current))); return current; }
+  catch (e) { return null; }
+}
 export function scheduleCloudSync() {
   if (!cloudOn() || cloudFrozen()) return;
   clearTimeout(cloudTimer);
@@ -165,6 +174,11 @@ let lastSyncOutcome = "";     /* 'ok'／'busy'／'frozen'／'error'：「立刻�
 export async function syncCloud(force, _retried) {
   lastSyncOutcome = "frozen";
   if (!cloudOn() || cloudFrozen()) return false;
+  if (!uploadableState()) {
+    lastSyncOutcome = "invalid";
+    gist.lastError = LOCAL_NOT_UPLOADABLE; saveGist();
+    return false;
+  }
   if (cloudBusy) { cloudPending = true; lastSyncOutcome = "busy"; return false; }
   cloudBusy = true; lastSyncOutcome = "error";
   const g = gist;          /* 上傳途中被「中斷連線」清掉時，用這個別名安全收尾 */
@@ -206,7 +220,10 @@ export async function syncCloud(force, _retried) {
       }
     }
     if (conflict || gone) throw { conflict: true };  /* 走 catch 收尾，凍結流程在鎖放掉之後跑 */
-    const body = JSON.stringify(store.getState(), null, 1);
+    /* 上面幾支請求在等網路的期間，帳本可能被換掉或變成讀不出來：真的要傳的這一刻再驗一次 */
+    const current = uploadableState();
+    if (!current) throw new Error(LOCAL_NOT_UPLOADABLE);
+    const body = JSON.stringify(current, null, 1);
     const files = { [FILE]: { content: body } };
     /* 上傳「前」先把要傳的內容指紋落地：iOS 切背景常把成功回條吞掉，
        之後在雲端看到這個指紋，就知道那是自己傳成功的，不是別台裝置 */
@@ -343,6 +360,17 @@ setCloudStatusProvider(bridgeStatus);
 
 /* ───────── 設定頁的行為（stamps 3547–3818 行） ───────── */
 
+/* 「本機空白」：以前只看有沒有紀錄，夢想、回顧、照片都會被雲端那份蓋掉。
+   改成這台裝置上真的沒有任何孩子留下的東西（紀錄、夢想、回顧、持股、收成、多存申請、照片、
+   接過的小專案）才算空白；其餘一律走拍板卡讓家長選。 */
+function isBlankLedger(local) {
+  if (!local) return true;
+  const empty = (key) => !Array.isArray(local[key]) || local[key].length === 0;
+  return ["activities", "dreamJars", "reflections", "holdings", "purchases", "harvests", "savingsTransfers"].every(empty)
+    && (local.projects || []).every((project) => project.status === "open")
+    && !(local.profiles || []).some((profile) => String(profile.avatar || "").startsWith("data:"));
+}
+
 /* 連線：三向分支——雲端全空就直接上傳；雲端有一份而本機空白就直接拿回；兩邊都有就凍結等拍板 */
 export async function connect(token) {
   token = String(token || "").trim();
@@ -373,12 +401,19 @@ export async function connect(token) {
       refreshSettings(); return { ok: true, mode: "unreadable" };
     }
     const local = store.getState();
-    if (!local || (local.activities || []).length === 0) {
-      resetRuntime();
-      gist.remoteStamp = cloudStamp; saveGist();  /* 採用了雲端這個版本，指紋才算數 */
-      store.setState(cloud, "從雲端備份還原");
-      toast("已連線，並從雲端拿回 " + (cloud.activities || []).length + " 筆紀錄", { ms: 5000, tone: "success" });
-      refreshSettings(); return { ok: true, mode: "pulled" };
+    if (isBlankLedger(local)) {
+      /* 直接拿回之前也要先留「還原前」快照；存不進去就改走拍板卡，讓家長自己決定，絕不直接蓋掉 */
+      let prepared = true;
+      try { await store.prepareReplace(); } catch (e) { prepared = false; }
+      if (prepared && gist && gist.token === token) {
+        resetRuntime();
+        gist.remoteStamp = cloudStamp; saveGist();  /* 採用了雲端這個版本，指紋才算數 */
+        try { store.setState(cloud, "從雲端備份還原"); }
+        catch (e) { freezeAfterUnsavedAdopt(); throw e; }
+        toast("已連線，並從雲端拿回 " + (cloud.activities || []).length + " 筆紀錄", { ms: 5000, tone: "success" });
+        refreshSettings(); return { ok: true, mode: "pulled" };
+      }
+      if (!gist || gist.token !== token) return { ok: false, error: "連線途中被中斷了" };
     }
     /* 兩邊都有資料：讓使用者決定（選項畫在家長區）。
        pending 旗標要落地——關掉 app 再開，凍結也不能失效 */
@@ -394,16 +429,32 @@ export async function connect(token) {
   }
 }
 
-/* 拍板卡：用雲端的（覆蓋這台裝置）。雙擊確認由畫面負責，按到這裡就是真的要換 */
-export function adoptCloud() {
+/* 改用雲端那份之後 localStorage 卻存不進去（批 1 #3）：記憶體是雲端那份、硬碟還是舊的，
+   指紋卻已經說「同步過雲端這一版」。凍結上傳（落地的 pending），等家長在「還沒比對完」卡上重新比對 */
+function freezeAfterUnsavedAdopt() {
+  if (!gist) return;
+  gist.pending = true; gist.lastPush = null; gist.pendingPush = null;
+  saveGist();
+}
+
+/* 拍板卡：用雲端的（覆蓋這台裝置）。雙擊確認由畫面負責，按到這裡就是真的要換。
+   換之前先存「還原前」快照；存不進去就什麼都不動、卡片留著 */
+export async function adoptCloud() {
   if (!pendingCloud || !gist) return false;
+  const chosen = pendingCloud;
+  try { await store.prepareReplace(); }
+  catch (e) { toast(errMsg(e, "還原前沒辦法先保存目前的帳本"), { ms: 6000, tone: "error" }); return false; }
+  if (pendingCloud !== chosen || !gist) return false;   /* 等快照的那一下，卡片被換掉或連線被中斷了 */
   resetRuntime();
   const next = pendingCloud.cloud;
   gist.remoteStamp = pendingCloud.stamp || null;  /* 採用了這個版本，指紋跟著它 */
   gist.lastPush = null; gist.pendingPush = null;   /* 舊指紋代表的不再是雲端內容：留著會把別台還原回舊版時誤認成回音 */
   pendingCloud = null;
   gist.pending = false; saveGist();
-  store.setState(next, "改用雲端備份");
+  /* 存不進 localStorage 時 commit 會丟錯：畫面已換成雲端那份，但要講清楚還沒存好。
+     指紋已經對齊雲端了，重開 app 時本機卻還是舊的那份——先凍結上傳，免得舊資料被當成最新傳上去 */
+  try { store.setState(next, "改用雲端備份"); }
+  catch (e) { freezeAfterUnsavedAdopt(); toast(errMsg(e, "存不進去"), { ms: 8000, tone: "error" }); refreshSettings(); return false; }
   toast("已改用雲端那份備份", { ms: 3000, tone: "success" });
   refreshSettings();
   return true;
@@ -414,6 +465,8 @@ export function adoptCloud() {
    版本戳變了就重抓、重畫卡片、請家長再確認一次，不能拿舊筆數蓋掉一份沒看過的新內容 */
 export async function adoptLocal() {
   if (!pendingCloud || !gist) return { ok: false };
+  /* 這台裝置的帳本傳不得（讀不出來或對不起來）：拍板卡留著，不解凍 */
+  if (!uploadableState()) { toast(LOCAL_NOT_UPLOADABLE, { ms: 6000, tone: "error" }); return { ok: false, mode: "invalid" }; }
   try {
     const chk = await gfetch("https://api.github.com/gists/" + gist.gistId, {
       headers: { Authorization: "Bearer " + gist.token, Accept: "application/vnd.github+json" },
@@ -448,6 +501,7 @@ export async function adoptLocal() {
    要撿那份來比對，不能各建各的、從此永久分岔 */
 export async function reuploadCloud() {
   if (!gist) return { ok: false };
+  if (!uploadableState()) { toast(LOCAL_NOT_UPLOADABLE, { ms: 6000, tone: "error" }); return { ok: false, mode: "invalid" }; }
   try {
     const hit = await findCloudBackup(gist.token);
     if (hit) {
@@ -508,14 +562,24 @@ export async function syncNow() {
 let pullCache = null;
 export async function pullFromCloud() {
   if (pullCache) {
-    /* 第二按：套用第一按讀到的那一份，不重抓 */
+    /* 第二按：套用第一按讀到的那一份，不重抓。換之前先存「還原前」快照，存不進去就整個取消 */
     clearTimeout(pullTimer);
+    const cached = pullCache;
+    try { await store.prepareReplace(); }
+    catch (e) {
+      pullCache = null; pullFreeze = false;
+      toast(errMsg(e, "還原前沒辦法先保存目前的帳本"), { ms: 6000, tone: "error" });
+      refreshSettings();
+      return { error: errMsg(e, "還原前沒辦法先保存目前的帳本") };
+    }
+    if (pullCache !== cached) return { error: "已經取消" };
     resetRuntime();
     const next = pullCache.s;
     pendingCloud = null; pullFreeze = false;
     if (gist) { gist.pending = false; gist.remoteStamp = pullCache.stamp || null; gist.lastPush = null; gist.pendingPush = null; saveGist(); }
     pullCache = null;
-    store.setState(next, "從雲端拿回備份");
+    try { store.setState(next, "從雲端拿回備份"); }
+    catch (e) { freezeAfterUnsavedAdopt(); toast(errMsg(e, "存不進去"), { ms: 8000, tone: "error" }); refreshSettings(); return { error: errMsg(e, "存不進去") }; }
     toast("已從雲端還原", { ms: 3000, tone: "success" });
     refreshSettings();
     return { applied: true };
@@ -587,21 +651,30 @@ export function disconnect() {
 
 /* ───────── 家長區「GitHub 雲端備份」面板（stamps 3547–3818 行的畫面） ─────────
    render 只產生字串；mount 綁一次事件委派。危險動作用「按兩次」武裝，幾秒沒按第二下就解除。 */
-const armed = new Map();        /* key → timer；武裝中的按鈕會把文案換成「再按一次…」 */
+const armed = new Map();        /* key → { timer, at }；武裝中的按鈕會把文案換成「再按一次…」 */
+/* 批 1：武裝後這麼短的時間內的第二按當成連點（雙擊、手抖），不執行——
+   家長要真的看到「再按一次」才算確認。以前連點兩下就直接刪掉雲端備份 */
+const ARM_MIN_MS = 600;
 function arm(key, ms, root) {
-  if (armed.has(key)) return true;                 /* 第二按 */
-  armed.set(key, setTimeout(() => { armed.delete(key); paintArmed(root); }, ms));
+  const entry = armed.get(key);
+  if (entry) return Date.now() - entry.at >= ARM_MIN_MS;   /* 第二按；太快就還不算 */
+  armed.set(key, { at: Date.now(), timer: setTimeout(() => { armed.delete(key); paintArmed(root); }, ms) });
   paintArmed(root);
   return false;
 }
-function disarm(key) { clearTimeout(armed.get(key)); armed.delete(key); }
+function disarm(key) { const entry = armed.get(key); if (entry) clearTimeout(entry.timer); armed.delete(key); }
+const isArmed = (key) => (key === "pull" ? !!pullCache : armed.has(key));
+/* 家長區重繪過的話，當初武裝的那個面板節點已經不在畫面上：改找現在的那一個 */
 function paintArmed(root) {
-  if (!root || !root.isConnected) return;
-  root.querySelectorAll("[data-arm-label]").forEach((button) => {
+  const live = root && root.isConnected ? root : document.querySelector("[data-gist-root]");
+  if (!live) return;
+  live.querySelectorAll("[data-arm-label]").forEach((button) => {
     const key = button.getAttribute("data-gist");
-    button.textContent = armed.has(key) ? button.getAttribute("data-arm-label") : button.getAttribute("data-idle-label");
+    button.textContent = isArmed(key) ? button.getAttribute("data-arm-label") : button.getAttribute("data-idle-label");
   });
 }
+/* render 時就照武裝狀態畫文案，重繪後才不會「看起來沒武裝、其實按一下就執行」 */
+const armedText = (key, idle, armedLabel) => escapeHtml(isArmed(key) ? armedLabel : idle);
 const escapeHtml = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function whenText(iso) {
   if (!iso) return "還沒同步過";
@@ -632,8 +705,8 @@ export function renderGistPanel() {
     card = `<div class="restore-summary"><b>雲端跟這台裝置都有資料，要用哪一份？</b>
       ${summaryHtml("雲端那份", info.cloudSummary)}${summaryHtml("這台裝置", info.localSummary)}
       <div class="backup-download-actions">
-        <button type="button" class="restore-button" data-gist="adopt-cloud" data-arm-label="再按一次：用雲端的" data-idle-label="用雲端的（覆蓋這台裝置）">用雲端的（覆蓋這台裝置）</button>
-        <button type="button" data-gist="adopt-local" data-arm-label="再按一次：用這台裝置的" data-idle-label="用這台裝置的（覆蓋雲端）">用這台裝置的（覆蓋雲端）</button>
+        <button type="button" class="restore-button" data-gist="adopt-cloud" data-arm-label="再按一次：用雲端的" data-idle-label="用雲端的（覆蓋這台裝置）">${armedText("adopt-cloud", "用雲端的（覆蓋這台裝置）", "再按一次：用雲端的")}</button>
+        <button type="button" data-gist="adopt-local" data-arm-label="再按一次：用這台裝置的" data-idle-label="用這台裝置的（覆蓋雲端）">${armedText("adopt-local", "用這台裝置的（覆蓋雲端）", "再按一次：用這台裝置的")}</button>
       </div><small>按一下後 4 秒內再按一次才會執行。</small></div>`;
   } else if (info.card === "gone") {
     card = `<div class="restore-summary"><b>雲端那份備份不見了</b><small>可能在 GitHub 被刪掉，或另一台裝置改用了別份。</small>
@@ -652,7 +725,7 @@ export function renderGistPanel() {
     <details><summary>進階</summary>
       <p>刪除雲端備份會把 GitHub 上那份 Gist 整個刪掉並中斷連線；中斷連線只是這台裝置不再上傳，雲端那份會留著。</p>
       <div class="backup-download-actions">
-        <button type="button" class="is-danger" data-gist="delete" data-arm-label="再按一次：真的刪除雲端備份" data-idle-label="刪除雲端備份">刪除雲端備份</button>
+        <button type="button" class="is-danger" data-gist="delete" data-arm-label="再按一次：真的刪除雲端備份" data-idle-label="刪除雲端備份">${armedText("delete", "刪除雲端備份", "再按一次：真的刪除雲端備份")}</button>
         <button type="button" data-gist="disconnect">中斷連線</button>
       </div>
     </details>`;
@@ -686,7 +759,7 @@ export function mountGistPanel(root) {
         button.disabled = false;
         return;
       }
-      if (action === "adopt-cloud") { if (!arm("adopt-cloud", 4000, root)) { button.disabled = false; return; } disarm("adopt-cloud"); adoptCloud(); return; }
+      if (action === "adopt-cloud") { if (!arm("adopt-cloud", 4000, root)) { button.disabled = false; return; } disarm("adopt-cloud"); await adoptCloud(); return; }
       if (action === "adopt-local") { if (!arm("adopt-local", 4000, root)) { button.disabled = false; return; } disarm("adopt-local"); say("上傳中…"); await adoptLocal(); return; }
       if (action === "delete") { if (!arm("delete", 5000, root)) { button.disabled = false; return; } disarm("delete"); say("刪除中…"); await deleteCloudBackup(); return; }
     } finally {

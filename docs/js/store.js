@@ -16,10 +16,10 @@ import {
   taipeiMonth,
   uuid,
 } from "./util.js";
-import { GARDEN_SPECIES, MAX_PROFILES, sortAll } from "./state.js";
+import { GARDEN_SPECIES, MAX_PROFILES, rewardClaimedIn, sortAll } from "./state.js";
 import { assertParentPin } from "./pin.js";
 import { fetchTwseClosingQuotes, isTwseSymbol, TWSE_QUOTE_SOURCE } from "./quotes.js";
-import { save } from "./db.js";
+import { hasBrokenLedger, preserveBrokenLedger, save, saveError, takeSnapshot } from "./db.js";
 
 // ---------- 單例狀態與提交 ----------
 
@@ -55,9 +55,30 @@ export function hydrate(next) {
 }
 
 // 還原備份用：換掉整份帳本並立刻存檔。
+// 會換掉帳本的入口一律先 await prepareReplace()（或直接用 replaceState）。
 export function setState(next, reason = "還原備份") {
   state = sortAll(ensureMeta(next));
   return commit(reason);
+}
+
+// 換掉整份帳本之前（還原備份檔、雲端拿回、還原本機快照、讀不出來時另建）：
+// 有帳本就先把它存成一份「還原前」快照，確定寫進 IndexedDB 才放行；
+// 帳本讀不出來的話，先把那份原始內容留存。任何一步失敗就丟錯，呼叫端必須中止、什麼都不換。
+export async function prepareReplace() {
+  if (state) {
+    let saved = false;
+    try { saved = await takeSnapshot(state, "還原前", { preRestore: true }); } catch (error) { saved = false; }
+    if (!saved) throw new Error("沒辦法先把目前的帳本另存一份快照，為了安全已經停止，帳本沒有被換掉；請先到家長區下載一份備份再試");
+    return;
+  }
+  if (hasBrokenLedger() && !preserveBrokenLedger()) {
+    throw new Error("沒辦法先把讀不出來的那份帳本另外留存（可能容量滿了），為了安全已經停止");
+  }
+}
+
+export async function replaceState(next, reason) {
+  await prepareReplace();
+  return setState(next, reason);
 }
 
 export function subscribe(listener) {
@@ -91,13 +112,18 @@ function recomputeHoldingTotals(next) {
   }
 }
 
+// db.save 回 false＝localStorage 沒寫進去：記憶體裡的帳本已經改了（畫面照樣顯示，快照與雲端也還會排程），
+// 但關掉 app 就沒了。所以照樣通知重繪（頁首會出現常駐標記），再丟錯讓呼叫端走失敗那條路，不准說「記好了」。
 export function commit(reason) {
   const next = requireState();
   recomputeHoldingTotals(next);
   ensureMeta(next).meta.updatedAt = nowIso();
   sortAll(next);
-  save(next, reason);
+  const saved = save(next, reason);
   notify();
+  if (saved === false) {
+    throw new Error(`${saveError() || "存不進去"}。剛剛的改動還在畫面上，但還沒存進這台裝置，關掉 app 就會不見；請先到家長區下載備份`);
+  }
   return next;
 }
 
@@ -136,9 +162,9 @@ function addActivity(fields) {
   return activity;
 }
 
+// 判斷規則見 state.js rewardClaimedIn：看 operationId 記的發放月份，不看可以被家長改掉的日期。
 function hasRewardThisMonth(profileId, month) {
-  return requireState().activities.some((activity) =>
-    activity.profileId === profileId && activity.kind === "reward" && activity.entryDate.slice(0, 7) === month);
+  return rewardClaimedIn(requireState(), profileId, month);
 }
 
 function descendBy(a, b) {
@@ -205,15 +231,16 @@ export async function addTransaction(input) {
   let label = String(input.label ?? "").trim().slice(0, 120) || "新增一筆紀錄";
   let note = String(input.note ?? "").trim().slice(0, 1000) || "";
 
+  // 批 1：Number.isFinite 防護。NaN 跟任何數字比較都是 false，會一路溜過下面的範圍檢查、把餘額變成 NaN。
   if (input.kind === "allowance") {
-    if (amount <= 0 || amount > 100000) throw new Error("請輸入正確的零用錢金額");
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) throw new Error("請輸入正確的零用錢金額");
     const split = splitBySavingsRate(amount, next.savingsRate);
     bankDelta = split.bankDelta;
     spendDelta = split.spendDelta;
     label = String(input.label ?? "").trim() || "收到零用錢";
     note = `先存 ${bankDelta} 元，留下 ${spendDelta} 元自己安排`;
   } else if (input.kind === "spend") {
-    if (amount <= 0 || amount > profile.spendingBalance) throw new Error("可花零用錢不夠喔");
+    if (!Number.isFinite(amount) || amount <= 0 || amount > profile.spendingBalance) throw new Error("可花零用錢不夠喔");
     spendDelta = -amount;
     label = String(input.label ?? "").trim() || "買了想要的東西";
   } else if (input.kind === "reward") {
@@ -315,6 +342,13 @@ export async function updateActivityRecord(input) {
     if (!relatedTransfer) throw new Error("找不到這筆自主存錢所連結的申請，已停止撤銷以避免帳務失真");
   }
   next.activities = next.activities.filter((item) => item.id !== activity.id);
+  // 原版刪除只是在 activity_changes 標記，原列（含 operation_id）還在，所以那個月不會再自動補發；
+  // 單機版是真的移除，要另外記住「這個月的獎勵刪掉了」（見 state.js rewardClaimedIn）。
+  if (activity.kind === "reward" && String(activity.operationId ?? "").startsWith("reward:")) {
+    const deleted = Array.isArray(next.deletedRewardOperationIds) ? next.deletedRewardOperationIds : [];
+    if (!deleted.includes(activity.operationId)) deleted.push(activity.operationId);
+    next.deletedRewardOperationIds = deleted;
+  }
   profile.spendingBalance = nextSpend;
   profile.bankBalance = nextBank;
   profile.marketValue = nextMarket;
@@ -355,7 +389,7 @@ export async function updateSavingsTransfer(input) {
       .filter((transfer) => transfer.profileId === profile.id && transfer.status === "pending")
       .reduce((sum, transfer) => sum + transfer.amount, 0);
     const available = Math.max(0, profile.spendingBalance - Math.round(pending));
-    if (amount <= 0) throw new Error("請輸入想多存的金額");
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("請輸入想多存的金額");
     if (amount > available) throw new Error("撲滿扣掉等待確認的金額後不夠喔");
     next.savingsTransfers.push({
       id: uuid(),
@@ -505,7 +539,7 @@ export async function updateFamilyProject(input) {
     const reward = Math.round(Number(input.reward ?? 0));
     if (title.length < 2 || title.length > 40) throw new Error("請寫出清楚的小專案名稱");
     if (description.length < 4 || description.length > 180) throw new Error("請簡短說明完成條件");
-    if (reward < 10 || reward > 500) throw new Error("小專案報酬請設定在 10 到 500 元之間");
+    if (!Number.isFinite(reward) || reward < 10 || reward > 500) throw new Error("小專案報酬請設定在 10 到 500 元之間");
     next.projects.push({
       id: uuid(),
       title,
@@ -532,7 +566,7 @@ export async function updateFamilyProject(input) {
     const reward = Math.round(Number(input.reward ?? 0));
     if (title.length < 2 || title.length > 40) throw new Error("請寫出清楚的小專案名稱");
     if (description.length < 4 || description.length > 180) throw new Error("請簡短說明完成條件");
-    if (reward < 10 || reward > 500) throw new Error("小專案報酬請設定在 10 到 500 元之間");
+    if (!Number.isFinite(reward) || reward < 10 || reward > 500) throw new Error("小專案報酬請設定在 10 到 500 元之間");
     project.title = title;
     project.description = description;
     project.reward = reward;
@@ -845,9 +879,20 @@ export async function refreshTwseClosingPrices(input = {}) {
   const unavailableSymbols = supportedSymbols.filter((symbol) => !quotes.has(symbol));
   if (available.length === 0) throw new Error("臺灣證券交易所目前沒有回傳這些標的的最新收盤價，仍可由家長手動輸入市值");
 
+  // 批 1：上面那一段在等網路，等的期間帳本可能被換掉（還原備份、雲端拿回、另一個分頁存了新版）。
+  // 回來後重新取帳本：換成別的家庭就整批放棄；同一份帳本（只是重讀過）就用持股 id 對回現在的持股，對不到的略過，
+  // 絕不把行情寫進出發前那個舊物件、也不寫進一份不相干的新帳本。
+  const live = state;
+  if (!live || live.family?.id !== next.family?.id) {
+    throw new Error("讀取收盤價的途中帳本換過了，這次的收盤價沒有寫入，請再更新一次");
+  }
+  const liveHoldings = holdings
+    .map((holding) => live.holdings.find((item) => item.id === holding.id))
+    .filter(Boolean);
+
   const stamp = nowIso();
   const updatedSymbols = new Set();
-  for (const holding of holdings) {
+  for (const holding of liveHoldings) {
     const quote = quotes.get(holding.symbol);
     if (!quote) continue;
     if (holding.quoteAsOf && quote.asOf < holding.quoteAsOf) continue;
@@ -883,7 +928,7 @@ export async function refreshTwseClosingPrices(input = {}) {
     updatedSymbols: [...updatedSymbols],
     unavailableSymbols,
   };
-  next.quoteRefresh = { ...result };
+  live.quoteRefresh = { ...result };
   if (updatedSymbols.size > 0) commit("更新最新收盤價");
   else notify();
   return result;
@@ -1098,6 +1143,14 @@ export async function correctAnnualHarvest(input) {
 
 // ---------- 夢想罐 ----------
 
+// 過年收成只能指向短期夢想罐（normalize 的「收成目的夢想關聯錯誤」）。夢想被改成長期時，
+// 照刪除夢想罐的作法把指向它的收成目的地清掉，不然之後每一份備份（含雲端）都還原不回來。
+function clearHarvestDestinations(next, dreamId) {
+  for (const harvest of next.harvests) {
+    if (harvest.destinationDreamId === dreamId) harvest.destinationDreamId = null;
+  }
+}
+
 // money-store.ts updateDreamJar L2201–2355
 export async function updateDreamJar(input) {
   const next = requireState();
@@ -1116,12 +1169,13 @@ export async function updateDreamJar(input) {
     const createdAtMs = Date.parse(input.createdAt ?? "");
     const completedAtMs = Date.parse(input.completedAt ?? "");
     if (title.length < 2 || title.length > 30) throw new Error("請寫出清楚的夢想名稱");
-    if (targetAmount < 50 || targetAmount > 10000000) throw new Error("夢想目標請設定在 50 到 1,000 萬元之間");
-    if (completedAmount < 0 || completedAmount > 10000000) throw new Error("完成金額請設定在 0 到 1,000 萬元之間");
+    if (!Number.isFinite(targetAmount) || targetAmount < 50 || targetAmount > 10000000) throw new Error("夢想目標請設定在 50 到 1,000 萬元之間");
+    if (!Number.isFinite(completedAmount) || completedAmount < 0 || completedAmount > 10000000) throw new Error("完成金額請設定在 0 到 1,000 萬元之間");
     if (!Number.isFinite(createdAtMs) || !Number.isFinite(completedAtMs)) throw new Error("請輸入完整的開始與完成日期時間");
     if (completedAtMs < createdAtMs) throw new Error("完成時間不能早於開始時間");
     current.title = title;
     current.kind = kind;
+    if (kind === "long") clearHarvestDestinations(next, current.id);
     current.targetAmount = targetAmount;
     current.completedAmount = completedAmount;
     current.createdAt = new Date(createdAtMs).toISOString();
@@ -1136,7 +1190,7 @@ export async function updateDreamJar(input) {
     const kind = input.kind === "long" ? "long" : "short";
     const targetAmount = Math.round(Number(input.targetAmount ?? 0));
     if (title.length < 2 || title.length > 30) throw new Error("請寫出清楚的夢想名稱");
-    if (targetAmount < 50 || targetAmount > 10000000) throw new Error("夢想目標請設定在 50 到 1,000 萬元之間");
+    if (!Number.isFinite(targetAmount) || targetAmount < 50 || targetAmount > 10000000) throw new Error("夢想目標請設定在 50 到 1,000 萬元之間");
     const activeExists = next.dreamJars.some((dream) => dream.profileId === profile.id
       && dream.kind === kind && dream.status === "active" && dream.id !== (input.dreamId ?? ""));
     if (input.action === "create") {
@@ -1164,6 +1218,7 @@ export async function updateDreamJar(input) {
       if (current.status === "queued" && kind === "long" && activeExists) throw new Error("長期夢想同時只能有一個");
       current.title = title;
       current.kind = kind;
+      if (kind === "long") clearHarvestDestinations(next, current.id);
       current.targetAmount = targetAmount;
       current.balance = 0;
       current.status = current.status === "queued" ? "queued" : "active";
@@ -1179,6 +1234,7 @@ export async function updateDreamJar(input) {
     if (!jar || jar.status !== "active") throw new Error("只有目前進行中的夢想可以完成");
     const accountAmount = jar.kind === "short" ? profile.spendingBalance : profile.bankBalance + profile.marketValue;
     const completedAmount = Math.max(0, Math.round(Number(input.completedAmount ?? accountAmount)));
+    if (!Number.isFinite(completedAmount)) throw new Error("完成金額請設定在 0 到 1,000 萬元之間");
     jar.status = "completed";
     jar.completedAt = stamp;
     jar.completedAmount = completedAmount;
@@ -1274,7 +1330,8 @@ export async function updateInvestmentPreset(input) {
     const symbol = String(input.symbol ?? "").trim().toUpperCase();
     const name = String(input.name ?? "").trim();
     const category = input.category === "股票" ? "股票" : "ETF";
-    const sortOrder = Math.max(0, Math.min(100, Math.round(Number(input.sortOrder ?? 0))));
+    const rawSortOrder = Math.round(Number(input.sortOrder ?? 0));
+    const sortOrder = Number.isFinite(rawSortOrder) ? Math.max(0, Math.min(100, rawSortOrder)) : 0;
     if (!/^[0-9A-Z.\-]{2,12}$/.test(symbol)) throw new Error("請輸入正確的標的代號");
     if (name.length < 2 || name.length > 40) throw new Error("請輸入標的名稱");
     if (input.action === "create") {
