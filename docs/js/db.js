@@ -119,14 +119,16 @@ function readBrokenCopies(db) {
 /* 寫入一律排隊：開機時「舊版 .broken 搬家」跟「這次讀不出來的留存」可能同時寫，
    兩邊各自讀完清單、在同一毫秒算出同一個 ts，後寫的會把先寫的蓋掉 */
 let brokenWrites = Promise.resolve();
-function writeBrokenCopy(raw, reason) {
-  const run = () => writeBrokenCopyNow(raw, reason);
+function writeBrokenCopy(raw, reason, at) {
+  const run = () => writeBrokenCopyNow(raw, reason, at);
   const result = brokenWrites.then(run, run);
   brokenWrites = result.catch(() => false);
   return result;
 }
 
-async function writeBrokenCopyNow(raw, reason) {
+/* at：這份原始內容當初留下的時間（舊版 .broken.<時間> 搬家時用）；沒給就是現在。
+   三份上限一律「保留最新的」：這一份比現有三份都舊的話不寫（回 false，呼叫端照「搬不進去」處理、不刪來源） */
+async function writeBrokenCopyNow(raw, reason, at) {
   const db = await openBrokenDB();
   if (!db) return false;
   const existing = await readBrokenCopies(db);
@@ -134,8 +136,20 @@ async function writeBrokenCopyNow(raw, reason) {
     try { db.close(); } catch (e) {}
     return true;
   }
-  const ts = Math.max(Date.now(), ...(existing || []).map(r => r.ts + 1));
-  const drop = (existing || []).slice(KEEP_BROKEN - 1).map(r => r.ts);     /* 加上這一份後只留最近 3 份 */
+  let ts;
+  if (Number.isFinite(at) && at > 0) {
+    ts = Math.floor(at);
+    const taken = new Set((existing || []).map(r => r.ts));
+    while (taken.has(ts)) ts += 1;
+  } else {
+    ts = Math.max(Date.now(), ...(existing || []).map(r => r.ts + 1));
+  }
+  const ranked = [...(existing || []).map(r => r.ts), ts].sort((a, b) => b - a);
+  if (ranked.indexOf(ts) >= KEEP_BROKEN) {                                  /* 比現有三份都舊：留不進去 */
+    try { db.close(); } catch (e) {}
+    return false;
+  }
+  const drop = ranked.slice(KEEP_BROKEN);                                   /* 加上這一份後只留最近 3 份 */
   return new Promise(res => {
     try {
       const tx = db.transaction(BROKEN_STORE, "readwrite");
@@ -194,20 +208,48 @@ export function migrateLegacyBroken() {
   return legacyMigration;
 }
 
-async function runLegacyMigration() {
+/* 批 5 驗收附加：更早的版本每開一次 app 就多一份 money-island.v1.broken.<時間>，也一起搬。
+   照留下的時間由新到舊寫（帶著原本的時間），三份上限時留最新的：後寫的比較舊，只會被擋、不會把先搬好的擠掉；
+   搬不進去（寫不進去、讀回來沒有、比現有三份都舊）的鑰匙不刪。 */
+function legacyBrokenKeys() {
+  const found = [];
+  const prefix = LEGACY_BROKEN_KEY + ".";
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (key === LEGACY_BROKEN_KEY) found.push({ key, at: 0 });
+    else if (key && key.startsWith(prefix)) {
+      const at = Number(key.slice(prefix.length));
+      found.push({ key, at: Number.isFinite(at) && at > 0 ? at : 0 });
+    }
+  }
+  /* 時間由新到舊；沒有時間的（單格的 .broken、後綴不是數字的）當成最新、照現在的時間寫，排最前面 */
+  return found.sort((a, b) => (b.at || Infinity) - (a.at || Infinity) || (a.key < b.key ? -1 : 1));
+}
+
+async function moveLegacyBroken({ key, at }) {
   let raw = null;
-  try { raw = localStorage.getItem(LEGACY_BROKEN_KEY); } catch (e) { return "kept"; }
+  try { raw = localStorage.getItem(key); } catch (e) { return "kept"; }
   if (raw === null) return "none";
   let written = false;
-  try { written = await writeBrokenCopy(raw, LEGACY_BROKEN_REASON); } catch (e) { written = false; }
+  try { written = await writeBrokenCopy(raw, LEGACY_BROKEN_REASON, at || undefined); } catch (e) { written = false; }
   if (!written) return "kept";
   let copies = null;
   try { copies = await readAllBrokenCopies(); } catch (e) { copies = null; }
   if (!copies || !copies.some(record => record.raw === raw)) return "kept";
   try {
-    if (localStorage.getItem(LEGACY_BROKEN_KEY) === raw) localStorage.removeItem(LEGACY_BROKEN_KEY);
+    if (localStorage.getItem(key) === raw) localStorage.removeItem(key);
   } catch (e) { return "kept"; }
   return "moved";
+}
+
+async function runLegacyMigration() {
+  let keys;
+  try { keys = legacyBrokenKeys(); } catch (e) { return "kept"; }
+  if (!keys.length) return "none";
+  const results = [];
+  for (const entry of keys) results.push(await moveLegacyBroken(entry));
+  if (results.includes("kept")) return "kept";
+  return results.includes("moved") ? "moved" : "none";
 }
 
 async function readAllBrokenCopies() {

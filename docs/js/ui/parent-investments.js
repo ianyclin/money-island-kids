@@ -109,11 +109,13 @@ export function render(ctx) {
   if (!ctx.unlocked) {
     // 裁判 9/11：不用 stateGate（它的大標是「暫時讀不到家庭帳本」，會誤導），改用殼包一張說明卡。
     // 批 5：帶著原本的網址過去（含 ?open= 深連結），解鎖後 parent.js 會把人送回來。
-    return common.appShell({ page: "parent", title: "投資管理", ctx, left: BACK_LINK, body: html`
+    // 批 5 驗收低-4：頁首的「‹ 家長區」也一樣帶著回來的網址（不然從頁首去解鎖就回不來）。
+    const parentHref = `#/parent?return=${encodeURIComponent(location.hash || "#/parent/investments")}`;
+    return common.appShell({ page: "parent", title: "投資管理", ctx, left: html`<a class="btn btn-ghost parent-back" href="${parentHref}">‹ 家長區</a>`, body: html`
       <section class="card">
         <p class="card-title">請先從家長區解鎖</p>
         <p class="card-sub">投資管理需要家長操作碼。</p>
-        <a class="btn btn-primary" href="${`#/parent?return=${encodeURIComponent(location.hash || "#/parent/investments")}`}">前往家長區</a>
+        <a class="btn btn-primary" href="${parentHref}">前往家長區</a>
       </section>` });
   }
 
@@ -348,6 +350,7 @@ export function render(ctx) {
 
 // 批 5：規格 5.5「頁首左側『‹ 家長區』返回」——以前放在內容第一列，現在進頁首左插槽。
 const BACK_LINK = html`<a class="btn btn-ghost parent-back" href="#/parent">‹ 家長區</a>`;
+const MARKET_VALUE_BUTTONS = '#app [data-action="update-market-value"]';
 
 // ---------- 忙碌狀態與錯誤（照 parent.js 原本的模式） ----------
 let busyRestore = null;
@@ -738,8 +741,11 @@ async function handleClick(root, ctx, button) {
     case "update-market-value": {
       const input = root.querySelector(`[data-draft="market-${id}"]`);
       const next = Math.round(Number(input?.value));
+      // 驗收中-1：持股照市值排序，改完市值這張卡可能換位置，別張卡（已經填了數字的）的
+      // 「記錄今日市值」會滑到手指底下：按下時與完成時都把這一排按鈕停用 800ms。
+      common.holdList(MARKET_VALUE_BUTTONS);
       const ok = await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.updateHoldingMarketValue({ holdingId: id, marketValue: next }));
-      if (ok) clearDrafts(`market-${id}`);
+      if (ok) { clearDrafts(`market-${id}`); common.holdList(MARKET_VALUE_BUTTONS); }
       return;
     }
     case "refresh-quotes": {

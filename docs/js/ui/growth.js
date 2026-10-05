@@ -546,14 +546,22 @@ function startBusy(button, label) {
 
 // ---------- 動作 ----------
 // 對應原本的 postDream：先樂觀更新頁面暫存，store.commit 觸發重繪就會看到；失敗再還原。
+// 驗收中-1：開始／完成／刪除會讓夢想卡重排（空的格子換成整張夢想卡、排隊清單往下推），
+// 連點的第二下會落到別張卡的按鈕上：按下時與完成時都把夢想頁的按鈕整份停用 800ms。
+const DREAM_LIST_BUTTONS = '#app [data-tab-panel="jar"] button';
+const REORDERING_DREAM_ACTIONS = ["activate", "complete", "delete"];
+
 async function postDream(root, ctx, payload, button, busyLabel, successNotice = "剛剛已自動備份") {
   paintFormError(root, "");
+  const reorders = REORDERING_DREAM_ACTIONS.includes(String(payload.action));
+  if (reorders) common.holdList(DREAM_LIST_BUTTONS);
   const restoreBusy = startBusy(button, busyLabel);
   const previous = { notice: noticeText, editingId, title: draftTitle, target: draftTarget };
   noticeText = successNotice;
   if (RESET_ACTIONS.includes(String(payload.action))) { draftTitle = ""; draftTarget = ""; editingId = ""; }
   try {
     await store.updateDreamJar({ profileId: ctx.profile.id, ...payload });
+    if (reorders) common.holdList(DREAM_LIST_BUTTONS);
     return true;
   } catch (caught) {
     noticeText = previous.notice;

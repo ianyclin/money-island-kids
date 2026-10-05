@@ -342,15 +342,33 @@ function backdropInert(on) {
 // 手機上彈窗的送出鈕壓在分頁列正上方：連點兩下時，第一下送出、彈窗關掉，第二下就落到分頁列
 // 或底下的按鈕被帶走。關掉的那一刻記下彈窗的位置，400ms 內落在那塊區域的點擊一律吞掉。
 // 只吞真的指標點擊（detail > 0）：鍵盤 Enter／空白鍵與程式呼叫的 .click() 不受影響。
+// 驗收低-1：以前吞的是「整塊彈窗範圍」，按 × 之後馬上去點遠處的按鈕也會被吞。改成只吞落在
+// 「關掉彈窗的那一下」附近（≤ 32px）的點擊；用鍵盤關（Esc、Enter 送出）時完全不吞。
 const TAP_GUARD_MS = 400;
-let tapGuard = null;   // { left, top, right, bottom, until }
+const TAP_GUARD_RADIUS = 32;
+const TAP_GUARD_FRESH_MS = 5000;   // 關彈窗前最後一次指標操作要夠新，才算「這一下關掉的」
+let tapGuard = null;   // { x, y, until }
+let lastInput = null;  // { kind: "pointer" | "key", x, y, at }
 
-function armTapGuard(dialog) {
+window.addEventListener("pointerdown", (event) => {
+  lastInput = { kind: "pointer", x: event.clientX, y: event.clientY, at: Date.now() };
+}, true);
+window.addEventListener("keydown", () => {
+  lastInput = { kind: "key", x: 0, y: 0, at: Date.now() };
+}, true);
+
+function armTapGuard() {
   tapGuard = null;
-  if (!dialog || typeof dialog.getBoundingClientRect !== "function") return;
-  const rect = dialog.getBoundingClientRect();
-  if (!rect.width || !rect.height) return;
-  tapGuard = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, until: Date.now() + TAP_GUARD_MS };
+  const input = lastInput;
+  if (!input || input.kind !== "pointer" || Date.now() - input.at > TAP_GUARD_FRESH_MS) return;
+  tapGuard = { x: input.x, y: input.y, until: Date.now() + TAP_GUARD_MS };
+}
+
+// 給自我測試用：直接判斷某一下點擊會不會被吞
+export function tapGuardSwallows(x, y, now = Date.now()) {
+  const guard = tapGuard;
+  if (!guard || now > guard.until) return false;
+  return Math.hypot(x - guard.x, y - guard.y) <= TAP_GUARD_RADIUS;
 }
 
 window.addEventListener("click", (event) => {
@@ -358,12 +376,50 @@ window.addEventListener("click", (event) => {
   if (!guard) return;
   if (Date.now() > guard.until) { tapGuard = null; return; }
   if (!event.detail) return;
-  const x = event.clientX;
-  const y = event.clientY;
-  if (x < guard.left || x > guard.right || y < guard.top || y > guard.bottom) return;
+  if (!tapGuardSwallows(event.clientX, event.clientY)) return;
   event.preventDefault();
   event.stopImmediatePropagation();
 }, true);
+
+// ---------- 驗收中-1：會因動作而重排的清單，按下後整份清單停用一下 ----------
+// 清單照狀態／金額重排時，連點的第二下會落到滑過來的別張卡上。holdList(selector) 把符合的按鈕
+// 全部停用 ms 毫秒（只動原本能按的，放開時也只放開自己停用的）；app.js 每次重繪完呼叫 applyListHolds()，
+// 停用期還沒過的話新畫出來的按鈕照樣停用。同一個 selector 再按一次就從頭算。
+const LIST_HOLD_MS = 800;
+const listHolds = new Map();   // selector → until
+
+export function holdList(selector, ms = LIST_HOLD_MS) {
+  listHolds.set(selector, Date.now() + ms);
+  applyListHolds(document);
+}
+
+export function listHeld(selector) {
+  const until = listHolds.get(selector);
+  return Boolean(until && until > Date.now());
+}
+
+export function applyListHolds(root = document) {
+  const now = Date.now();
+  for (const [selector, until] of listHolds) {
+    if (until <= now) { listHolds.delete(selector); continue; }
+    root.querySelectorAll(selector).forEach((element) => {
+      if (element.disabled) return;
+      element.disabled = true;
+      element.dataset.listHeld = "1";
+    });
+    setTimeout(() => releaseListHold(selector, until), until - now);
+  }
+}
+
+function releaseListHold(selector, until) {
+  if (listHolds.get(selector) !== until) return;   // 中途又按了一次，等新的期限
+  listHolds.delete(selector);
+  document.querySelectorAll(selector).forEach((element) => {
+    if (!element.dataset.listHeld) return;
+    delete element.dataset.listHeld;
+    element.disabled = false;
+  });
+}
 
 // openModal(htmlString, { labelledBy, onClose, className })
 // 回傳 .modal 節點，呼叫端自己綁事件。關閉鈕由這裡畫，內容不用再放一顆。
@@ -406,7 +462,7 @@ export function closeModal(reason) {
   const root = document.getElementById("modal-root");
   const session = modalSession;
   modalSession = null;
-  if (session && root) armTapGuard(root.querySelector(".modal"));
+  if (session && root) armTapGuard();
   if (root) root.innerHTML = "";
   backdropInert(false);
   if (session) {

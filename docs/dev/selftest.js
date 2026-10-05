@@ -1094,6 +1094,214 @@ export async function runSelfTest(report) {
       assert("面板：還沒解鎖時下載鈕不能按", [...new DOMParser().parseFromString(String(parentPage.brokenCopiesMarkup(listed, false)), "text/html").querySelectorAll('[data-action="download-broken"]')].every((button) => button.disabled));
     });
 
+    // ================= 批 5 驗收後修正（2026-10-05）=================
+    const parentPageModule = await import("../js/ui/parent.js");
+
+    // 把家長區畫進一個暫時的 #app（parent.js 的佔位收尾、more.js 的放開都找 #app）
+    const mountPage = (pageModule, extra = {}) => {
+      const host = document.createElement("div");
+      host.id = "app";
+      document.body.append(host);
+      const makeCtx = () => {
+        const current = store.getState();
+        const view = derive(current);
+        return { state: current, view, profile: view.profiles[0], profiles: view.profiles, unlocked: true, pinStatus: "unlocked", navigate() {}, chooseProfile() {}, refresh, ...extra };
+      };
+      function refresh() {
+        const ctx = makeCtx();
+        host.innerHTML = String(pageModule.render(ctx));
+        pageModule.mount(host, ctx);
+      }
+      refresh();
+      return { host, refresh, remove() { host.remove(); } };
+    };
+    const pendingTransfers = () => store.getState().savingsTransfers.filter((item) => item.status === "pending");
+    const seedTransfers = async (count) => {
+      db.reset();
+      store.hydrate(twoKids());
+      await pin.assert(PARENT_PIN);
+      const owner = kidNamed("阿甲");
+      await store.addTransaction({ profileId: owner.id, kind: "allowance", amount: 1000, operationId: `selftest-b5fix-allowance-${count}` });
+      for (let i = 0; i < count; i += 1) {
+        await store.updateSavingsTransfer({ action: "request", profileId: owner.id, amount: 10 + i, note: `第 ${i + 1} 筆`, operationId: `selftest-b5fix-transfer-${count}-${i}` });
+      }
+    };
+
+    await section("批 5 疑問-2 同一筆已經有佔位：之後的確認／不執行一律不理", async () => {
+      await seedTransfers(2);
+      const page = mountPage(parentPageModule);
+      try {
+        const firstId = page.host.querySelector('.inbox-list > .inbox-item [data-action="approve-transfer"]').dataset.id;
+        const button = () => page.host.querySelector(`[data-action="approve-transfer"][data-id="${firstId}"]`);
+        const hold = parentPageModule.holdInboxRow(page.host, button(), "已確認 ✓");
+        assertEqual("登記佔位後：這一筆算「已經在處理」", parentPageModule.inboxRowHeld(firstId), true);
+        assertEqual("登記佔位後：別筆不受影響", parentPageModule.inboxRowHeld(pendingTransfers().find((item) => item.id !== firstId).id), false);
+        button().click();
+        page.host.querySelector(`[data-action="reject-transfer"][data-id="${firstId}"]`).click();
+        await wait(300);
+        assertEqual("有佔位時再按「確認存入」「不執行」：都不理，還是待辦", store.getState().savingsTransfers.find((item) => item.id === firstId).status, "pending");
+        hold.cancel();
+        assertEqual("撤掉佔位後：不再算處理中", parentPageModule.inboxRowHeld(firstId), false);
+        button().click();
+        assert("撤掉佔位後按「確認存入」：照常核准", await waitFor(() => store.getState().savingsTransfers.find((item) => item.id === firstId).status === "approved"));
+        assertEqual("處理完的那一筆：佔位留著（1 秒內再按也不理）", parentPageModule.inboxRowHeld(firstId), true);
+        await wait(1100);
+        assertEqual("1 秒後佔位收掉", parentPageModule.inboxRowHeld(firstId), false);
+      } finally {
+        page.remove();
+        db.reset();
+      }
+    });
+
+    await section("批 5 高-2 存檔失敗時：帳本裡已經不是待辦就當成功、佔位留著", async () => {
+      await seedTransfers(2);
+      const page = mountPage(parentPageModule);
+      try {
+        const firstButton = page.host.querySelector('.inbox-list > .inbox-item [data-action="approve-transfer"]');
+        const firstId = firstButton.dataset.id;
+        db.control.failSave = true;
+        firstButton.click();
+        assert("存檔失敗：記憶體裡這筆已經核准", await waitFor(() => store.getState().savingsTransfers.find((item) => item.id === firstId).status === "approved"));
+        await wait(50);
+        page.refresh();
+        assertEqual("存檔失敗但已不是待辦：佔位留著，不撤", parentPageModule.inboxRowHeld(firstId), true);
+        assert("存檔失敗但已不是待辦：畫面上原位是佔位列", Boolean(page.host.querySelector(`.inbox-list > [data-inbox-ghost="${firstId}"]:first-child`)));
+        assertEqual("存檔失敗：另一筆還是待辦（只核准 1 筆）", pendingTransfers().length, 1);
+        db.control.failSave = false;
+
+        // 對照：丟錯而且帳本裡還是待辦（例如操作碼不對）→ 佔位撤掉、可以再按
+        const secondId = pendingTransfers()[0].id;
+        pin.lock();
+        page.refresh();
+        page.host.querySelector(`[data-action="approve-transfer"][data-id="${secondId}"]`).click();
+        await wait(400);
+        assertEqual("丟錯而且還是待辦：佔位撤掉", parentPageModule.inboxRowHeld(secondId), false);
+        assertEqual("丟錯而且還是待辦：那一筆還在", pendingTransfers().map((item) => item.id), [secondId]);
+        await pin.assert(PARENT_PIN);
+      } finally {
+        db.control.failSave = false;
+        page.remove();
+        db.reset();
+      }
+    });
+
+    await section("批 5 中-2 佔位用錨點放回原位", async () => {
+      const live = (...ids) => ids.map((id) => ({ id, markup: id }));
+      const ghost = (id, after, seq, index = 0) => ({ id, after, seq, index, title: id, label: "✓", height: 0, until: Infinity });
+      const place = (rows, ghosts, retired) => parentPageModule.placeInboxGhosts(rows, ghosts, (item) => `g${item.id}`, retired).map((row) => row.markup);
+      assertEqual("第 1、2 筆先後處理：照原本順序", place(live("C", "D"), [ghost("A", "", 1), ghost("B", "", 2)]), ["gA", "gB", "C", "D"]);
+      assertEqual("第 1 筆佔位收掉後再處理當時第 2 列：不跟前一個佔位換位", place(live("D", "E"), [ghost("B", "", 2), ghost("C", "", 3)], new Map([["A", ""]])), ["gB", "gC", "D", "E"]);
+      assertEqual("錨點本身也是佔位（先處理後面、再處理前面）", place(live("A", "D"), [ghost("C", "B", 1), ghost("B", "A", 2)]), ["A", "gB", "gC", "D"]);
+      assertEqual("錨點的佔位已經收掉：順著它的錨點往前找", place(live("A", "D"), [ghost("C", "B", 1)], new Map([["B", "A"]])), ["A", "gC", "D"]);
+      assertEqual("同一個錨點後面的佔位照登記順序", place(live("A", "E"), [ghost("B", "A", 1), ghost("D", "C", 2), ghost("C", "A", 3)]), ["A", "gB", "gC", "gD", "E"]);
+      assertEqual("錨點那一列沒做成（還是真實待辦）：插在它後面", place(live("A", "B", "D"), [ghost("C", "B", 1)]), ["A", "B", "gC", "D"]);
+    });
+
+    await section("批 5 低-1 關彈窗後只吞同一點附近的點擊、鍵盤關不吞", async () => {
+      const modalRoot = document.createElement("div");
+      modalRoot.id = "modal-root";
+      document.body.append(modalRoot);
+      try {
+        window.dispatchEvent(new PointerEvent("pointerdown", { clientX: 100, clientY: 100 }));
+        common.openModal("<p>測試</p>");
+        common.closeModal();
+        assertEqual("指標關閉：同一點的點擊被吞", common.tapGuardSwallows(100, 100), true);
+        assertEqual("指標關閉：28px 內也吞", common.tapGuardSwallows(120, 120), true);
+        assertEqual("指標關閉：遠處（100px）照常", common.tapGuardSwallows(100, 200), false);
+        assertEqual("指標關閉：400ms 後照常", common.tapGuardSwallows(100, 100, Date.now() + 450), false);
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+        common.openModal("<p>測試</p>");
+        common.closeModal();
+        assertEqual("鍵盤關閉：不吞", common.tapGuardSwallows(100, 100), false);
+      } finally {
+        common.closeModal();
+        modalRoot.remove();
+      }
+    });
+
+    await section("批 5 中-1 專案清單：任一顆按下後整份停用", async () => {
+      const morePage = await import("../js/ui/more.js");
+      db.reset();
+      store.hydrate(twoKids());
+      const owner = kidNamed("阿甲");
+      const [z, y] = store.getState().projects.map((project) => project.id);
+      await store.updateFamilyProject({ action: "claim", projectId: z, profileId: owner.id });
+      const page = mountPage(morePage);
+      try {
+        const claimY = page.host.querySelector(`[data-action="claim-project"][data-id="${y}"]`);
+        assert("前提：Y 可以認領、Z 有「我完成了」", Boolean(claimY && page.host.querySelector(`[data-action="submit-project"][data-id="${z}"]`)));
+        claimY.click();
+        const submitZ = page.host.querySelector(`[data-action="submit-project"][data-id="${z}"]`);
+        assert("按下 Y 之後：Z 的「我完成了」也停用", Boolean(submitZ && submitZ.disabled));
+        submitZ.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await wait(300);
+        assertEqual("第二下落到 Z：Z 不會變成等待家長確認", store.getState().projects.find((project) => project.id === z).status, "claimed");
+        assertEqual("Y 有接下", store.getState().projects.find((project) => project.id === y).status, "claimed");
+        page.refresh();
+        assert("重繪後停用期還沒過：整份清單的按鈕都停用", [...page.host.querySelectorAll('[data-action="submit-project"], [data-action="claim-project"]')].every((button) => button.disabled));
+        await wait(900);
+        assert("800ms 後放開", [...page.host.querySelectorAll('[data-action="submit-project"], [data-action="claim-project"]')].every((button) => !button.disabled));
+      } finally {
+        page.remove();
+        db.reset();
+      }
+    });
+
+    await section("批 5 附加 換帳本凍結時 gistId 是空的：先找既有備份，不新建", async () => {
+      const otherBody = JSON.stringify(normalize(clone(validEnvelope)), null, 1);
+      const run = async ({ freeze, listing }) => {
+        db.reset();
+        connectGist({ gistId: null, remoteStamp: null, lastPush: null, pendingPush: null });
+        const net = installFakeFetch((url, options) => {
+          const method = String(options.method || "GET").toUpperCase();
+          if (method === "POST") return jsonResponse(201, { id: "selftest-new-gist", updated_at: "2026-01-09T00:00:00Z" });
+          if (method === "PATCH") return jsonResponse(200, { id: "selftest-orphan", updated_at: "2026-01-09T00:00:00Z" });
+          if (url.includes("/gists?")) return listing === "fail" ? jsonResponse(500, {}) : jsonResponse(200, listing === "none" ? [] : [{ id: "selftest-orphan", description: "小小理財島備份（自動同步）", files: { "money-island-backup.json": {} } }]);
+          return jsonResponse(200, { id: "selftest-orphan", updated_at: "2026-01-01T00:00:00Z", files: { "money-island-backup.json": { content: otherBody } } });
+        });
+        try {
+          store.hydrate(twoKids());
+          if (freeze) gist.freezeForLedgerSwap();
+          await gist.syncCloud();
+          const saved = JSON.parse(fakes.storage.getItem(GIST_KEY) || "null") || {};
+          return { writes: net.calls.filter((call) => call.method === "PATCH" || call.method === "POST").length, searched: net.calls.some((call) => call.url.includes("/gists?")), info: gist.cloudInfo(), saved };
+        } finally {
+          net.restore();
+          gist.disconnect();
+        }
+      };
+      const found = await run({ freeze: true, listing: "hit" });
+      assertEqual("凍結後同步：先列出帳號裡的 gist 找本 app 的備份", found.searched, true);
+      assertEqual("找到既有那份：0 次 PATCH／POST（不新建）", found.writes, 0);
+      assertEqual("找到既有那份：掛回去", found.info.gistId, "selftest-orphan");
+      assertEqual("找到既有那份：出「要用哪一份」拍板卡", found.info.card, "decide");
+      const offline = await run({ freeze: true, listing: "fail" });
+      assertEqual("搜尋連不上：這趟不新建", offline.writes, 0);
+      assertEqual("搜尋連不上：「曾嘗試建立」的記號留著，下次再找", offline.saved.swapSearch, true);
+      const none = await run({ freeze: true, listing: "none" });
+      assertEqual("確定沒有既有備份：才新建一份", none.writes, 1);
+      assertEqual("確定沒有：記號清掉", Boolean(none.saved.swapSearch), false);
+      db.reset();
+    });
+
+    await section("批 5 附加 舊版 .broken.<時間> 也搬進 IndexedDB", async () => {
+      const copies = () => fakes.idb.dump("money_island_broken", "ledgers");
+      const newest = Math.max(0, ...copies().map((record) => record.ts));
+      const keys = [1, 2, 3, 4].map((step) => `money-island.v1.broken.${newest + step * 1000}`);
+      keys.forEach((key, index) => fakes.storage.setItem(key, `{舊版第 ${index + 1} 份`));
+      fakes.storage.setItem("money-island.v1.broken.1000", "{很舊的那一份");
+      const result = await realDb.migrateLegacyBroken();
+      assertEqual("有搬不進去的：回報 kept", result, "kept");
+      const raws = copies().map((record) => record.raw);
+      assertEqual("三份上限：留最新的三份", [...raws].sort(), ["{舊版第 2 份", "{舊版第 3 份", "{舊版第 4 份"]);
+      assertEqual("搬進去的鑰匙才刪", keys.map((key) => fakes.storage.getItem(key) !== null), [true, false, false, false]);
+      assertEqual("搬不進去（比現有三份都舊）的鑰匙不刪", fakes.storage.getItem("money-island.v1.broken.1000"), "{很舊的那一份");
+      assertEqual("留存的時間是當初留下的時間", copies().map((record) => record.ts).sort(), [newest + 2000, newest + 3000, newest + 4000]);
+      fakes.storage.removeItem(keys[0]);
+      fakes.storage.removeItem("money-island.v1.broken.1000");
+      assertEqual("清乾淨後：沒有要搬的", await realDb.migrateLegacyBroken(), "none");
+    });
+
     // ---------- 20. 操作碼鎖定（放最後，會把操作碼鎖住 15 分鐘）----------
     pin.lock();
     assertEqual("操作碼：鎖上後狀態", pin.status(), "locked");

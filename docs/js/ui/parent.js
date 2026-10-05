@@ -44,11 +44,17 @@ const ui = {
   correctionModalKind: "",       // "" | "correction"
   // 批 5：待辦處理完的那一列先留一列不能點的佔位（「已確認 ✓」／「已取消」）約 1 秒再收，
   // 下一筆才不會滑到手指底下、被連點的第二下直接處理掉。
-  // { id, title, label, index, until }：index＝當時在待辦清單裡的位置；until＝Infinity 表示還在處理中
+  // { id, title, label, after, seq, index, height, until }
+  //   after ＝按下時「前一筆仍是真實待辦」的 id（""＝清單開頭）；重繪時插在那一筆（或它的佔位）之後（驗收中-2）
+  //   seq   ＝登記順序：同一個錨點後面有好幾個佔位時，照登記順序排（就是當時畫面上的順序）
+  //   index ＝錨點找不到時（例如另一個分頁把錨點那筆處理掉了）才用的備援位置
+  //   height＝原列處理前的實際高度，佔位維持一樣高，下面的列不會往上滑（驗收高-1）
+  //   until ＝Infinity 表示還在處理中
   inboxGhosts: [],
 };
 
 const INBOX_GHOST_MS = 1000;
+let inboxGhostSeq = 0;
 
 const ERROR_ANCHORS = {
   pin: { selector: ".parent-lock-card", position: "beforeend" },
@@ -257,13 +263,9 @@ function inboxCard(state) {
     }),
   ];
   // 批 5：已經處理掉的那幾列，在原本的位置放回不能點的佔位
-  const liveIds = new Set(rows.map((row) => row.id));
   const now = Date.now();
-  ui.inboxGhosts = ui.inboxGhosts.filter((ghost) => ghost.until > now);
-  for (const ghost of [...ui.inboxGhosts].sort((a, b) => a.index - b.index)) {
-    if (liveIds.has(ghost.id)) continue;
-    rows.splice(Math.min(ghost.index, rows.length), 0, { id: ghost.id, markup: inboxGhostMarkup(ghost) });
-  }
+  for (const ghost of ui.inboxGhosts.filter((item) => item.until <= now)) retireInboxGhost(ghost);
+  placeInboxGhosts(rows, ui.inboxGhosts, (ghost) => inboxGhostMarkup(ghost), retiredInboxAnchors);
   return html`<section class="card parent-inbox parent-card-inbox">
       <h2 class="card-title">待辦</h2>
       <p class="card-sub">今天要處理的事</p>
@@ -271,39 +273,111 @@ function inboxCard(state) {
     </section>`;
 }
 
+// 驗收中-2：佔位用錨點放回去，不用數字索引。rows＝目前真實待辦 [{ id, markup }]，原地插入。
+// 規則：照登記順序，插在錨點那一筆（真實待辦或它的佔位）後面，並跳過緊接在錨點後、比自己早登記的佔位；
+// 錨點還沒放進去（它自己也是佔位、排在後面登記）就下一輪再放；錨點那一列的佔位已經收掉（retired 記著它當時的錨點），
+// 就順著往前找；最後還找不到錨點的才退回原本的位置。
+export function placeInboxGhosts(rows, ghosts, markupOf, retired = new Map()) {
+  const liveIds = new Set(rows.map((row) => row.id));
+  let waiting = ghosts.filter((ghost) => !liveIds.has(ghost.id)).sort((a, b) => a.seq - b.seq);
+  const insert = (ghost, position) => {
+    let at = position;
+    while (at < rows.length && rows[at].ghost && rows[at].ghost.seq < ghost.seq) at += 1;
+    rows.splice(at, 0, { id: ghost.id, ghost, markup: markupOf(ghost) });
+  };
+  const resolve = (anchorId, waitingIds) => {
+    let id = anchorId;
+    const seen = new Set();
+    while (id && !seen.has(id) && !rows.some((row) => row.id === id) && !waitingIds.has(id) && retired.has(id)) {
+      seen.add(id);
+      id = retired.get(id);
+    }
+    return id;
+  };
+  let progressed = true;
+  while (waiting.length && progressed) {
+    progressed = false;
+    const next = [];
+    const waitingIds = new Set(waiting.map((ghost) => ghost.id));
+    for (const ghost of waiting) {
+      const anchorId = resolve(ghost.after, waitingIds);
+      if (!anchorId) { insert(ghost, 0); progressed = true; continue; }
+      const anchor = rows.findIndex((row) => row.id === anchorId);
+      if (anchor < 0) { next.push(ghost); continue; }
+      insert(ghost, anchor + 1);
+      progressed = true;
+    }
+    waiting = next;
+  }
+  for (const ghost of waiting) insert(ghost, Math.min(ghost.index, rows.length));
+  return rows;
+}
+
 function inboxGhostMarkup(ghost) {
-  return html`<div class="inbox-item is-done" data-inbox-ghost="${ghost.id}" aria-live="polite">
+  const height = ghost.height > 0 ? `height: ${ghost.height}px` : "";
+  return html`<div class="inbox-item is-done" data-inbox-ghost="${ghost.id}" data-inbox-id="${ghost.id}" style="${height}" aria-live="polite">
             <div><b>${ghost.title}</b></div>
             <div class="btn-row"><span class="inbox-done-label">${ghost.label}</span></div>
           </div>`;
 }
 
+// 疑問-2：這一筆已經有佔位（處理中或剛處理完），對它的任何後續動作（確認／不執行／刪除）一律不理
+export function inboxRowHeld(id) {
+  return ui.inboxGhosts.some((ghost) => ghost.id === id);
+}
+
 // 批 5：按下待辦按鈕的那一刻先登記佔位（處理中不顯示，因為那一列還在）；成功後計時收掉，失敗就撤掉。
-function holdInboxRow(root, button, label) {
+// 驗收高-1：先量原列的實際高度，佔位維持一樣高；中-2：記錨點（前一筆仍是真實待辦的 id）。
+export function holdInboxRow(root, button, label) {
+  const id = button.dataset.id;
   const row = button.closest(".inbox-item");
   const rows = Array.from(root.querySelectorAll(".inbox-list > .inbox-item"));
+  const at = rows.indexOf(row);
+  let after = "";
+  for (let i = at - 1; i >= 0; i -= 1) {
+    if (rows[i].hasAttribute("data-inbox-ghost")) continue;
+    after = rows[i].getAttribute("data-inbox-id") || "";
+    break;
+  }
   const ghost = {
-    id: button.dataset.id,
+    id,
     title: row ? (row.querySelector("b")?.textContent ?? "") : "",
     label,
-    index: Math.max(0, rows.indexOf(row)),
+    after,
+    seq: ++inboxGhostSeq,
+    index: Math.max(0, at),
+    height: row ? Math.round(row.getBoundingClientRect().height * 100) / 100 : 0,
     until: Infinity,
   };
   ui.inboxGhosts = ui.inboxGhosts.filter((item) => item.id !== ghost.id).concat(ghost);
   return {
     done() {
       ghost.until = Date.now() + INBOX_GHOST_MS;
-      setTimeout(() => removeInboxGhost(ghost.id), INBOX_GHOST_MS);
+      setTimeout(() => removeInboxGhost(ghost), INBOX_GHOST_MS);
     },
+    // 沒做成：那一列還是真實待辦、還在原位，只要把登記拿掉（錨在它身上的佔位照樣插在它後面）
     cancel() {
       ui.inboxGhosts = ui.inboxGhosts.filter((item) => item !== ghost);
+      if (!ui.inboxGhosts.length) retiredInboxAnchors.clear();
     },
   };
 }
 
+// 佔位時間到、收掉：記下它當時的錨點，錨在它身上的其他佔位順著往前找，畫面位置不變；其他佔位不受影響
+const retiredInboxAnchors = new Map();   // 收掉的佔位 id → 它的錨點
+function retireInboxGhost(ghost) {
+  if (!ui.inboxGhosts.includes(ghost)) return false;
+  ui.inboxGhosts = ui.inboxGhosts.filter((item) => item !== ghost);
+  if (ui.inboxGhosts.length) retiredInboxAnchors.set(ghost.id, ghost.after);
+  else retiredInboxAnchors.clear();
+  return true;
+}
+
 // 只動 DOM：一秒後把佔位那一列拿掉，不整頁重繪（家長可能正在下面的表單打字）
-function removeInboxGhost(id) {
-  ui.inboxGhosts = ui.inboxGhosts.filter((item) => item.id !== id);
+function removeInboxGhost(ghost) {
+  const id = ghost.id;
+  // 已經被重繪收掉，或這個 id 後來又被登記成別的佔位（疑問-2 已擋，理論上不會），就不動畫面
+  if (!retireInboxGhost(ghost) && ui.inboxGhosts.some((item) => item.id === id)) return;
   const node = document.querySelector(`#app [data-inbox-ghost="${CSS.escape(id)}"]`);
   if (!node) return;
   const list = node.parentElement;
@@ -480,7 +554,7 @@ function profileEditorMarkup(state, profile) {
     && !state.dreamJars.some((item) => item.profileId === profile.id);
   return html`${raw(common.profileChips(state.profiles, profile.id))}
         ${canAddProfile ? html`<div class="form-actions">
-            <button class="btn btn-ghost" type="button" data-action="toggle-add-profile" aria-expanded="${ui.addProfileOpen ? "true" : "false"}" aria-controls="profile-add-form">${ui.addProfileOpen ? "取消新增" : "＋ 新增小朋友（最多 5 位，只要填名字）"}</button>
+            <button class="btn btn-ghost" type="button" data-action="toggle-add-profile" aria-expanded="${ui.addProfileOpen ? "true" : "false"}"${ui.addProfileOpen ? raw(' aria-controls="profile-add-form"') : ""}>${ui.addProfileOpen ? "取消新增" : "＋ 新增小朋友（最多 5 位，只要填名字）"}</button>
           </div>` : ""}
         ${ui.addProfileOpen && canAddProfile ? html`<form class="profile-add-form" id="profile-add-form" data-form="add-profile">
             ${common.field({
@@ -699,7 +773,10 @@ function reportOperationError(root, scope, caught, fallback) {
 }
 
 // 送出到 store 的共同流程：忙碌 → 呼叫 → 成功報告／失敗顯示在該區塊。
-async function runParentAction(root, ctx, { button, scope, fallback, message }, work) {
+// 回傳 true＝成功；"landed"＝丟了錯，但 landed() 說帳本裡這件事其實已經生效（驗收高-2：存檔失敗時
+// 記憶體裡已經改好、畫面也重繪了，只是沒寫進這台裝置）——當成功處理，存不進去的事由 savedStatus 照實講；
+// false＝真的沒做成。
+async function runParentAction(root, ctx, { button, scope, fallback, message, landed }, work) {
   startBusy(root, button);
   clearOperationError(root, scope);
   try {
@@ -709,6 +786,15 @@ async function runParentAction(root, ctx, { button, scope, fallback, message }, 
     announce(root, saved.message, saved.tone);
     return true;
   } catch (caught) {
+    let already = false;
+    try { already = typeof landed === "function" && landed(); } catch (error) { already = false; }
+    if (already) {
+      busyRestore = null;
+      const saved = common.savedStatus(store.getState(), message ?? "家長操作已完成，帳本已更新");
+      if (saved.tone === "error") announce(root, saved.message, saved.tone);
+      else reportOperationError(root, scope, caught, fallback ?? "家長操作儲存失敗");
+      return "landed";
+    }
     endBusy();
     reportOperationError(root, scope, caught, fallback ?? "家長操作儲存失敗");
     return false;
@@ -1152,16 +1238,26 @@ async function handleClick(root, ctx, button) {
     }
     case "approve-transfer":
     case "reject-transfer": {
+      // 疑問-2：這一筆已經在處理或剛處理完（佔位還在），第二下不管按到哪一顆都不理
+      if (inboxRowHeld(id)) return;
       const transferAction = action === "approve-transfer" ? "approve" : "reject";
       const hold = holdInboxRow(root, button, transferAction === "approve" ? "已確認 ✓" : "已取消");
-      const ok = await runParentAction(root, ctx, { button, scope: "inbox" }, () => store.updateSavingsTransfer({
+      const ok = await runParentAction(root, ctx, {
+        button,
+        scope: "inbox",
+        // 驗收高-2：丟錯時先看帳本：這筆已經不是待辦＝其實做成了，佔位留著；還是待辦才撤佔位、顯示錯誤
+        landed: () => {
+          const transfer = (store.getState()?.savingsTransfers ?? []).find((item) => item.id === id);
+          return !transfer || transfer.status !== "pending";
+        },
+      }, () => store.updateSavingsTransfer({
         action: transferAction,
         transferId: id,
         operationId: uuid(),
         parentPin: ui.parentPin,
       }));
-      if (ok) { hold.done(); announce(root, transferAction === "approve" ? "已確認存入爸媽銀行" : "這次自主多存沒有執行"); }
-      else hold.cancel();
+      if (ok) hold.done(); else hold.cancel();
+      if (ok === true) announce(root, transferAction === "approve" ? "已確認存入爸媽銀行" : "這次自主多存沒有執行");
       return;
     }
     case "cancel-project-edit": {
@@ -1182,8 +1278,16 @@ async function handleClick(root, ctx, button) {
       return;
     }
     case "approve-project": {
+      if (inboxRowHeld(id)) return;   // 疑問-2
       const hold = holdInboxRow(root, button, "已確認 ✓");
-      const ok = await runParentAction(root, ctx, { button, scope: "inbox" }, () => store.updateFamilyProject({
+      const ok = await runParentAction(root, ctx, {
+        button,
+        scope: "inbox",
+        landed: () => {   // 驗收高-2
+          const project = (store.getState()?.projects ?? []).find((item) => item.id === id);
+          return !project || project.status !== "waiting";
+        },
+      }, () => store.updateFamilyProject({
         action: "approve",
         projectId: id,
         profileId: profile.id,

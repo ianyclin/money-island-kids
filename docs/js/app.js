@@ -9,7 +9,7 @@ import { derive } from "./state.js";
 import * as gist from "./gist.js";
 import * as backup from "./backup.js";
 import * as setup from "./ui/setup.js";
-import { stateGate, showStatus, closeModal, confirmDialog, isModalOpen, syncModalBackdrop, timestampText } from "./ui/common.js";
+import { stateGate, showStatus, closeModal, confirmDialog, isModalOpen, syncModalBackdrop, timestampText, applyListHolds } from "./ui/common.js";
 import { html, raw } from "./util.js";
 
 // ---------- 路由表 ----------
@@ -89,6 +89,32 @@ let rendering = false;
 let pendingRender = false;
 let lastRenderedRoute = "";   // 批 5：上一次畫出來的路由，用來分辨「換頁」與「同一頁重繪」
 
+// ---------- 疑問-1：上一頁／下一頁回到離開時的捲動位置 ----------
+// 依路由（# 後、? 前）記住捲動位置，只放記憶體。分辨「上一頁／下一頁」與「點連結進新頁」的方法：
+// 每一筆畫過的瀏覽紀錄都在 history.state 蓋一個記號；點連結、分頁列或程式改 location.hash 都會產生
+// 一筆沒有記號的新紀錄，回到有記號的紀錄就是上一頁／下一頁。瀏覽器自己的捲動還原關掉，免得兩邊打架。
+const scrollMemo = new Map();
+let scrollKey = "";
+const ENTRY_MARK = "moneyIslandEntry";
+try { if ("scrollRestoration" in history) history.scrollRestoration = "manual"; } catch (e) {}
+window.addEventListener("scroll", () => { if (scrollKey) scrollMemo.set(scrollKey, window.scrollY); }, { passive: true });
+
+function entryVisited() {
+  try { return Boolean(history.state && history.state[ENTRY_MARK]); } catch (e) { return false; }
+}
+
+function markEntry() {
+  if (entryVisited()) return;
+  try {
+    const current = history.state && typeof history.state === "object" ? history.state : {};
+    history.replaceState({ ...current, [ENTRY_MARK]: true }, "");
+  } catch (e) {}
+}
+
+export function scrollTargetFor(key, traversal) {
+  return traversal ? (scrollMemo.get(key) || 0) : 0;
+}
+
 // 批 5：點目前所在的分頁（分頁列、側欄、左上角品牌）不會觸發 hashchange，自己捲回頂端。
 document.addEventListener("click", (event) => {
   const target = event.target;
@@ -120,6 +146,10 @@ async function render() {
     // 開著的確認框換頁後還留著，在別頁按確定照樣執行。出路畫面本身算同一頁（不管網址是哪個），重繪不關確認框。
     const routeKey = recovering ? "recovery" : hash;
     const navigated = routeKey !== lastRenderedRoute;
+    // 疑問-1：換頁前先把舊頁的捲動位置記下來（瀏覽器的捲動還原已關，這時 scrollY 還是舊頁的）
+    const traversal = navigated && entryVisited();
+    if (navigated && scrollKey) scrollMemo.set(scrollKey, window.scrollY);
+    if (navigated) scrollKey = "";
     lastRenderedRoute = routeKey;
     // 批 1 驗收 #11：同一頁重繪（例如另一個分頁存檔）會把開著的彈窗關掉再補開，補開時焦點固定跳到第一個欄位；
     // 先記下焦點在哪個欄位、游標在哪，畫完再還回去
@@ -164,6 +194,7 @@ async function render() {
       mount.replaceWith(next);
       // v2 的殼不用 --dock：貼底補償由 app.css 的 .page-body 直接算（規格 3.1）。
       if (typeof mod.mount === "function") mod.mount(next, ctx);
+      applyListHolds(next);   // 驗收中-1：清單停用期還沒過，新畫出來的按鈕照樣停用
     } catch (error) {
       /* 帳本裡有頁面畫不動的資料：不要卡在骨架或半張畫面，至少留一顆「再試一次」 */
       const current = root();
@@ -172,7 +203,13 @@ async function render() {
     syncModalBackdrop();      // 確認框不跟著重繪關掉，新的 #app 要重新鎖住
     restoreModalFocus(focusMemo);
     // 批 5：換頁捲回頂端；同一頁重繪不動捲動位置（深連結 ?open= 自己會在下一拍捲到區塊）
-    if (navigated) window.scrollTo(0, 0);
+    // 疑問-1：上一頁／下一頁回到這一頁離開時的位置；點連結、分頁列進新頁才回頂端
+    if (navigated) {
+      window.scrollTo(0, scrollTargetFor(routeKey, traversal));
+      scrollKey = routeKey;
+      scrollMemo.set(routeKey, window.scrollY);
+      markEntry();
+    }
     updateInstallHint();
   } finally {
     rendering = false;

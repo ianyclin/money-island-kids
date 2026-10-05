@@ -1265,6 +1265,12 @@ img { height: auto; display: block; }
 html.has-modal .toast {
   top: calc(env(safe-area-inset-top, 0px) + 12px);
   bottom: auto;
+  /* 驗收低-2：右側讓出 64px，兩三行的吐司也不會蓋到彈窗右上角的 ×（× 在彈窗右緣往內 14–58px） */
+  left: 16px;
+  right: 64px;
+  width: auto;
+  max-width: 520px;
+  transform: none;
 }
 
 /* 遮罩一定蓋過分頁列（.tabbar z 40；遮罩 z 50）：寫明在這裡，之後改 z-index 的人看得到這條約束 */
@@ -1274,9 +1280,10 @@ html.has-modal .toast {
 .page-head-left { flex: 0 0 auto; display: flex; align-items: center; margin-left: calc(-1 * var(--space-2)); }
 .page-head-left + .page-title { margin-right: auto; }
 
-/* 說明鈕：「?」改用主色看得見；視覺仍是 32px 圓，命中區用 ::before 補到 44×44 */
+/* 說明鈕：「?」改用主色看得見；視覺仍是 32px 圓，命中區用 ::before 補到 44×44
+   （::before 從邊框內側算起：32 − 兩邊 1px 邊框 = 30，要往外 7px 才是 44；驗收低-3） */
 .info-tip summary { position: relative; color: var(--green); font-size: 15px; font-weight: 900; }
-.info-tip summary::before { content: ""; position: absolute; inset: -6px; }
+.info-tip summary::before { content: ""; position: absolute; inset: -7px; }
 
 /* 解鎖彈窗裡的「前往家長區 →」：命中區高 44 */
 .lock-modal-parent-link { display: inline-flex; align-items: center; justify-self: start; min-height: 44px; }

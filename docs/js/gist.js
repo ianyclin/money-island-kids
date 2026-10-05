@@ -171,9 +171,14 @@ function uploadableState() {
    這裡把「本機已經反映過的雲端版本」（remoteStamp）與自己上傳過的指紋全部清掉：
    下一次同步一定先讀雲端、判定兩邊不同，凍結上傳並出「要用哪一份」拍板卡，由家長決定。
    指紋一定要清：留著的話，雲端那份（以前這台傳的）會被認成「自己的回音」而放行上傳。 */
+/* 批 5 驗收附加：還不知道雲端那份的編號（gistId 空的）時，指紋一清，下一次同步就不會先去找
+   「上次建檔、回條被吞掉」的那份，直接再建一份新的，留下孤兒備份。所以這時另外落一個
+   「曾嘗試建立」的記號（swapSearch）：下一次同步先在帳號裡找本 app 的備份，找到就掛回去、
+   走「要用哪一份」拍板卡；確定沒有才新建。搜尋連不上就這趟失敗、記號留著下次再找。 */
 export function freezeForLedgerSwap() {
   if (!cloudOn()) return false;
   clearTimeout(cloudTimer);
+  if (!gist.gistId) gist.swapSearch = true;
   gist.remoteStamp = null;
   gist.lastPush = null;
   gist.pendingPush = null;
@@ -204,9 +209,12 @@ export async function syncCloud(force, _retried) {
        讓下面的指紋比對＋回音判定接手。
        搜尋「連不上」跟「確定沒有」不是同一回事：連不上就讓這趟同步以失敗收場、下次再搜，
        不能照樣 POST——那會多出一份 app 不再認得的 gist，帶著孩子的名字與照片，「刪除雲端備份」刪不到它 */
-    if (!g.gistId && g.pendingPush && !force) {
+    /* 換帳本時凍結過（swapSearch）也一樣先找：指紋已經清掉，但「曾嘗試建立」的記號還在 */
+    if (!g.gistId && (g.pendingPush || g.swapSearch) && !force) {
       const orphan = await findCloudBackup(g.token);
-      if (orphan) { g.gistId = orphan.id; g.remoteStamp = null; if (gist === g) saveGist(); }
+      if (orphan) { g.gistId = orphan.id; g.remoteStamp = null; }
+      g.swapSearch = false;                       /* 找過了（找到或確定沒有）；連不上會在上一行丟錯，記號留著 */
+      if (gist === g) saveGist();
     }
     /* 上傳前先核對雲端指紋：跟上一次寫上去的版本戳（remoteStamp）不一樣，
        表示有另一台裝置動過——一律擋下、進「要用哪一份」拍板流程，連手動按「立刻同步」
