@@ -269,9 +269,9 @@ function reviewSection(ctx, hidden) {
         <div class="card review-card">
           <div class="card-head"><h2 class="card-title">這個月，錢教了我什麼？</h2></div>
           <div class="review-month" aria-label="切換回顧月份">
-            <button type="button" aria-label="較新的月份" data-action="month-newer"${selectedMonthIndex <= 0 ? raw(" disabled") : ""}>‹</button>
+            <button type="button" aria-label="較早的月份" data-action="month-older"${selectedMonthIndex >= availableMonths.length - 1 ? raw(" disabled") : ""}>‹</button>
             <select class="select" data-review-month aria-label="選擇月份">${availableMonths.map((item) => html`<option value="${item}"${item === selectedMonth ? raw(" selected") : ""}>${formatMonth(item)}</option>`)}</select>
-            <button type="button" aria-label="較早的月份" data-action="month-older"${selectedMonthIndex >= availableMonths.length - 1 ? raw(" disabled") : ""}>›</button>
+            <button type="button" aria-label="較新的月份" data-action="month-newer"${selectedMonthIndex <= 0 ? raw(" disabled") : ""}>›</button>
           </div>
           <div class="stats">
             <div class="stat"><b class="stat-value">${monthActivities.length ? money(monthSaved) : "—"}</b><span class="stat-label">這個月我存給未來</span><small class="stat-note">${monthVoluntarySaved > 0 ? `包含自主多存 ${money(monthVoluntarySaved)}` : "先存再花的累積"}</small></div>
@@ -601,7 +601,7 @@ async function completeDream(root, ctx, dreamId, button) {
 async function removeDream(root, ctx, dreamId, button) {
   const jar = jarsOf(ctx.state, ctx.profile.id).find((item) => item.id === dreamId);
   if (!jar) return;
-  const ok = await common.confirmDialog(`確定刪除「${jar.title}」嗎？這不會刪除任何錢或交易紀錄。`);
+  const ok = await common.confirmDialog(`確定刪除「${jar.title}」嗎？這不會刪除任何錢或交易紀錄。`, { danger: true, confirmLabel: "刪除這個夢想" });
   if (!ok) return;
   // 進行中夢想的刪除鍵會換成「刪除中…」；清單列的刪除鍵原本只變灰、字不變。
   const busyLabel = button && button.closest(".dream-actions") ? "刪除中…" : null;

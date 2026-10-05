@@ -291,7 +291,7 @@ function transactionModalBody(ctx) {
       <h2 id="money-dialog-title">${action === "allowance" ? "收到多少零用錢？" : "這次花了多少錢？"}</h2>
       <form>
         ${action === "allowance" ? html`<div class="quick-amounts" aria-label="快速增加零用錢金額">
-          ${[10, 100, 1000].map((value) => html`<button type="button"${attr(allowance >= 100000, " disabled")} data-quick-amount="${value}">＋${value.toLocaleString("zh-TW")}</button>`)}
+          ${[10, 50, 100].map((value) => html`<button type="button"${attr(allowance >= 100000, " disabled")} data-quick-amount="${value}">＋${value.toLocaleString("zh-TW")}</button>`)}
         </div>` : ""}
         ${field({
           label: "金額",
@@ -335,7 +335,7 @@ function saveMoreModalBody(ctx) {
       </p>` : ""}
       <form>
         <div class="quick-amounts" aria-label="快速選擇金額">
-          ${[10, 100, 1000].map((value) => html`<button type="button"${attr(savingAvailable <= 0 || saveMoreValue >= savingAvailable, " disabled")} data-quick-save="${value}">＋${value.toLocaleString("zh-TW")}</button>`)}
+          ${[10, 50, 100].map((value) => html`<button type="button"${attr(savingAvailable <= 0 || saveMoreValue >= savingAvailable, " disabled")} data-quick-save="${value}">＋${value.toLocaleString("zh-TW")}</button>`)}
           <button type="button"${attr(savingAvailable <= 0, " disabled")} data-save-all="1">全部</button>
         </div>
         ${field({
@@ -462,7 +462,8 @@ async function submitTransaction(ctx, form) {
     });
     const saved = savedStatus(store.getState(), kind === "allowance" ? "零用錢已經記在帳本裡" : "花費已經記在帳本裡");
     saving = false;
-    announce(saved.message, saved.tone);
+    // 拍板 D：孩子記錯了自己刪不掉，提示裡直接說找誰、去哪裡（存檔失敗的錯誤提示不加，免得蓋過重點）
+    announce(saved.tone === "error" ? saved.message : `${saved.message}。記錯了？請爸媽在紀錄頁幫你刪`, saved.tone);
     action = null;
     openModalKind = "";
     closeModal();

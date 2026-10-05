@@ -35,6 +35,7 @@ function saveErrorFlag() {
 // 同一份 markup，CSS 切換：< 768px 顯示底部 .tabbar、≥ 768px 顯示左側 .sidebar。
 //   page  ："home" | "growth" | "history" | "more" | "parent"（parent 時四個分頁都不 active）
 //   title ：頁面標題；留空＝把 .page-head 左側換成 profileChips（首頁用法，規格 3.1）
+//   left  ：.page-head 左插槽（批 5：投資子頁的「‹ 家長區」）；沒給就不畫，其他頁不受影響
 //   right ：.page-head 右插槽（鎖鈕、「🔓 已解鎖」小字…），字串或 html`` 都可以
 //   body  ：.page-body 的內容
 // --kid-accent 照規格第 1 節注入到這一頁的根節點（.app），主題色派生公式在 app.css。
@@ -45,7 +46,7 @@ const SHELL_TABS = [
   { id: "more", href: "#/more", icon: "✨", label: "更多" },
 ];
 
-export function appShell({ page, title, ctx, right, body } = {}) {
+export function appShell({ page, title, ctx, left, right, body } = {}) {
   const profiles = (ctx && (ctx.profiles || (ctx.state && ctx.state.profiles))) || [];
   const selectedId = ctx && ctx.profile ? ctx.profile.id : null;
   const accent = ctx && ctx.profile ? ctx.profile.accent : "";
@@ -60,6 +61,7 @@ export function appShell({ page, title, ctx, right, body } = {}) {
     <main class="page" data-page="${active}">
       ${saveErrorFlag()}
       <header class="page-head">
+        ${left ? html`<div class="page-head-left">${raw(String(left))}</div>` : ""}
         ${heading ? html`<h1 class="page-title">${heading}</h1>` : profileChips(profiles, selectedId)}
         <div class="page-head-right">${right ? raw(String(right)) : ""}</div>
       </header>
@@ -252,8 +254,20 @@ export function profileAvatar(avatar, name) {
 export function infoTip(content, options = {}) {
   const label = options.label || "查看說明";
   const align = options.align === "right" ? "right" : "left";
-  return html`<details class="info-tip info-tip-${align}"><summary aria-label="${label}" title="${label}">❔</summary><div class="info-tip-popover" role="note">${content}</div></details>`;
+  // 批 5：❔ 是表情符號，CSS 改不了顏色、在淺底上幾乎看不見；改成一般的「?」字，由 app.css 上主色。
+  return html`<details class="info-tip info-tip-${align}"><summary aria-label="${label}" title="${label}"><span aria-hidden="true">?</span></summary><div class="info-tip-popover" role="note">${content}</div></details>`;
 }
+
+// 批 5：說明泡泡點外面（或按 Esc）就收起；同一時間只開一個。
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  const inside = target instanceof Element ? target.closest(".info-tip") : null;
+  document.querySelectorAll(".info-tip[open]").forEach((tip) => { if (tip !== inside) tip.open = false; });
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  document.querySelectorAll(".info-tip[open]").forEach((tip) => { tip.open = false; });
+});
 
 // ---------- 狀態吐司 ----------
 const toneIcons = { success: "✓", waiting: "⌛", error: "!" };
@@ -314,7 +328,36 @@ function backdropInert(on) {
     const el = document.getElementById(id);
     if (el) try { el.inert = !!on; } catch (e) {}
   }
+  // 批 5：彈窗開著時吐司改到畫面上方（app.css 的 html.has-modal .toast），不再蓋住彈窗底部的送出鈕
+  document.documentElement.classList.toggle("has-modal", !!on);
 }
+
+// ---------- 批 5：彈窗剛關掉時吞掉落在原彈窗區域的點擊 ----------
+// 手機上彈窗的送出鈕壓在分頁列正上方：連點兩下時，第一下送出、彈窗關掉，第二下就落到分頁列
+// 或底下的按鈕被帶走。關掉的那一刻記下彈窗的位置，400ms 內落在那塊區域的點擊一律吞掉。
+// 只吞真的指標點擊（detail > 0）：鍵盤 Enter／空白鍵與程式呼叫的 .click() 不受影響。
+const TAP_GUARD_MS = 400;
+let tapGuard = null;   // { left, top, right, bottom, until }
+
+function armTapGuard(dialog) {
+  tapGuard = null;
+  if (!dialog || typeof dialog.getBoundingClientRect !== "function") return;
+  const rect = dialog.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  tapGuard = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, until: Date.now() + TAP_GUARD_MS };
+}
+
+window.addEventListener("click", (event) => {
+  const guard = tapGuard;
+  if (!guard) return;
+  if (Date.now() > guard.until) { tapGuard = null; return; }
+  if (!event.detail) return;
+  const x = event.clientX;
+  const y = event.clientY;
+  if (x < guard.left || x > guard.right || y < guard.top || y > guard.bottom) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
 
 // openModal(htmlString, { labelledBy, onClose, className })
 // 回傳 .modal 節點，呼叫端自己綁事件。關閉鈕由這裡畫，內容不用再放一顆。
@@ -322,6 +365,7 @@ export function openModal(content, options = {}) {
   const root = document.getElementById("modal-root");
   if (!root) return null;
   if (modalSession) closeModal();
+  tapGuard = null;   // 批 5：新的彈窗蓋上來了（含重繪後補開），點擊要照常進得去
   const opener = document.activeElement;
   root.innerHTML = String(html`<div class="modal-backdrop" role="presentation" data-modal-backdrop>
     <div class="${classNames("modal", options.className)}" role="dialog" aria-modal="true" ${options.labelledBy ? raw(`aria-labelledby="${options.labelledBy}"`) : ""}>
@@ -346,6 +390,9 @@ export function openModal(content, options = {}) {
 // 開著的 modal；頁面模組的 onClose 看到 "rerender" 時只清「DOM 目前開著」的旗標，
 // 不清「應該開著」的旗標，mount() 才能把 modal 補開並回填輸入（規格 1.2／3.2 的存活機制）。
 // 使用者主動關（關閉鈕、背景、Esc）reason 為 undefined，兩個旗標都清。
+// 批 5：換頁（上一頁、分頁列、彈窗裡的連結）時 app.js 改用 "navigate"：這是使用者自己離開，
+// 各頁的 onClose 只把 "rerender" 當背景重繪，其餘（含 "navigate"）一律當使用者關閉、清掉「該開」旗標，
+// 回到原頁不會自己彈回來。確認框遇到 "navigate" 也會關掉並回答「取消」。
 // 開的時候帶 keepOnRerender（確認框）的 modal 不跟著背景重繪關掉：它不屬於任何頁面，
 // 沒有頁面會把它補開，關掉就等於替使用者按了「取消」。重繪後由 app.js 呼叫 syncModalBackdrop() 把新的 #app 鎖回去。
 export function closeModal(reason) {
@@ -353,6 +400,7 @@ export function closeModal(reason) {
   const root = document.getElementById("modal-root");
   const session = modalSession;
   modalSession = null;
+  if (session && root) armTapGuard(root.querySelector(".modal"));
   if (root) root.innerHTML = "";
   backdropInert(false);
   if (session) {
@@ -396,6 +444,8 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // 用 modal 做的確認框（不用 window.confirm：iOS 的 PWA 會把它畫成瀏覽器對話框，很嚇人）
+// 批 5：options.danger＝刪除、撤銷、還原、移除這類收不回來的動作：確認鈕用 .btn-danger、
+// 不預設聚焦（焦點落在「取消」），確認鈕文字由呼叫端用 confirmLabel 寫出具體動詞。
 export function confirmDialog(message, options = {}) {
   return new Promise((resolve) => {
     let settled = false;
@@ -408,7 +458,9 @@ export function confirmDialog(message, options = {}) {
       <p class="confirm-dialog-copy">${message}</p>
       <div class="confirm-dialog-actions">
         <button type="button" class="btn btn-secondary" data-confirm-cancel>${options.cancelLabel || "取消"}</button>
-        <button type="button" class="btn btn-primary" data-confirm-ok autofocus>${options.confirmLabel || "確定"}</button>
+        ${options.danger
+          ? html`<button type="button" class="btn btn-danger" data-confirm-ok>${options.confirmLabel || "確定"}</button>`
+          : html`<button type="button" class="btn btn-primary" data-confirm-ok autofocus>${options.confirmLabel || "確定"}</button>`}
       </div>`, {
       labelledBy: "confirm-dialog-title",
       className: "confirm-dialog",

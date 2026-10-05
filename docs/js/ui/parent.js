@@ -41,7 +41,13 @@ const ui = {
   guideTouched: false,           // 使用者手動切換過指南 details 後，不再被 pinStatus==="setup" 蓋回
   correctionOpen: false,         // 校正撲滿 modal：是否「應該」開著（規格 1.2／3.2／2.4 第 3 項的存活模式）
   correctionModalKind: "",       // "" | "correction"
+  // 批 5：待辦處理完的那一列先留一列不能點的佔位（「已確認 ✓」／「已取消」）約 1 秒再收，
+  // 下一筆才不會滑到手指底下、被連點的第二下直接處理掉。
+  // { id, title, label, index, until }：index＝當時在待辦清單裡的位置；until＝Infinity 表示還在處理中
+  inboxGhosts: [],
 };
+
+const INBOX_GHOST_MS = 1000;
 
 const ERROR_ANCHORS = {
   pin: { selector: ".parent-lock-card", position: "beforeend" },
@@ -148,6 +154,17 @@ function pinChangeModalBody() {
   </div>`;
 }
 
+// ---------- 批 5：解鎖後回到原本的目的地 ----------
+// 投資子頁未解鎖時，「前往家長區」帶 #/parent?return=<原本的網址>；只接受投資子頁本身與它的 ?open= 深連結，
+// 其他值一律不理（不讓網址把人帶到別的地方）。
+export function returnTargetOf(hash) {
+  const query = String(hash || "").split("?").slice(1).join("?");
+  if (!query) return "";
+  let target = "";
+  try { target = new URLSearchParams(query).get("return") || ""; } catch (e) { return ""; }
+  return /^#\/parent\/investments(\?open=(purchase|harvest))?$/.test(target) ? target : "";
+}
+
 // ---------- render ----------
 export function render(ctx) {
   const state = ctx.state;
@@ -217,29 +234,85 @@ function unlockedBody(state, profile, holdings) {
 function inboxCard(state) {
   const waitingProjects = state.projects.filter((item) => item.status === "waiting");
   const pendingSavingsTransfers = state.savingsTransfers.filter((item) => item.status === "pending");
-  const hasInboxItems = waitingProjects.length > 0 || pendingSavingsTransfers.length > 0;
-  return html`<section class="card parent-inbox parent-card-inbox">
-      <h2 class="card-title">待辦</h2>
-      <p class="card-sub">今天要處理的事</p>
-      ${hasInboxItems ? html`<div class="inbox-list">${pendingSavingsTransfers.map((transfer) => {
-          const kid = state.profiles.find((item) => item.id === transfer.profileId);
-          return html`<div class="inbox-item">
+  const rows = [
+    ...pendingSavingsTransfers.map((transfer) => {
+      const kid = state.profiles.find((item) => item.id === transfer.profileId);
+      return { id: transfer.id, markup: html`<div class="inbox-item" data-inbox-id="${transfer.id}">
             <div><b>${kid?.name ?? "小朋友"}想多存 ${money(transfer.amount)}</b><small>${transfer.note} · 批准後才會從撲滿轉入爸媽銀行</small></div>
             <div class="btn-row">
               <button type="button" class="btn btn-primary" data-action="approve-transfer" data-id="${transfer.id}" data-busy-label="處理中…">確認存入</button>
               <button type="button" class="btn btn-secondary" data-action="reject-transfer" data-id="${transfer.id}" data-busy-label="處理中…">不執行</button>
             </div>
-          </div>`;
-        })}${waitingProjects.map((project) => {
-          const kid = state.profiles.find((item) => item.id === project.assignedProfileId);
-          return html`<div class="inbox-item">
+          </div>` };
+    }),
+    ...waitingProjects.map((project) => {
+      const kid = state.profiles.find((item) => item.id === project.assignedProfileId);
+      return { id: project.id, markup: html`<div class="inbox-item" data-inbox-id="${project.id}">
             <div><b>${kid?.name} · ${project.title}</b><small>${money(project.reward)}，確認後依 ${state.savingsRate}% / ${100 - state.savingsRate}% 分配</small></div>
             <div class="btn-row">
               <button type="button" class="btn btn-primary" data-action="approve-project" data-id="${project.id}" data-busy-label="發放中…">確認完成</button>
             </div>
-          </div>`;
-        })}</div>` : html`<p class="empty">這個月都核對過了 ✓</p>`}
+          </div>` };
+    }),
+  ];
+  // 批 5：已經處理掉的那幾列，在原本的位置放回不能點的佔位
+  const liveIds = new Set(rows.map((row) => row.id));
+  const now = Date.now();
+  ui.inboxGhosts = ui.inboxGhosts.filter((ghost) => ghost.until > now);
+  for (const ghost of [...ui.inboxGhosts].sort((a, b) => a.index - b.index)) {
+    if (liveIds.has(ghost.id)) continue;
+    rows.splice(Math.min(ghost.index, rows.length), 0, { id: ghost.id, markup: inboxGhostMarkup(ghost) });
+  }
+  return html`<section class="card parent-inbox parent-card-inbox">
+      <h2 class="card-title">待辦</h2>
+      <p class="card-sub">今天要處理的事</p>
+      ${rows.length ? html`<div class="inbox-list">${rows.map((row) => row.markup)}</div>` : html`<p class="empty">這個月都核對過了 ✓</p>`}
     </section>`;
+}
+
+function inboxGhostMarkup(ghost) {
+  return html`<div class="inbox-item is-done" data-inbox-ghost="${ghost.id}" aria-live="polite">
+            <div><b>${ghost.title}</b></div>
+            <div class="btn-row"><span class="inbox-done-label">${ghost.label}</span></div>
+          </div>`;
+}
+
+// 批 5：按下待辦按鈕的那一刻先登記佔位（處理中不顯示，因為那一列還在）；成功後計時收掉，失敗就撤掉。
+function holdInboxRow(root, button, label) {
+  const row = button.closest(".inbox-item");
+  const rows = Array.from(root.querySelectorAll(".inbox-list > .inbox-item"));
+  const ghost = {
+    id: button.dataset.id,
+    title: row ? (row.querySelector("b")?.textContent ?? "") : "",
+    label,
+    index: Math.max(0, rows.indexOf(row)),
+    until: Infinity,
+  };
+  ui.inboxGhosts = ui.inboxGhosts.filter((item) => item.id !== ghost.id).concat(ghost);
+  return {
+    done() {
+      ghost.until = Date.now() + INBOX_GHOST_MS;
+      setTimeout(() => removeInboxGhost(ghost.id), INBOX_GHOST_MS);
+    },
+    cancel() {
+      ui.inboxGhosts = ui.inboxGhosts.filter((item) => item !== ghost);
+    },
+  };
+}
+
+// 只動 DOM：一秒後把佔位那一列拿掉，不整頁重繪（家長可能正在下面的表單打字）
+function removeInboxGhost(id) {
+  ui.inboxGhosts = ui.inboxGhosts.filter((item) => item.id !== id);
+  const node = document.querySelector(`#app [data-inbox-ghost="${CSS.escape(id)}"]`);
+  if (!node) return;
+  const list = node.parentElement;
+  node.remove();
+  if (list && list.classList.contains("inbox-list") && !list.querySelector(".inbox-item")) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "這個月都核對過了 ✓";
+    list.replaceWith(empty);
+  }
 }
 
 function quickActionsCard() {
@@ -406,8 +479,18 @@ function profileEditorMarkup(state, profile) {
     && !state.dreamJars.some((item) => item.profileId === profile.id);
   return html`${raw(common.profileChips(state.profiles, profile.id))}
         ${canAddProfile ? html`<div class="form-actions">
-            <button class="btn btn-ghost" type="button" data-action="toggle-add-profile" aria-expanded="${ui.addProfileOpen ? "true" : "false"}">${ui.addProfileOpen ? "再按一次收起" : "＋ 新增小朋友（最多 5 位，只要填名字）"}</button>
+            <button class="btn btn-ghost" type="button" data-action="toggle-add-profile" aria-expanded="${ui.addProfileOpen ? "true" : "false"}" aria-controls="profile-add-form">${ui.addProfileOpen ? "取消新增" : "＋ 新增小朋友（最多 5 位，只要填名字）"}</button>
           </div>` : ""}
+        ${ui.addProfileOpen && canAddProfile ? html`<form class="profile-add-form" id="profile-add-form" data-form="add-profile">
+            ${common.field({
+              label: "新的小朋友名字",
+              input: html`<input class="input" data-draft="new-profile-name" value="${draft("new-profile-name")}" minlength="1" maxlength="12" placeholder="例如：小寶" required />`,
+            })}
+            <div class="form-actions">
+              <button class="btn btn-primary" data-busy-label="新增中…">新增小朋友</button>
+              <button class="btn btn-ghost" type="button" data-action="cancel-add-profile">取消</button>
+            </div>
+          </form>` : ""}
         <div class="profile-editor-forms">
           <form class="profile-identity-form" data-form="profile-identity">
             <h3 class="parent-subtitle">編輯${profile.name}</h3>
@@ -436,16 +519,6 @@ function profileEditorMarkup(state, profile) {
               <button class="btn btn-primary" data-busy-label="儲存中…">儲存撲滿金額</button>
             </div>
           </form>
-          ${ui.addProfileOpen && canAddProfile ? html`<form class="profile-add-form" data-form="add-profile">
-            ${common.field({
-              label: "新的小朋友名字",
-              input: html`<input class="input" data-draft="new-profile-name" value="${draft("new-profile-name")}" minlength="1" maxlength="12" placeholder="例如：小寶" required />`,
-            })}
-            <div class="form-actions">
-              <button class="btn btn-primary" data-busy-label="新增中…">新增小朋友</button>
-              <button class="btn btn-ghost" type="button" data-action="cancel-add-profile">取消</button>
-            </div>
-          </form>` : ""}
         </div>`;
 }
 
@@ -902,7 +975,9 @@ async function handleSubmit(root, ctx, form) {
       ui.parentPin = value;
       const message = ctx.pinStatus === "setup" ? "家長操作碼已設定" : "家長區已解鎖；關閉頁面後會再次上鎖";
       announce(root, message);
-      ctx.refresh();
+      // 批 5：從投資子頁（例如「記收成」深連結）被帶來解鎖的，解鎖後回到原本要去的地方
+      const back = returnTargetOf(location.hash);
+      if (back) location.hash = back; else ctx.refresh();
     } catch (caught) {
       endBusy();
       ui.pinError = errorMessage(caught, "操作碼驗證失敗");
@@ -1003,7 +1078,10 @@ async function handleClick(root, ctx, button) {
     // 孩子資料卡不再是收合面板，所以 open-profile-editor 這個動作在 v2 沒有對應的按鈕了。
     case "toggle-add-profile": {
       ui.addProfileOpen = !ui.addProfileOpen;
-      ctx.refresh();
+      if (!ui.addProfileOpen) clearDrafts("new-profile-name");
+      await ctx.refresh();
+      // 批 5：表單就在按鈕正下方，打開後捲進畫面（不自動聚焦：手機會直接彈出鍵盤）
+      if (ui.addProfileOpen) window.setTimeout(() => document.getElementById("profile-add-form")?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 0);
       return;
     }
     case "cancel-add-profile": {
@@ -1013,7 +1091,7 @@ async function handleClick(root, ctx, button) {
       return;
     }
     case "remove-profile": {
-      const confirmed = await common.confirmDialog(`確定要移除「${profile.name}」嗎？\n\n這位小朋友還沒有任何紀錄、持股與夢想，移除後就不會再出現在島上。`);
+      const confirmed = await common.confirmDialog(`確定要移除「${profile.name}」嗎？\n\n這位小朋友還沒有任何紀錄、持股與夢想，移除後就不會再出現在島上。`, { danger: true, confirmLabel: "移除這位小朋友" });
       if (!confirmed) return;
       await runParentAction(root, ctx, { button, scope: "profile", fallback: "移除小朋友失敗", message: `${profile.name}已經從島上移除` }, () => store.removeProfile({ profileId: profile.id, parentPin: ui.parentPin }));
       return;
@@ -1021,13 +1099,15 @@ async function handleClick(root, ctx, button) {
     case "approve-transfer":
     case "reject-transfer": {
       const transferAction = action === "approve-transfer" ? "approve" : "reject";
+      const hold = holdInboxRow(root, button, transferAction === "approve" ? "已確認 ✓" : "已取消");
       const ok = await runParentAction(root, ctx, { button, scope: "inbox" }, () => store.updateSavingsTransfer({
         action: transferAction,
         transferId: id,
         operationId: uuid(),
         parentPin: ui.parentPin,
       }));
-      if (ok) announce(root, transferAction === "approve" ? "已確認存入爸媽銀行" : "這次自主多存沒有執行");
+      if (ok) { hold.done(); announce(root, transferAction === "approve" ? "已確認存入爸媽銀行" : "這次自主多存沒有執行"); }
+      else hold.cancel();
       return;
     }
     case "cancel-project-edit": {
@@ -1048,12 +1128,14 @@ async function handleClick(root, ctx, button) {
       return;
     }
     case "approve-project": {
-      await runParentAction(root, ctx, { button, scope: "inbox" }, () => store.updateFamilyProject({
+      const hold = holdInboxRow(root, button, "已確認 ✓");
+      const ok = await runParentAction(root, ctx, { button, scope: "inbox" }, () => store.updateFamilyProject({
         action: "approve",
         projectId: id,
         profileId: profile.id,
         parentPin: ui.parentPin,
       }));
+      if (ok) hold.done(); else hold.cancel();
       return;
     }
     case "open-correction": {
@@ -1082,7 +1164,7 @@ async function handleClick(root, ctx, button) {
       const warning = ui.restoreSummary.portable
         ? "完整可攜備份會取代目前家庭的帳本與孩子照片。系統會先保存目前帳本版本，確定繼續嗎？"
         : "這份備份會取代目前帳本。系統會先保存目前版本，確定繼續嗎？";
-      const confirmed = await common.confirmDialog(warning);
+      const confirmed = await common.confirmDialog(warning, { danger: true, confirmLabel: "覆蓋並還原" });
       if (!confirmed) return;
       startBusy(root, button);
       clearOperationError(root, "backup");
@@ -1102,7 +1184,7 @@ async function handleClick(root, ctx, button) {
     }
     case "restore-snapshot": {
       const ts = Number(button.dataset.ts);
-      const confirmed = await common.confirmDialog(`確定要還原 ${formatDateTime(ts)} 的本機快照嗎？\n\n目前的帳本會被這份快照取代。`);
+      const confirmed = await common.confirmDialog(`確定要還原 ${formatDateTime(ts)} 的本機快照嗎？\n\n目前的帳本會被這份快照取代。`, { danger: true, confirmLabel: "還原這份快照" });
       if (!confirmed) return;
       startBusy(root, button);
       clearOperationError(root, "backup");

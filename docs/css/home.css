@@ -115,3 +115,20 @@
 }
 
 .money-modal form > .btn { margin-top: var(--space-5); }
+
+/* ---------- 批 5：點擊區補到 44×44 ---------- */
+/* 「看全部 →」：用 padding 撐到 44 高、負 margin 抵掉，版面不動 */
+.card-head-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  margin: -10px calc(-1 * var(--space-2));
+}
+
+/* 樹種：插畫不動，只把下拉面板裡的六顆按鈕改成三欄兩列、每顆 44 高，寬度自然超過 44 */
+.garden-picker > div { grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.garden-picker button { height: 44px; }
+/* 「選擇樹種」那顆膠囊：外觀不變，命中區往上下各補到 44 高 */
+.garden-picker summary { position: relative; }
+.garden-picker summary::before { content: ""; position: absolute; inset: -6px 0; }

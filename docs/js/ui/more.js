@@ -13,6 +13,15 @@ const APP_VERSION = "v2";
 // ---------- 頁面暫存（重繪後由 render 讀回） ----------
 let projectBusy = "";
 let projectError = "";
+// 批 5：接下專案後，同一張卡的按鈕會原地變成「我完成了」：連點第二下就直接送出。
+// 重繪後這顆按鈕先停用 800ms 再開放。
+const PROJECT_HOLD_MS = 800;
+let projectHold = { id: "", until: 0 };
+let projectHoldTimer = 0;
+
+function projectHeld(id) {
+  return projectHold.id === id && Date.now() < projectHold.until;
+}
 let currentCtx = null;
 const boundRoots = new WeakSet();
 
@@ -63,8 +72,8 @@ export function render(ctx) {
               </div>
               <h3>${item.title}</h3>
               <p>${item.description}</p>
-              ${item.status === "open" ? html`<button type="button" class="btn btn-secondary btn-block"${attr(projectBusy === item.id, " disabled")} data-action="claim-project" data-id="${item.id}">${projectBusy === item.id ? "正在登記…" : `${profile.name}想接這個專案`}</button>` : ""}
-              ${item.status === "claimed" && isMine ? html`<button type="button" class="btn btn-secondary btn-block"${attr(projectBusy === item.id, " disabled")} data-action="submit-project" data-id="${item.id}">${projectBusy === item.id ? "正在送出…" : "我完成了，請家長確認"}</button>` : ""}
+              ${item.status === "open" ? html`<button type="button" class="btn btn-secondary btn-block"${attr(projectBusy === item.id || projectHeld(item.id), " disabled")} data-action="claim-project" data-id="${item.id}">${projectBusy === item.id ? "正在登記…" : `${profile.name}想接這個專案`}</button>` : ""}
+              ${item.status === "claimed" && isMine ? html`<button type="button" class="btn btn-secondary btn-block"${attr(projectBusy === item.id || projectHeld(item.id), " disabled")} data-action="submit-project" data-id="${item.id}">${projectBusy === item.id ? "正在送出…" : "我完成了，請家長確認"}</button>` : ""}
               ${item.status === "claimed" && !isMine ? html`<small>${assigned?.name}正在進行中</small>` : ""}
               ${item.status === "waiting" ? html`<small class="waiting-note">⌛ 等待家長在家長專區確認</small>` : ""}
               ${item.status === "completed" ? html`<small class="completed-note">✓ 已完成並分配報酬</small>` : ""}
@@ -114,11 +123,15 @@ async function runProject(ctx, projectAction, projectId, button) {
   }
   try {
     await store.updateFamilyProject({ action: projectAction, projectId, profileId: ctx.profile.id });
+    // 批 5：先設好停用期再放掉 busy，然後自己重繪一次：提交觸發的那次重繪可能在 busy 還沒放掉時就畫好了，
+    // 不補這一次，按鈕會一直停在「正在登記…」。
+    projectHold = { id: projectId, until: Date.now() + PROJECT_HOLD_MS };
     projectBusy = "";
     showStatus(
       projectAction === "submit" ? "已經送給爸媽確認" : "已經接下這個家庭小專案",
       projectAction === "submit" ? "waiting" : "success",
     );
+    ctx.refresh();
   } catch (caught) {
     const message = errorMessage(caught, "儲存失敗");
     projectBusy = "";
@@ -136,6 +149,24 @@ export function mount(root, ctx) {
     boundRoots.add(root);
     root.addEventListener("click", onRootClick);
   }
+  scheduleHoldRelease();
+}
+
+// 批 5：停用期到了就把那顆按鈕放開（只動 DOM，不整頁重繪）。
+function scheduleHoldRelease() {
+  clearTimeout(projectHoldTimer);
+  const { id, until } = projectHold;
+  if (!id) return;
+  const left = until - Date.now();
+  const release = () => {
+    if (projectHold.id !== id) return;
+    projectHold = { id: "", until: 0 };
+    if (projectBusy === id) return;
+    document.querySelectorAll("#app [data-action][data-id]").forEach((button) => {
+      if (button.getAttribute("data-id") === id && (button.dataset.action === "claim-project" || button.dataset.action === "submit-project")) button.disabled = false;
+    });
+  };
+  if (left <= 0) release(); else projectHoldTimer = setTimeout(release, left);
 }
 
 function onRootClick(event) {

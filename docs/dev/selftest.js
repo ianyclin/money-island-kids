@@ -713,6 +713,68 @@ export async function runSelfTest(report) {
       db.reset();
     });
 
+    // ---------- 批 5. 換頁關彈窗、危險確認框、深連結、月份箭頭 ----------
+    await section("B5-5 換頁時彈窗不會自己彈回", async () => {
+      const modalRoot = document.createElement("div");
+      modalRoot.id = "modal-root";
+      document.body.append(modalRoot);
+      try {
+        const lock = common.createLockModal({ getPinStatus: () => "locked", onUnlocked() {}, parentHref: "#/parent" });
+        lock.open();
+        assert("鎖彈窗：打開了", common.isModalOpen());
+        common.closeModal("rerender");
+        lock.mountCheck();
+        assert("鎖彈窗：同一頁重繪後照樣補開", common.isModalOpen());
+        common.closeModal("navigate");
+        lock.mountCheck();
+        assert("鎖彈窗：換頁關掉後回原頁不會自己彈回", !common.isModalOpen());
+        const answer = common.confirmDialog("測試用的危險確認框", { danger: true, confirmLabel: "刪除這筆紀錄" });
+        const okButton = modalRoot.querySelector("[data-confirm-ok]");
+        assert("危險確認框：確認鈕是紅色、寫出具體動詞", Boolean(okButton && okButton.classList.contains("btn-danger") && okButton.textContent === "刪除這筆紀錄"));
+        assert("危險確認框：確認鈕不預設聚焦", Boolean(okButton && !okButton.hasAttribute("autofocus") && document.activeElement !== okButton));
+        common.closeModal("navigate");
+        assertEqual("確認框：開著時換頁等於取消", await answer, false);
+      } finally {
+        common.closeModal();
+        modalRoot.remove();
+      }
+    });
+
+    await section("B5-6 深連結第二次也帶得到、解鎖後回原處", async () => {
+      const investments = await import("../js/ui/parent-investments.js");
+      const parentPage = await import("../js/ui/parent.js");
+      const purchaseLink = "#/parent/investments?open=purchase";
+      investments.forgetDeepLinkIfLeft("#/parent");
+      assert("深連結：第一次帶到區塊", investments.shouldApplyDeepLink(purchaseLink));
+      assert("深連結：同一頁重繪不會一直捲回去", !investments.shouldApplyDeepLink(purchaseLink));
+      investments.forgetDeepLinkIfLeft(purchaseLink);
+      assert("深連結：還在投資頁就不重設", !investments.shouldApplyDeepLink(purchaseLink));
+      investments.forgetDeepLinkIfLeft("#/parent");
+      assert("深連結：離開再點同一個連結，第二次也帶到區塊", investments.shouldApplyDeepLink(purchaseLink));
+      investments.forgetDeepLinkIfLeft("#/parent");
+      assertEqual("解鎖後回原處：記收成", parentPage.returnTargetOf(`#/parent?return=${encodeURIComponent("#/parent/investments?open=harvest")}`), "#/parent/investments?open=harvest");
+      assertEqual("解鎖後回原處：投資頁本身", parentPage.returnTargetOf(`#/parent?return=${encodeURIComponent("#/parent/investments")}`), "#/parent/investments");
+      assertEqual("解鎖後回原處：別的網址一律不理", parentPage.returnTargetOf(`#/parent?return=${encodeURIComponent("https://example.com/#/parent/investments")}`), "");
+      assertEqual("解鎖後回原處：沒帶就留在家長區", parentPage.returnTargetOf("#/parent"), "");
+    });
+
+    await section("B5-10 每月回顧月份箭頭", async () => {
+      const growth = await import("../js/ui/growth.js");
+      store.hydrate(twoKids());
+      const view = derive(store.getState());
+      const markup = String(growth.render({
+        state: store.getState(), view, profile: view.profiles[0], profiles: view.profiles,
+        unlocked: false, pinStatus: "locked", navigate() {}, refresh() {}, chooseProfile() {},
+      }));
+      const doc = new DOMParser().parseFromString(markup, "text/html");
+      const [left, right] = doc.querySelectorAll(".review-month > button");
+      assertEqual("月份箭頭：左「‹」＝較早、右「›」＝較新",
+        [left && left.textContent, left && left.dataset.action, right && right.textContent, right && right.dataset.action],
+        ["‹", "month-older", "›", "month-newer"]);
+      assertEqual("月份箭頭：停在這個月時只有「較新」不能按", [left && left.disabled, right && right.disabled], [false, true]);
+      db.reset();
+    });
+
     // ---------- 20. 操作碼鎖定（放最後，會把操作碼鎖住 15 分鐘）----------
     pin.lock();
     assertEqual("操作碼：鎖上後狀態", pin.status(), "locked");

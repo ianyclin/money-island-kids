@@ -146,3 +146,13 @@
 .about strong { font-size: 14px; font-weight: 900; }
 .about small { color: var(--muted); font-size: var(--fs-caption); }
 .about a { color: var(--green); font-weight: 800; }
+
+/* ---------- 批 5：fb 連結的命中區補到 44 高（padding 撐、負 margin 抵，字的位置不動） ---------- */
+.about a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  margin: -14px calc(-1 * var(--space-2));
+  vertical-align: middle;
+}

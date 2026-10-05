@@ -27,6 +27,8 @@ let pageActivities = [];
 let currentCtx = null;
 let menuId = "";        // 手機「⋯」選單目前對著哪一筆（重繪後 mount() 補開）
 let menuNode = null;
+const LOAD_MORE_COOLDOWN_MS = 800;   // 批 5：載入更多防連點
+let lastLoadMoreAt = 0;
 
 // ---------- 情境式解鎖 modal（規格 3.3：頁首右插槽的 32px 鎖鈕） ----------
 const lockModal = common.createLockModal({
@@ -137,8 +139,12 @@ function rowActions(item) {
         <div class="record-actions">
           <button type="button" class="btn btn-ghost" title="編輯紀錄說明" data-action="edit" data-id="${item.id}">編輯</button>
           <button type="button" class="btn btn-ghost"${deletable ? "" : raw(" disabled")} title="${deleteHelp}" aria-label="${`刪除「${item.label}」：${deleteHelp}`}" data-action="delete" data-id="${item.id}">刪除</button>
+          ${deletable ? "" : html`<small class="record-delete-why">${UNDELETABLE_TEXT}</small>`}
         </div>`;
 }
+
+// 批 5：不能刪的原因直接寫在畫面上（以前只放在 title，手機看不到）
+const UNDELETABLE_TEXT = "這筆不能在這裡刪除，請到對應家長功能調整";
 
 // 這一行是 app 的核心教學（錢有不同任務）：每一筆錢分別進了哪個錢包。從舊版原樣搬回。
 function deltaText(item) {
@@ -248,6 +254,7 @@ function openRowMenu(item) {
       <div class="record-menu-actions">
         <button type="button" class="btn btn-secondary btn-block" data-menu-edit>編輯</button>
         <button type="button" class="btn btn-danger btn-block"${deletable ? "" : raw(" disabled")} title="${deletable ? "刪除並撤銷餘額變化" : "請到對應家長功能調整"}" data-menu-delete>刪除</button>
+        ${deletable ? "" : html`<p class="record-delete-why">${UNDELETABLE_TEXT}</p>`}
       </div>`, {
     labelledBy: "record-menu-title",
     onClose: (reason) => {
@@ -391,7 +398,7 @@ function saveEdit(event) {
 }
 
 async function remove(item, button) {
-  const confirmed = await common.confirmDialog(`確定要刪除「${item.label}」嗎？系統會撤銷這筆紀錄造成的餘額變化。`);
+  const confirmed = await common.confirmDialog(`確定要刪除「${item.label}」嗎？系統會撤銷這筆紀錄造成的餘額變化。`, { danger: true, confirmLabel: "刪除這筆紀錄" });
   if (!confirmed) return;
   await activityRequest({ action: "delete", activityId: item.id }, button, "刪除中…");
 }
@@ -424,6 +431,9 @@ function onClick(event) {
   const action = button.dataset.action;
   if (action === "open-lock") { lockModal.open(); return; }
   if (action === "load-more") {
+    // 批 5：載入後新的「載入更多」會落在同一個位置、還被聚焦：連點第二下不能直接再載一頁
+    if (Date.now() - lastLoadMoreAt < LOAD_MORE_COOLDOWN_MS) return;
+    lastLoadMoreAt = Date.now();
     pagesLoaded += 1;
     syncList({ focusLoadMore: true });
     return;

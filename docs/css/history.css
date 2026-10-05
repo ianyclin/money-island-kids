@@ -26,3 +26,12 @@
 
 /* 主線補回：每筆錢分別進了哪個錢包（原版 deltaText），12px 綠字 */
 .record-delta { display: block; margin-top: 3px; font-style: normal; font-size: 12px; font-weight: 700; color: var(--green); }
+
+/* ---------- 批 5：不能刪的原因直接寫在畫面上 ---------- */
+.record-delete-why { color: var(--muted); font-size: var(--fs-caption); line-height: 1.5; }
+.record-menu-actions .record-delete-why { margin-top: var(--space-1); text-align: center; }
+/* 電腦版：兩顆鈕下面接一行原因；整欄固定寬，能刪與不能刪的列金額才對得齊 */
+@media (min-width: 1100px) {
+  .record-actions { flex-wrap: wrap; justify-content: flex-end; align-content: center; width: 168px; row-gap: 0; }
+  .record-actions .record-delete-why { flex: 1 0 100%; text-align: right; }
+}

@@ -86,6 +86,19 @@ export function navigate(hash) {
 // 重繪的時機只有兩種：路由切換、store 提交後（store.subscribe → refresh）。
 let rendering = false;
 let pendingRender = false;
+let lastRenderedRoute = "";   // 批 5：上一次畫出來的路由，用來分辨「換頁」與「同一頁重繪」
+
+// 批 5：點目前所在的分頁（分頁列、側欄、左上角品牌）不會觸發 hashchange，自己捲回頂端。
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const link = target.closest(".tabbar a[href], .sidenav a[href], .sidebar .brand[href]");
+  if (!link || event.defaultPrevented) return;
+  const href = link.getAttribute("href") || "";
+  if (href !== (location.hash || "#/")) return;
+  event.preventDefault();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
 
 export async function refresh() { await render(); }
 
@@ -125,7 +138,12 @@ async function render() {
     }
 
     const ctx = buildContext(state);
-    closeModal("rerender");   // 背景重繪：頁面模組的 onClose 會保留「該開」旗標，mount() 再補開
+    // 批 5：換了路由（上一頁、分頁列、彈窗裡的連結）＝使用者自己離開，用 "navigate" 關彈窗，
+    // 各頁會清掉「該開」旗標，回原頁不會自己彈回；同一頁重繪才用 "rerender"（保留旗標，mount() 再補開）。
+    // 只比路由本身（# 後、? 前）：?open= 這種同頁參數不算換頁。
+    const navigated = hash !== lastRenderedRoute;
+    lastRenderedRoute = hash;
+    closeModal(navigated ? "navigate" : "rerender");
     /* 整頁重繪時換掉整個 #app 節點：頁面模組在 mount() 裡綁的事件委派會跟著舊節點一起消失，
        不會每重繪一次就疊一層監聽器（模組自己不用管解綁）。 */
     try {
@@ -141,6 +159,8 @@ async function render() {
       if (current) current.innerHTML = String(stateGate(`這一頁畫不出來（${error && error.message ? error.message : "未知的錯誤"}）`, () => { void render(); }));
     }
     syncModalBackdrop();      // 確認框不跟著重繪關掉，新的 #app 要重新鎖住
+    // 批 5：換頁捲回頂端；同一頁重繪不動捲動位置（深連結 ?open= 自己會在下一拍捲到區塊）
+    if (navigated) window.scrollTo(0, 0);
     updateInstallHint();
   } finally {
     rendering = false;
@@ -260,7 +280,8 @@ async function runRecoveryRoute(kind, button) {
 async function restoreRecoverySnapshot(ts, button) {
   const ok = await confirmDialog(`要用 ${timestampText(ts)} 的快照取代讀不出來的帳本嗎？讀不出來的那份會先另外留存。`, {
     title: "從本機快照還原",
-    confirmLabel: "還原",
+    confirmLabel: "用這份快照還原",
+    danger: true,
   });
   if (!ok) return;
   if (button && button.isConnected) { button.disabled = true; button.textContent = "還原中…"; }

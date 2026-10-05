@@ -3,7 +3,7 @@
 // 文案、store 呼叫、operationId、錯誤處理、busy 狀態、事件委派模式一律照抄。
 //
 // v2 重做（notes/redesign-v2/spec.md 5.5）：外殼換成 common.appShell()（title「投資管理」、
-// body 第一個元素是「‹ 家長區」），四段各一張 .card，markup 換成 v2 的 .card／.btn／.field；
+// 「‹ 家長區」在頁首左插槽（批 5）），四段各一張 .card，markup 換成 v2 的 .card／.btn／.field；
 // 收成的 1、2 月自動展開與 ?open=purchase|harvest 深連結原樣沿用。電腦單欄 max-width 760（.narrow）。
 //
 // 這頁自己的模組作用域已經在「已解鎖」的家長區裡（見下方 render() 開頭的解鎖保護），
@@ -108,11 +108,12 @@ export function render(ctx) {
   // 規格 1.2／2.4.1：新路由的解鎖保護。
   if (!ctx.unlocked) {
     // 裁判 9/11：不用 stateGate（它的大標是「暫時讀不到家庭帳本」，會誤導），改用殼包一張說明卡。
-    return common.appShell({ page: "parent", title: "投資管理", ctx, body: html`
+    // 批 5：帶著原本的網址過去（含 ?open= 深連結），解鎖後 parent.js 會把人送回來。
+    return common.appShell({ page: "parent", title: "投資管理", ctx, left: BACK_LINK, body: html`
       <section class="card">
         <p class="card-title">請先從家長區解鎖</p>
         <p class="card-sub">投資管理需要家長操作碼。</p>
-        <a class="btn btn-primary" href="#/parent">前往家長區</a>
+        <a class="btn btn-primary" href="${`#/parent?return=${encodeURIComponent(location.hash || "#/parent/investments")}`}">前往家長區</a>
       </section>` });
   }
 
@@ -141,8 +142,7 @@ export function render(ctx) {
   const harvestOpen = ui.harvestManuallyToggled ? isOpen("harvest") : seasonalHarvestOpen;
   const lastHarvest = harvestHistory[0];
 
-  const body = html`<a class="btn btn-ghost parent-back" href="#/parent">‹ 家長區</a>
-      <div class="narrow" id="investments">
+  const body = html`<div class="narrow" id="investments">
         <section class="card investment-form-card">
           <span class="kicker">新增一筆真實買入</span>
           <div class="card-head">
@@ -343,8 +343,11 @@ export function render(ctx) {
         </details>
       </div>`;
 
-  return common.appShell({ page: "parent", title: "投資管理", ctx, right: "", body });
+  return common.appShell({ page: "parent", title: "投資管理", ctx, left: BACK_LINK, right: "", body });
 }
+
+// 批 5：規格 5.5「頁首左側『‹ 家長區』返回」——以前放在內容第一列，現在進頁首左插槽。
+const BACK_LINK = html`<a class="btn btn-ghost parent-back" href="#/parent">‹ 家長區</a>`;
 
 // ---------- 忙碌狀態與錯誤（照 parent.js 原本的模式） ----------
 let busyRestore = null;
@@ -501,10 +504,23 @@ function applyDeepLink(root) {
 }
 
 function maybeApplyDeepLink(root) {
-  if (location.hash === lastDeepLinkHash) return;
-  lastDeepLinkHash = location.hash;
+  if (!shouldApplyDeepLink(location.hash)) return;
   applyDeepLink(root);
 }
+
+// 同一個網址只套一次（同一頁重繪不要一直把畫面捲回去）；批 5：離開這一頁就忘掉，
+// 下次再從家長區點「記買入／記收成」（同一個網址）才會再帶到區塊。
+export function shouldApplyDeepLink(hash) {
+  if (hash === lastDeepLinkHash) return false;
+  lastDeepLinkHash = hash;
+  return true;
+}
+
+export function forgetDeepLinkIfLeft(hash) {
+  if (String(hash || "").split("?")[0] !== "#/parent/investments") lastDeepLinkHash = "";
+}
+
+window.addEventListener("hashchange", () => forgetDeepLinkIfLeft(location.hash));
 
 // ---------- mount ----------
 const boundRoots = new WeakSet();
@@ -712,6 +728,10 @@ async function handleClick(root, ctx, button) {
       return;
     }
     case "delete-preset": {
+      // 批 5：停用以前一按就生效，跟「編輯」並排很容易誤按；先問一次
+      const preset = (state.investmentPresets || []).find((item) => item.id === id);
+      const confirmed = await common.confirmDialog(`確定要停用常用標的「${preset ? preset.symbol : ""}」嗎？\n\n停用後它不會再出現在買入表單的快速按鈕；已經記下的買入與持股不受影響。`, { danger: true, confirmLabel: "停用這個標的" });
+      if (!confirmed) return;
       await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.updateInvestmentPreset({ action: "delete", presetId: id }));
       return;
     }
@@ -759,7 +779,7 @@ async function handleClick(root, ctx, button) {
     case "void-purchase": {
       const item = state.purchases.find((purchase) => purchase.id === id);
       if (!item) return;
-      const confirmed = await common.confirmDialog(`確定要撤銷 ${item.purchaseDate} 的 ${item.symbol} 買入嗎？\n\n系統會一併還原爸媽銀行、持股與成本；若後續已有賣出紀錄，系統會為了帳本安全而拒絕撤銷。`);
+      const confirmed = await common.confirmDialog(`確定要撤銷 ${item.purchaseDate} 的 ${item.symbol} 買入嗎？\n\n系統會一併還原爸媽銀行、持股與成本；若後續已有賣出紀錄，系統會為了帳本安全而拒絕撤銷。`, { danger: true, confirmLabel: "撤銷這筆買入" });
       if (!confirmed) return;
       const ok = await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.voidInvestmentPurchase({ purchaseId: item.id }));
       if (ok) {
@@ -789,7 +809,7 @@ async function handleClick(root, ctx, button) {
     case "void-harvest": {
       const item = state.harvests.find((harvest) => harvest.id === id);
       if (!item) return;
-      const confirmed = await common.confirmDialog(`確定要撤銷 ${item.year} 年的過年投資收成嗎？\n\n系統會退回撲滿裡的 ${money(item.netProceeds)}，並恢復對應持股與投入成本。若後續餘額不足，系統會為了帳本安全而拒絕撤銷。`);
+      const confirmed = await common.confirmDialog(`確定要撤銷 ${item.year} 年的過年投資收成嗎？\n\n系統會退回撲滿裡的 ${money(item.netProceeds)}，並恢復對應持股與投入成本。若後續餘額不足，系統會為了帳本安全而拒絕撤銷。`, { danger: true, confirmLabel: "撤銷這筆收成" });
       if (!confirmed) return;
       const ok = await runParentAction(root, ctx, { button, scope: "harvest" }, () => store.voidAnnualHarvest({ harvestId: item.id }));
       if (ok) {

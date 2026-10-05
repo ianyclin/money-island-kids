@@ -765,3 +765,31 @@ details[open] > summary .summary-open-label { display: inline; }
 .recovery-routes h2 { margin-top: var(--space-5); font-size: var(--fs-body); font-weight: 900; }
 .recovery-routes > p { margin-top: var(--space-1); font-size: var(--fs-small); }
 .recovery-routes .parent-row button { margin-top: 0; }
+
+/* ---------- 批 5 ---------- */
+/* 待辦處理完的佔位列：不能點，約 1 秒後收掉 */
+.inbox-item.is-done { opacity: .7; }
+.inbox-done-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 var(--space-3);
+  color: var(--green);
+  font-size: var(--fs-body);
+  font-weight: 900;
+}
+
+/* 「＋ 新增小朋友」的表單緊接在按鈕下方 */
+.profile-add-form {
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--theme-soft, #eef5f1);
+  /* 捲進畫面時底部要讓出手機的分頁列，「新增小朋友」鈕才不會躲在分頁列後面 */
+  scroll-margin-top: var(--space-4);
+  scroll-margin-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px) + var(--space-4));
+}
+
+/* 投資子頁的「‹ 家長區」在頁首左插槽：不要被 .page-head 的 flex 拉寬 */
+.page-head-left .parent-back { align-self: center; }
