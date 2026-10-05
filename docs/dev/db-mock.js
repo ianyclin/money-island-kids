@@ -32,6 +32,8 @@ export function saveErrorHint() {
 
 export const INVALID_LEDGER_CLOUD_TEXT = "帳本有地方不對，暫停上傳；請先下載原始內容";
 export const SNAPSHOT_READ_ERROR = "快照讀不出來（這台裝置的瀏覽器資料庫有問題），請改用備份檔";
+export const BROKEN_COPIES_READ_ERROR = "這台裝置留存的原始內容讀不出來（瀏覽器資料庫有問題）";
+export async function listBrokenCopies() { return []; }
 export function isRestorable() { return true; }
 
 export async function takeSnapshot(state, reason, options = {}) {

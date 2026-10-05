@@ -929,6 +929,171 @@ export async function runSelfTest(report) {
       assert("讀得到時照常回清單", Array.isArray(await realDb.listSnapshots()));
     });
 
+    // ================= 批 2（2026-10-05）=================
+    const waitFor = async (check, ms = 4000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) { if (check()) return true; await wait(20); }
+      return false;
+    };
+
+    await section("批 2 A 第一次使用頁：雲端設定還在時，建立／還原不准自動覆蓋雲端", async () => {
+      const setup = await import("../js/ui/setup.js");
+      const cloudBody = JSON.stringify(normalize(clone(validEnvelope)), null, 1);
+      const STAMP = "2026-01-01T00:00:00Z";
+      const host = document.createElement("div");
+      document.body.append(host);
+      const ctx = { refresh() { host.innerHTML = String(setup.render()); } };
+      setup.mount(host, ctx);
+      const hashBefore = location.hash;
+      const otherFile = backup.exportEnvelope(normalize(clone(freshState({ familyName: "批二還原家", kidNames: ["阿丁"], savingsRate: 30 }))));
+      const run = async (how) => {
+        db.reset();
+        connectGist({ remoteStamp: STAMP, lastSyncAt: STAMP, lastPush: hashStr(cloudBody), pendingPush: null });
+        const net = installFakeFetch((url, options) => (String(options.method || "GET").toUpperCase() === "PATCH"
+          ? jsonResponse(200, { id: "selftest-gist", updated_at: "2026-01-09T00:00:00Z" })
+          : jsonResponse(200, { id: "selftest-gist", updated_at: STAMP, files: { "money-island-backup.json": { content: cloudBody } } })));
+        try {
+          store.hydrate(null);
+          setup.presetMode(how === "restore" ? "restore" : "create");
+          ctx.refresh();
+          const shown = { cloudTab: Boolean(host.querySelector('[data-mode="cloud"]')), note: (host.querySelector("[data-setup-cloud-note]") || {}).textContent || "" };
+          let done = false;
+          if (how === "control") {
+            await store.replaceState(twoKids(), "建立新帳本");      // b75c09a 的第一次使用頁：直接換上，沒有凍結
+            done = true;
+          } else if (how === "create") {
+            const form = host.querySelector('form[data-form="create"]');
+            form.elements.familyName.value = "批二測試家";
+            form.querySelector('input[name="kid"]').value = "阿丙";
+            form.elements.createPin.value = PARENT_PIN;
+            form.elements.createPinAgain.value = PARENT_PIN;
+            form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+            done = await waitFor(() => Boolean(store.getState()) && store.getState().family.name === "批二測試家");
+          } else {
+            const input = host.querySelector("[data-backup-file]");
+            const transfer = new DataTransfer();
+            transfer.items.add(new File([JSON.stringify(otherFile)], "selftest.json", { type: "application/json" }));
+            input.files = transfer.files;
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            await waitFor(() => Boolean(host.querySelector('form[data-form="restore"]')));
+            host.querySelector('form[data-form="restore"]').dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+            done = await waitFor(() => Boolean(store.getState()) && store.getState().family.name === "批二還原家");
+          }
+          await gist.syncCloud();
+          return { done, shown, writes: net.calls.filter((call) => call.method === "PATCH" || call.method === "POST").length, info: gist.cloudInfo(), text: host.textContent };
+        } finally {
+          net.restore();
+          gist.disconnect();
+        }
+      };
+      try {
+        const control = await run("control");
+        assertEqual("對照組：第一次使用頁換上新帳本前沒凍結，下一次同步就蓋掉雲端", control.writes, 1);
+        const created = await run("create");
+        assert("第一次使用頁：建立新帳本有建好", created.done, created.text.slice(0, 200));
+        assertEqual("第一次使用頁：雲端設定還在時多一條「從雲端拿回」", created.shown.cloudTab, true);
+        assertEqual("第一次使用頁：建立鈕旁的小字", created.shown.note, "這台裝置之前接過雲端備份；建立新帳本不會動到雲端那份，之後會問你要用哪一份");
+        assertEqual("建立新帳本之後：下一次同步 0 次 PATCH／POST", created.writes, 0);
+        assertEqual("建立新帳本之後：出「要用哪一份」拍板卡", created.info.card, "decide");
+        const restored = await run("restore");
+        assert("第一次使用頁：從備份檔還原有還原", restored.done, restored.text.slice(0, 200));
+        assertEqual("從備份檔還原之後：下一次同步 0 次 PATCH／POST", restored.writes, 0);
+        assertEqual("從備份檔還原之後：出「要用哪一份」拍板卡", restored.info.card, "decide");
+
+        store.hydrate(null);
+        setup.presetMode("create");
+        ctx.refresh();
+        assertEqual("沒有雲端設定：不出「從雲端拿回」也不出小字", [Boolean(host.querySelector('[data-mode="cloud"]')), Boolean(host.querySelector("[data-setup-cloud-note]"))], [false, false]);
+
+        // 第三條路：從雲端拿回（沿用 gist.pullFromCloud 的兩段式）
+        db.reset();
+        connectGist({ remoteStamp: STAMP, lastSyncAt: STAMP });
+        const net = installFakeFetch(() => jsonResponse(200, { id: "selftest-gist", updated_at: STAMP, files: { "money-island-backup.json": { content: cloudBody } } }));
+        try {
+          store.hydrate(null);
+          ctx.refresh();
+          host.querySelector('[data-mode="cloud"]').click();
+          const pullButton = () => host.querySelector("[data-setup-cloud]");
+          assert("從雲端拿回：切過去有一顆拿回鈕", Boolean(pullButton()));
+          pullButton().click();
+          await waitFor(() => gist.armState("pull") !== "idle");
+          assertEqual("從雲端拿回：第一按只讀不換", store.getState(), null);
+          assert("從雲端拿回：第一按後講出雲端有幾筆", host.textContent.includes(`雲端那份有 ${validEnvelope.state.activities.length} 筆紀錄`), host.textContent.slice(0, 300));
+          await wait(650);
+          ctx.refresh();
+          pullButton().click();
+          assert("從雲端拿回：第二按換成雲端那份", await waitFor(() => Boolean(store.getState()) && store.getState().family.id === validEnvelope.state.family.id));
+          assertEqual("從雲端拿回：沒有任何上傳", net.calls.filter((call) => call.method !== "GET").length, 0);
+        } finally {
+          net.restore();
+          gist.disconnect();
+        }
+      } finally {
+        host.remove();
+        if (location.hash !== hashBefore) history.replaceState(null, "", location.pathname + location.search + hashBefore);
+        db.reset();
+      }
+    });
+
+    await section("批 2 B 舊版 localStorage 的 .broken 搬進 IndexedDB", async () => {
+      const LEGACY = "money-island.v1.broken";
+      const copies = () => fakes.idb.dump("money_island_broken", "ledgers").map((record) => record.raw);
+      assertEqual("沒有舊版留存：什麼都不做", await realDb.migrateLegacyBroken(), "none");
+      fakes.storage.setItem(LEGACY, "{舊版壞掉的帳本");
+      assertEqual("舊版留存：搬進去", await realDb.migrateLegacyBroken(), "moved");
+      assert("舊版留存：IndexedDB 裡有那一份", copies().includes("{舊版壞掉的帳本"));
+      assertEqual("舊版留存：存進去之後才移除 localStorage 那把鑰匙", fakes.storage.getItem(LEGACY), null);
+      const countAfter = copies().length;
+      fakes.storage.setItem(LEGACY, "{舊版壞掉的帳本");
+      assertEqual("舊版留存：同一份內容再搬一次", await realDb.migrateLegacyBroken(), "moved");
+      assertEqual("舊版留存：相同內容不重存", copies().length, countAfter);
+      assert("舊版留存：最多三份", copies().length <= 3);
+
+      fakes.storage.setItem(LEGACY, "{存不進去的舊版帳本");
+      fakes.idb.control.failOpen = true;
+      assertEqual("資料庫打不開：不搬", await realDb.migrateLegacyBroken(), "kept");
+      assertEqual("資料庫打不開：localStorage 那把鑰匙原封不動", fakes.storage.getItem(LEGACY), "{存不進去的舊版帳本");
+      fakes.idb.control.failOpen = false;
+      fakes.idb.control.failWrites = true;
+      assertEqual("寫不進去：不搬", await realDb.migrateLegacyBroken(), "kept");
+      assertEqual("寫不進去：localStorage 那把鑰匙原封不動", fakes.storage.getItem(LEGACY), "{存不進去的舊版帳本");
+      fakes.idb.control.failWrites = false;
+      assertEqual("下次開機資料庫好了：照樣搬", await realDb.migrateLegacyBroken(), "moved");
+      assertEqual("下次開機資料庫好了：鑰匙才移除", fakes.storage.getItem(LEGACY), null);
+
+      // 開機時兩邊同時寫（這次讀不出來的那份＋舊版搬家）：排隊寫，不會在同一毫秒互相蓋掉
+      fakes.storage.setItem("money-island.v1", "{同時壞掉的這一份");
+      fakes.storage.setItem(LEGACY, "{同時搬家的舊版");
+      realDb.load();
+      await Promise.all([realDb.ensureBrokenPreserved(), realDb.migrateLegacyBroken()]);
+      assert("同時寫：兩份都在", copies().includes("{同時壞掉的這一份") && copies().includes("{同時搬家的舊版"), JSON.stringify(copies()));
+      fakes.storage.removeItem("money-island.v1");
+      realDb.load();
+    });
+
+    await section("批 2 C 家長區列出留存的原始內容", async () => {
+      const listed = await realDb.listBrokenCopies();
+      assert("清單：讀得到留存（由新到舊）", listed.length > 0 && listed.every((record, index) => index === 0 || listed[index - 1].ts > record.ts));
+      assert("清單：每份都帶原始內容可以下載", listed.every((record) => typeof record.raw === "string"));
+      fakes.idb.control.failOpen = true;
+      await assertThrows("清單：資料庫打不開就丟錯，不回「沒有」", realDb.BROKEN_COPIES_READ_ERROR, () => realDb.listBrokenCopies());
+      fakes.idb.control.failOpen = false;
+      fakes.idb.control.failReads = true;
+      await assertThrows("清單：讀到一半出錯也丟錯", realDb.BROKEN_COPIES_READ_ERROR, () => realDb.listBrokenCopies());
+      fakes.idb.control.failReads = false;
+
+      const parentPage = await import("../js/ui/parent.js");
+      assertEqual("面板：還沒讀到時不顯示", String(parentPage.brokenCopiesMarkup(null, true)), "");
+      assertEqual("面板：沒有留存就不顯示這區", String(parentPage.brokenCopiesMarkup([], true)), "");
+      const failed = String(parentPage.brokenCopiesMarkup(false, true));
+      assert("面板：讀不出來就講讀不出來，不講沒有", failed.includes("讀不出來") && !failed.includes("沒有"), failed);
+      const doc = new DOMParser().parseFromString(String(parentPage.brokenCopiesMarkup(listed, true)), "text/html");
+      const buttons = [...doc.querySelectorAll('[data-action="download-broken"]')];
+      assertEqual("面板：每份一顆下載", buttons.map((button) => Number(button.dataset.ts)), listed.map((record) => record.ts));
+      assert("面板：每份寫出時間與大小", [...doc.querySelectorAll(".parent-row small")].every((small) => /(位元組|KB|MB)$/.test(small.textContent)) && doc.querySelectorAll(".parent-row b").length === listed.length);
+      assert("面板：還沒解鎖時下載鈕不能按", [...new DOMParser().parseFromString(String(parentPage.brokenCopiesMarkup(listed, false)), "text/html").querySelectorAll('[data-action="download-broken"]')].every((button) => button.disabled));
+    });
+
     // ---------- 20. 操作碼鎖定（放最後，會把操作碼鎖住 15 分鐘）----------
     pin.lock();
     assertEqual("操作碼：鎖上後狀態", pin.status(), "locked");

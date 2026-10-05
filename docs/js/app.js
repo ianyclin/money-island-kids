@@ -559,6 +559,8 @@ function reloadFromOtherTab() {
 async function boot() {
   // 先把 localStorage 的帳本放進 store（不回寫）；讀不到就維持 null，render 會導去第一次使用。
   hydrateFromStorage();
+  // 批 2 B：舊版留在 localStorage 的 .broken 搬進 IndexedDB；確定存進去才移除，存不進去就留著
+  void db.migrateLegacyBroken().catch(() => {});
   gist.loadGist();
   gist.setRefreshHandler(() => { void refresh(); });
   store.subscribe(() => { void refresh(); });

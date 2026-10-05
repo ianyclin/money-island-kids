@@ -78,7 +78,7 @@ export function brokenRaw() {
 }
 
 /* ───────── 讀不出來的原始內容另外留存（批 1 驗收 #3、#6） ─────────
-   以前另存在 localStorage 的 .broken：容量滿的時候（往往正是帳本壞掉的時候）存不進去，出路畫面就整個卡住；
+   以前另存在 localStorage 的 .broken（舊資料開機時由 migrateLegacyBroken 搬過來）：容量滿的時候（往往正是帳本壞掉的時候）存不進去，出路畫面就整個卡住；
    而且只有一格，第二次壞掉的 B 會蓋掉第一次的 A。
    改存 IndexedDB 的獨立資料庫（不動快照那一個，不必升版本、既有快照不會受影響），最多留最近 3 份。
    IndexedDB 也不行時，出路畫面一律給「下載讀不出來的原始內容」；留存成功或家長已下載，才准換帳本。 */
@@ -116,7 +116,17 @@ function readBrokenCopies(db) {
   });
 }
 
-async function writeBrokenCopy(raw) {
+/* 寫入一律排隊：開機時「舊版 .broken 搬家」跟「這次讀不出來的留存」可能同時寫，
+   兩邊各自讀完清單、在同一毫秒算出同一個 ts，後寫的會把先寫的蓋掉 */
+let brokenWrites = Promise.resolve();
+function writeBrokenCopy(raw, reason) {
+  const run = () => writeBrokenCopyNow(raw, reason);
+  const result = brokenWrites.then(run, run);
+  brokenWrites = result.catch(() => false);
+  return result;
+}
+
+async function writeBrokenCopyNow(raw, reason) {
   const db = await openBrokenDB();
   if (!db) return false;
   const existing = await readBrokenCopies(db);
@@ -130,7 +140,7 @@ async function writeBrokenCopy(raw) {
     try {
       const tx = db.transaction(BROKEN_STORE, "readwrite");
       const os = tx.objectStore(BROKEN_STORE);
-      os.put({ ts, raw, reason: loadProblem || "", size: raw.length });
+      os.put({ ts, raw, reason: reason === undefined ? (loadProblem || "") : reason, size: raw.length });
       drop.forEach(key => os.delete(key));
       const done = (ok) => { try { db.close(); } catch (e) {} res(ok); };
       tx.oncomplete = () => done(true); tx.onerror = () => done(false); tx.onabort = () => done(false);
@@ -170,6 +180,55 @@ export function brokenCopyStatus() {
 /* 家長按了「下載讀不出來的原始內容」而且沒有取消：這一份也算有安全的副本了 */
 export function markBrokenDownloaded(raw) {
   if (typeof raw === "string") downloadedRaw = raw;
+}
+
+/* 批 2 B：v8 把讀不出來的原始內容留在 localStorage 的 money-island.v1.broken（只有一格、還佔容量）。
+   開機時搬進上面那個 IndexedDB（同一套存法：三份上限、相同內容不重存）；
+   寫完再讀回來確認真的在裡面，才移除 localStorage 那把鑰匙。任何一步不行就原封不動留著，下次開機再試。
+   回傳 "none"（沒有要搬的）／"moved"／"kept"（這次沒搬成，鑰匙還在） */
+const LEGACY_BROKEN_KEY = KEY + ".broken";
+const LEGACY_BROKEN_REASON = "舊版留在這台裝置的讀不出來的帳本";
+let legacyMigration = null;
+export function migrateLegacyBroken() {
+  legacyMigration = runLegacyMigration();
+  return legacyMigration;
+}
+
+async function runLegacyMigration() {
+  let raw = null;
+  try { raw = localStorage.getItem(LEGACY_BROKEN_KEY); } catch (e) { return "kept"; }
+  if (raw === null) return "none";
+  let written = false;
+  try { written = await writeBrokenCopy(raw, LEGACY_BROKEN_REASON); } catch (e) { written = false; }
+  if (!written) return "kept";
+  let copies = null;
+  try { copies = await readAllBrokenCopies(); } catch (e) { copies = null; }
+  if (!copies || !copies.some(record => record.raw === raw)) return "kept";
+  try {
+    if (localStorage.getItem(LEGACY_BROKEN_KEY) === raw) localStorage.removeItem(LEGACY_BROKEN_KEY);
+  } catch (e) { return "kept"; }
+  return "moved";
+}
+
+async function readAllBrokenCopies() {
+  const db = await openBrokenDB();
+  if (!db) return null;
+  const list = await readBrokenCopies(db);
+  try { db.close(); } catch (e) {}
+  return list;
+}
+
+/* 批 2 C：家長區列出留存的原始內容（由新到舊）。
+   讀不到（資料庫打不開、讀到一半出錯）就丟錯：畫面要講「讀不出來」，不能講成「沒有」。
+   開機的搬家還在跑的話先等它，清單才不會少了剛搬進來的那一份。 */
+export const BROKEN_COPIES_READ_ERROR = "這台裝置留存的原始內容讀不出來（瀏覽器資料庫有問題）";
+export async function listBrokenCopies() {
+  if (legacyMigration) { try { await legacyMigration; } catch (e) {} }
+  const list = await readAllBrokenCopies();
+  if (!list) throw new Error(BROKEN_COPIES_READ_ERROR);
+  return list
+    .filter(record => record && typeof record.raw === "string")
+    .map(record => ({ ts: record.ts, raw: record.raw, reason: record.reason || "" }));
 }
 
 /* 另一個分頁（或另一個視窗）改了帳本：瀏覽器只會對「其他」分頁發 storage 事件。

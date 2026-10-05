@@ -34,6 +34,7 @@ const ui = {
   restoreSummary: null,
   restoreEnvelope: null,
   snapshots: null,               // null=尚未讀取、[]=沒有、false=不支援
+  brokenCopies: null,            // 批 2 C：讀不出來時留存的原始內容。null=尚未讀取、[]=沒有、false=讀不出來
   openDetails: new Set(),        // "guide" | "backup-file" | "snapshots" | "gist"（v2 只剩這四個抽屜）
   drafts: Object.create(null),
   piggyKey: "",
@@ -559,7 +560,51 @@ function dataPanelMarkup(state, unlocked) {
         <summary>GitHub 雲端備份</summary>
         <div class="subpanel-body" data-gist-root>${raw(gist.renderGistPanel())}</div>
       </details>
+      <div data-broken-copies>${brokenCopiesMarkup(ui.brokenCopies, unlocked)}</div>
     </section>`;
+}
+
+// 批 2 C：帳本讀不出來時另外留存的原始內容（IndexedDB 的 money_island_broken，最多 3 份）。
+// 沒有留存就整區不顯示；讀不到就照實講「讀不出來」，不講成「沒有」。
+function byteSize(text) {
+  try { return new TextEncoder().encode(text).length; } catch { return text.length; }
+}
+
+function sizeText(bytes) {
+  if (bytes < 1024) return `${bytes} 位元組`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+export function brokenCopiesMarkup(list, unlocked) {
+  if (list === null || (Array.isArray(list) && !list.length)) return "";
+  const open = isOpen("broken-copies") ? raw("open") : "";
+  if (list === false) {
+    return html`<details class="subpanel" data-open-key="broken-copies" ${open}>
+        <summary>讀不出來時留下的原始內容（讀不出來）</summary>
+        <div class="subpanel-body"><p class="empty-history">${db.BROKEN_COPIES_READ_ERROR}，重新整理後可以再看一次。</p></div>
+      </details>`;
+  }
+  return html`<details class="subpanel" data-open-key="broken-copies" ${open}>
+      <summary>讀不出來時留下的原始內容（${list.length} 份）</summary>
+      <div class="subpanel-body">
+        <p>帳本曾經讀不出來時，app 把當時的原始內容另外留在這台裝置（最多留最近 3 份）。不是正式備份，修復時用得到；下載是 .txt 檔。</p>
+        <div class="device-list">${list.map((record) => html`<div class="parent-row">
+            <div><b>${formatDateTime(record.ts)}</b><small>${sizeText(byteSize(record.raw))}</small></div>
+            <button type="button" class="btn btn-secondary" data-action="download-broken" data-ts="${record.ts}" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載</button>
+          </div>`)}</div>
+      </div>
+    </details>`;
+}
+
+async function loadBrokenCopies(root, ctx) {
+  try {
+    ui.brokenCopies = await db.listBrokenCopies();
+  } catch {
+    ui.brokenCopies = false;
+  }
+  const container = root.querySelector("[data-broken-copies]");
+  if (container) container.innerHTML = String(brokenCopiesMarkup(ui.brokenCopies, ctx.pinStatus === "unlocked"));
 }
 
 function restoreSummaryMarkup(summary, unlocked) {
@@ -883,6 +928,8 @@ export function mount(root, ctx) {
 
   // 批 1 #8：以前整個 app 開著的期間只讀一次，之後的改動、還原前快照都看不到。抽屜開著就每次重讀。
   if (isOpen("snapshots")) void loadSnapshots(root, ctx);
+  // 批 2 C：留存的原始內容只在帳本讀不出來（或開機搬舊版 .broken）時才會變，讀到一次就夠；讀不出來的話下次重繪再試
+  if (root.querySelector("[data-broken-copies]") && (ui.brokenCopies === null || ui.brokenCopies === false)) void loadBrokenCopies(root, ctx);
 
   // 重繪之後把原本開著的校正撲滿 modal 補回來（規格 1.2／3.2）。
   if (ui.correctionOpen && ui.correctionModalKind !== "correction") openCorrectionModal(ctx);
@@ -1177,6 +1224,23 @@ async function handleClick(root, ctx, button) {
       } catch (caught) {
         endBusy();
         reportOperationError(root, "backup", caught, "原始內容下載失敗");
+      }
+      return;
+    }
+    case "download-broken": {
+      const ts = Number(button.dataset.ts);
+      const record = Array.isArray(ui.brokenCopies) ? ui.brokenCopies.find((item) => item.ts === ts) : null;
+      if (!record) return;
+      startBusy(root, button);
+      clearOperationError(root, "backup");
+      try {
+        const filename = `小小理財島讀不出來的原始內容-${new Date(ts).toISOString().slice(0, 10)}-${ts}.txt`;
+        const result = await backup.shareOrDownload(record.raw, filename, { type: "text/plain", title: "小小理財島讀不出來的原始內容" });
+        endBusy();
+        if (result !== "cancelled") common.showStatus(result === "clipboard" ? "下載不了，已經把原始內容複製到剪貼簿；請先貼到備忘錄存起來" : "已經下載讀不出來的原始內容（.txt）", result === "clipboard" ? "waiting" : "success");
+      } catch (caught) {
+        endBusy();
+        reportOperationError(root, "backup", caught, "下載不了讀不出來的原始內容");
       }
       return;
     }
