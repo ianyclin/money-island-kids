@@ -611,6 +611,7 @@ export async function runSelfTest(report) {
         common.closeModal("rerender");
         assert("確認框：背景重繪後還開著", common.isModalOpen());
         const okButton = modalRoot.querySelector("[data-confirm-ok]");
+        await wait(common.CONFIRM_WARMUP_MS + 50);     // 驗收 C1：確定鈕先停用 600ms
         if (okButton) okButton.click(); else common.closeModal();
         assertEqual("確認框：重繪後按確定仍算確定", await answer, true);
       } finally {
@@ -1300,6 +1301,356 @@ export async function runSelfTest(report) {
       fakes.storage.removeItem(keys[0]);
       fakes.storage.removeItem("money-island.v1.broken.1000");
       assertEqual("清乾淨後：沒有要搬的", await realDb.migrateLegacyBroken(), "none");
+    });
+
+    // ================= 三位驗收員複驗後修正（2026-10-07，SW v13）=================
+    // 操作碼驗證「慢 1.2 秒而且失敗」：把 PBKDF2 換成會等 1.2 秒再丟錯的替身（只在這幾段測試期間）
+    const slowFailingPin = () => {
+      const subtle = globalThis.crypto.subtle;
+      subtle.deriveBits = async () => { await wait(1200); throw new Error("操作碼驗證失敗（測試）"); };
+      return () => { delete subtle.deriveBits; };
+    };
+    const seedHoldings = async () => {
+      db.reset();
+      store.hydrate(twoKids());
+      await pin.assert(PARENT_PIN);
+      const owner = kidNamed("阿甲");
+      await store.addTransaction({ profileId: owner.id, kind: "allowance", amount: 10000, operationId: "selftest-v13-allowance" });
+      await store.addInvestmentPurchase({ profileId: owner.id, symbol: "0050", name: "元大台灣 50", category: "ETF", units: 2, totalCost: 300, operationId: "selftest-v13-buy-1", parentPin: PARENT_PIN });
+      await store.addInvestmentPurchase({ profileId: owner.id, symbol: "00646", name: "元大S&P500", category: "ETF", units: 3, totalCost: 200, operationId: "selftest-v13-buy-2", parentPin: PARENT_PIN });
+      return owner;
+    };
+    const typeInto = (input, value) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+    const marketUpdates = () => store.getState().activities.filter((item) => item.kind === "market-update").length;
+
+    await section("v13 A1 持股「記錄今日市值」：欄位空白不寫入、停用期過了仍停用", async () => {
+      const investments = await import("../js/ui/parent-investments.js");
+      assertEqual("能不能按：空白、只有空格、不是數字都不行；數字可以",
+        ["", "   ", "abc", "Infinity", "600", " 700 "].map((value) => investments.marketValueReady(value)), [false, false, false, false, true, true]);
+      await seedHoldings();
+      const page = mountPage(investments);
+      try {
+        const holdings = store.getState().holdings.map((item) => item.id);
+        const input = (id) => page.host.querySelector(`[data-draft="market-${id}"]`);
+        const button = (id) => page.host.querySelector(`[data-action="update-market-value"][data-id="${id}"]`);
+        const [first, second] = holdings;
+        assertEqual("前提：欄位空白時兩顆都停用", [button(first).disabled, button(second).disabled], [true, true]);
+        typeInto(input(first), "600");
+        typeInto(input(second), "700");
+        assertEqual("填了數字：兩顆都可以按", [button(first).disabled, button(second).disabled], [false, false]);
+        const before = marketUpdates();
+        button(first).click();
+        assert("按下第一顆：第二顆跟著停用（整排停用）", button(second).disabled);
+        typeInto(input(second), "");
+        assert("停用期間清空第二顆的欄位：還是停用（不會因為打字被放開）", button(second).disabled);
+        await waitFor(() => marketUpdates() === before + 1, 3000);
+        await wait(900);
+        assertEqual("停用期過了：欄位空白的那一顆仍停用", button(second).disabled, true);
+        button(second).disabled = false;
+        button(second).click();
+        await wait(300);
+        assertEqual("強制把空白那一顆變成可按再按：不寫入", marketUpdates(), before + 1);
+        typeInto(input(second), "   ");
+        assertEqual("只有空格：按鈕停用", button(second).disabled, true);
+      } finally {
+        page.remove();
+        db.reset();
+      }
+    });
+
+    await section("v13 A2 整排停用＋處理中：操作碼驗證慢而且失敗時，按鈕最後恢復正確狀態", async () => {
+      // 共用 helper 本身
+      const host = document.createElement("div");
+      host.id = "selftest-hold";
+      host.innerHTML = '<button type="button">一</button><button type="button">二</button>';
+      document.body.append(host);
+      try {
+        const [one, two] = host.querySelectorAll("button");
+        common.holdList("#selftest-hold button", 200);
+        assertEqual("整排停用：兩顆都停用", [one.disabled, two.disabled], [true, true]);
+        assertEqual("處理中記原狀態：被整排停用的記成「可按」", common.busyBaseline(one), false);
+        common.markBusy(one);
+        await wait(260);
+        assertEqual("停用期到了：處理中的那顆不放開、另一顆放開", [one.disabled, two.disabled], [true, false]);
+        common.settleAfterBusy(one, false);
+        assertEqual("處理完（失敗）：恢復可按", one.disabled, false);
+        common.holdList("#selftest-hold button", 200, { recheck: (element) => element !== two });
+        common.markBusy(one);
+        common.settleAfterBusy(one, false);
+        assertEqual("停用期還沒過就處理完：維持停用，等停用期", one.disabled, true);
+        await wait(260);
+        assertEqual("停用期過了：照 recheck 放開（不能按的那顆維持停用）", [one.disabled, two.disabled], [false, true]);
+      } finally {
+        host.remove();
+      }
+
+      // 持股頁
+      const investments = await import("../js/ui/parent-investments.js");
+      await seedHoldings();
+      let page = mountPage(investments);
+      let restorePin = null;
+      try {
+        const [first, second] = store.getState().holdings.map((item) => item.id);
+        const button = (id) => page.host.querySelector(`[data-action="update-market-value"][data-id="${id}"]`);
+        typeInto(page.host.querySelector(`[data-draft="market-${first}"]`), "600");
+        typeInto(page.host.querySelector(`[data-draft="market-${second}"]`), "700");
+        const before = marketUpdates();
+        restorePin = slowFailingPin();
+        button(first).click();
+        await wait(950);
+        assertEqual("持股頁：停用期過了但還在驗操作碼——按下的那顆仍不能按，另一顆放開", [button(first).disabled, button(second).disabled], [true, false]);
+        button(first).click();
+        assert("持股頁：處理中再按一次不會開始第二趟（按鈕還寫「更新中…」）", button(first).textContent.includes("更新中"));
+        await waitFor(() => !button(first).textContent.includes("更新中"), 2500);
+        assertEqual("持股頁：驗證失敗後兩顆都恢復可按", [button(first).disabled, button(second).disabled], [false, false]);
+        assertEqual("持股頁：沒有寫入", marketUpdates(), before);
+      } finally {
+        if (restorePin) restorePin();
+        page.remove();
+      }
+
+      // 夢想頁
+      const growth = await import("../js/ui/growth.js");
+      await pin.assert(PARENT_PIN);
+      const owner = kidNamed("阿甲");
+      await store.updateDreamJar({ action: "create", profileId: owner.id, title: "買拼圖", kind: "short", targetAmount: 300 });
+      await store.updateDreamJar({ action: "create", profileId: owner.id, title: "買球鞋", kind: "short", targetAmount: 900 });
+      await store.updateDreamJar({ action: "create", profileId: owner.id, title: "買畫筆", kind: "short", targetAmount: 200 });
+      const activeJar = store.getState().dreamJars.find((dream) => dream.status === "active");
+      await store.updateDreamJar({ action: "complete", profileId: owner.id, dreamId: activeJar.id, completedAmount: 300, parentPin: PARENT_PIN });
+      page = mountPage(growth);
+      restorePin = null;
+      try {
+        const activates = () => [...page.host.querySelectorAll('[data-action="activate-dream"]')];
+        assert("前提：有兩顆「開始這個夢想」可以按", activates().length === 2 && activates().every((item) => !item.disabled));
+        const [target, other] = activates();
+        restorePin = slowFailingPin();
+        target.click();
+        await wait(950);
+        assertEqual("夢想頁：停用期過了但還在驗操作碼——按下的那顆仍不能按，另一顆放開", [target.disabled, other.disabled], [true, false]);
+        await waitFor(() => !target.textContent.includes("開始中"), 2500);
+        assertEqual("夢想頁：驗證失敗後恢復可按", [target.disabled, other.disabled], [false, false]);
+        assertEqual("夢想頁：沒有開始任何夢想", store.getState().dreamJars.filter((dream) => dream.status === "active").length, 0);
+      } finally {
+        if (restorePin) restorePin();
+        page.remove();
+        db.reset();
+      }
+    });
+
+    await section("v13 C1／C2 確認框：確定鈕先停用 600ms、彈窗換彈窗保留吞點擊、完成夢想的確認框", async () => {
+      const modalRoot = document.createElement("div");
+      modalRoot.id = "modal-root";
+      document.body.append(modalRoot);
+      try {
+        let settled = null;
+        const answer = common.confirmDialog("測試", { danger: true, confirmLabel: "刪除這筆紀錄" });
+        answer.then((value) => { settled = value; });
+        const okButton = modalRoot.querySelector("[data-confirm-ok]");
+        assertEqual("確認框：剛打開時確定鈕停用", okButton.disabled, true);
+        okButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await wait(20);
+        assertEqual("確認框：停用期間的點擊（含冒泡上來的）不算確定", settled, null);
+        await wait(common.CONFIRM_WARMUP_MS);
+        assertEqual("確認框：600ms 後可以按", okButton.disabled, false);
+        okButton.click();
+        assertEqual("確認框：600ms 後按確定才算確定", await answer, true);
+
+        window.dispatchEvent(new PointerEvent("pointerdown", { clientX: 200, clientY: 300 }));
+        common.openModal("<p>選單</p>");
+        const swapped = common.confirmDialog("換上來的確認框");
+        assertEqual("彈窗換彈窗：關掉選單那一下的吞點擊留著", common.tapGuardSwallows(200, 300), true);
+        common.closeModal();
+        assertEqual("彈窗換彈窗：取消照舊回答「取消」", await swapped, false);
+        common.closeModal();
+        common.openModal("<p>新的</p>");
+        assertEqual("原本沒有彈窗才打開的：吞點擊清掉", common.tapGuardSwallows(200, 300), false);
+        common.closeModal();
+
+        const growth = await import("../js/ui/growth.js");
+        db.reset();
+        store.hydrate(twoKids());
+        await pin.assert(PARENT_PIN);
+        await store.updateDreamJar({ action: "create", profileId: kidNamed("阿甲").id, title: "買故事書", kind: "short", targetAmount: 200 });
+        const page = mountPage(growth);
+        try {
+          page.host.querySelector('[data-action="complete-dream"]').click();
+          await wait(20);
+          const ok = modalRoot.querySelector("[data-confirm-ok]");
+          assertEqual("完成夢想：確定鈕寫具體動詞", ok && ok.textContent, "完成這個夢想");
+          assert("完成夢想：不用紅色", Boolean(ok) && !ok.classList.contains("btn-danger"));
+          assert("完成夢想：焦點在取消", document.activeElement === modalRoot.querySelector("[data-confirm-cancel]"));
+          assert("完成夢想：多一行「完成後就不能再改回進行中。」", modalRoot.textContent.includes("完成後就不能再改回進行中。"));
+          assertEqual("完成夢想：確定鈕同樣先停用", ok && ok.disabled, true);
+          modalRoot.querySelector("[data-confirm-cancel]").click();
+          await wait(20);
+          assertEqual("完成夢想：取消就不完成", store.getState().dreamJars[0].status, "active");
+        } finally {
+          page.remove();
+        }
+      } finally {
+        common.closeModal();
+        modalRoot.remove();
+        db.reset();
+      }
+    });
+
+    await section("v13 B1 多分頁雲端設定一致", async () => {
+      const otherCloud = JSON.stringify(normalize(clone(validEnvelope)), null, 1);
+      const STAMP = "2026-01-01T00:00:00Z";
+      const serve = (onGet) => installFakeFetch((url, options) => {
+        const method = String(options.method || "GET").toUpperCase();
+        if (method === "PATCH" || method === "POST") return jsonResponse(200, { id: "selftest-gist", updated_at: "2026-01-09T00:00:00Z" });
+        if (onGet) onGet();
+        return jsonResponse(200, { id: "selftest-gist", updated_at: STAMP, files: { "money-island-backup.json": { content: otherCloud } } });
+      });
+      const writes = (net) => net.calls.filter((call) => call.method === "PATCH" || call.method === "POST").length;
+      db.reset();
+      store.hydrate(twoKids());
+      // 對照組：沒有別的分頁動過，版本戳一樣就上傳
+      connectGist({ remoteStamp: STAMP });
+      let net = serve();
+      try {
+        assertEqual("對照組：雲端版本戳跟記的一樣就上傳", await gist.syncCloud(), true);
+        assertEqual("對照組：送出 1 次", writes(net), 1);
+      } finally { net.restore(); gist.disconnect(); }
+
+      // 別的分頁換了帳本、凍結了雲端（指紋清掉）：這個分頁記憶體裡還是舊設定
+      connectGist({ remoteStamp: STAMP });
+      fakes.storage.setItem(GIST_KEY, JSON.stringify({ token: "selftest-token", gistId: "selftest-gist", lastSyncAt: null, lastError: null, remoteStamp: null, lastPush: null, pendingPush: null, swapSearch: true }));
+      net = serve();
+      try {
+        await gist.syncCloud();
+        assertEqual("別的分頁凍結過：0 次 PATCH／POST", writes(net), 0);
+        assertEqual("別的分頁凍結過：改用 localStorage 那一份、出「要用哪一份」卡", gist.cloudInfo().card, "decide");
+        assert("等家長決定時：儲存狀態寫「等你決定要用哪一份」", common.backupStatusText({ latestBackup: null }).includes("等你決定要用哪一份"));
+      } finally { net.restore(); gist.disconnect(); }
+
+      // 上傳途中別的分頁中斷連線：放棄這一趟、不把金鑰寫回
+      connectGist({ remoteStamp: STAMP });
+      net = serve(() => fakes.storage.removeItem(GIST_KEY));
+      try {
+        await gist.syncCloud();
+        assertEqual("途中被別的分頁中斷：0 次 PATCH／POST", writes(net), 0);
+        assertEqual("途中被別的分頁中斷：不把金鑰寫回", fakes.storage.getItem(GIST_KEY), null);
+        assertEqual("途中被別的分頁中斷：這個分頁也算中斷了", gist.cloudOn(), false);
+      } finally { net.restore(); gist.disconnect(); }
+
+      // 別的分頁中斷之後，這個分頁的任何存檔都不會把舊設定寫回
+      connectGist({ remoteStamp: STAMP });
+      fakes.storage.removeItem(GIST_KEY);
+      net = serve();
+      try {
+        gist.freezeForLedgerSwap();
+        await gist.syncCloud();
+        assertEqual("別的分頁中斷後換帳本凍結：不寫回金鑰", fakes.storage.getItem(GIST_KEY), null);
+        assertEqual("別的分頁中斷後：0 次 PATCH／POST", writes(net), 0);
+      } finally { net.restore(); gist.disconnect(); }
+      db.reset();
+    });
+
+    await section("v13 B3／B4 換帳本凍結：記號一律設、404 走「備份不見了」、清掉帳本壞了的錯誤", async () => {
+      const run = async ({ freeze, remoteStamp, lastError }) => {
+        db.reset();
+        connectGist({ remoteStamp, lastError: lastError || null, lastPush: null, pendingPush: null });
+        const net = installFakeFetch((url, options) => {
+          const method = String(options.method || "GET").toUpperCase();
+          if (method === "POST") return jsonResponse(201, { id: "selftest-new-gist", updated_at: "2026-01-09T00:00:00Z" });
+          if (url.includes("/gists?")) return jsonResponse(200, []);
+          return jsonResponse(404, {});
+        });
+        try {
+          store.hydrate(twoKids());
+          if (freeze) gist.freezeForLedgerSwap();
+          const afterFreeze = JSON.parse(fakes.storage.getItem(GIST_KEY) || "null") || {};
+          await gist.syncCloud();
+          return { writes: net.calls.filter((call) => call.method === "PATCH" || call.method === "POST").length, info: gist.cloudInfo(), afterFreeze };
+        } finally {
+          net.restore();
+          gist.disconnect();
+        }
+      };
+      const control = await run({ freeze: false, remoteStamp: "2026-01-01T00:00:00Z" });
+      assertEqual("對照組（沒換帳本、同步過）：404 → 0 次 POST", control.writes, 0);
+      assertEqual("對照組：出「備份不見了」卡", control.info.card, "gone");
+      const swapped = await run({ freeze: true, remoteStamp: "2026-01-01T00:00:00Z", lastError: "這台裝置的帳本讀不出來或資料對不起來，先暫停上傳，以免蓋掉雲端那份備份" });
+      assertEqual("換帳本凍結（gistId 有值）：記號照樣設", swapped.afterFreeze.swapSearch, true);
+      assertEqual("換帳本凍結：清掉「帳本壞了、暫停上傳」的錯誤", swapped.afterFreeze.lastError, null);
+      assertEqual("換帳本凍結後遇到 404：0 次 POST（不自動新建）", swapped.writes, 0);
+      assertEqual("換帳本凍結後遇到 404：出「備份不見了」卡（跟對照組一樣）", swapped.info.card, "gone");
+      db.reset();
+    });
+
+    await section("v13 B2 帳本修訂號：另一個分頁剛存過就不寫、被蓋掉要報錯", async () => {
+      const KEY = "money-island.v1";
+      const ledger = (rev, label) => {
+        const value = clone(validEnvelope.state);
+        value.meta.rev = rev;
+        value.selftestLabel = label;
+        return value;
+      };
+      // 舊帳本沒有 rev：視為 0，存一次變 1
+      const legacy = clone(validEnvelope.state);
+      delete legacy.meta.rev;
+      fakes.storage.setItem(KEY, JSON.stringify(legacy));
+      const loaded = realDb.load();
+      assertEqual("舊帳本沒有 rev：視為 0", realDb.ledgerRev(), 0);
+      assertEqual("存檔：照常寫進去", realDb.save(loaded, "測試"), true);
+      assertEqual("存檔：rev 變 1", JSON.parse(fakes.storage.getItem(KEY)).meta.rev, 1);
+      // 另一個分頁剛存過（localStorage 現在那一份不是這個分頁上次讀到／寫入的）
+      fakes.storage.setItem(KEY, JSON.stringify(ledger(2, "另一個分頁")));
+      const otherRaw = fakes.storage.getItem(KEY);
+      assertEqual("另一個分頁剛存過：這次不寫", realDb.save(clone(loaded), "測試"), realDb.STALE_SAVE);
+      assertEqual("另一個分頁剛存過：localStorage 原封不動", fakes.storage.getItem(KEY), otherRaw);
+      // 重讀之後再存就可以；換整份帳本（備份檔裡的 rev 比較小）也不會被自己擋掉
+      realDb.load();
+      assertEqual("重讀之後：可以存", realDb.save(ledger(1, "備份檔"), "測試還原"), true);
+      assertEqual("換整份帳本：rev 接著這個分頁知道的往上加", JSON.parse(fakes.storage.getItem(KEY)).meta.rev, 3);
+      // 同一瞬間兩邊都過了檢查、後寫的蓋掉這個分頁那一份：收到 storage 事件時報錯
+      let lastInfo = null;
+      realDb.watchExternalChanges((event, info) => { lastInfo = info; });
+      fakes.storage.setItem(KEY, JSON.stringify(ledger(3, "同時寫的另一份")));
+      window.dispatchEvent(new StorageEvent("storage", { key: KEY }));
+      assertEqual("同一瞬間被蓋掉（rev 一樣、內容不同）：報錯", lastInfo && lastInfo.lostWrite, true);
+      realDb.load();
+      realDb.save(ledger(3, "我的"), "測試");
+      fakes.storage.setItem(KEY, JSON.stringify(ledger(5, "從我的接著改的")));
+      window.dispatchEvent(new StorageEvent("storage", { key: KEY }));
+      assertEqual("從我的那一份接著改（rev 比較大）：不報錯", lastInfo && lastInfo.lostWrite, false);
+      fakes.storage.removeItem(KEY);
+      realDb.load();
+
+      // store：另一個分頁剛存過 → 丟 STALE_LEDGER_ERROR、重讀帳本，這一筆不留在畫面上
+      db.reset();
+      store.hydrate(twoKids());
+      const fresh = clone(store.getState());
+      db.control.stale = true;
+      db.control.reloadWith = fresh;
+      await assertThrows("store：另一個分頁剛存過就丟錯", store.STALE_LEDGER_ERROR,
+        () => store.addTransaction({ profileId: kidNamed("阿甲").id, kind: "allowance", amount: 100, operationId: "selftest-v13-stale" }));
+      assertEqual("store：重讀了帳本", db.control.loads, 1);
+      assertEqual("store：這一筆不在（輸的一方明確報錯，不是假裝存好）", store.getState().activities.some((item) => item.operationId === "selftest-v13-stale"), false);
+      db.reset();
+    });
+
+    await section("v13 B5 舊版 .broken.* 搬不進去的也列出來、可下載、下載後可刪", async () => {
+      const keys = ["money-island.v1.broken.1000", "money-island.v1.broken.2000"];
+      keys.forEach((key, index) => fakes.storage.setItem(key, `{舊版留在這台裝置第 ${index + 1} 份`));
+      fakes.storage.setItem("money-island.v1.brokenish", "不是留存");
+      const left = await realDb.listLegacyBrokenLeft();
+      assertEqual("列出：還留在 localStorage 的舊版留存", left.map((item) => item.key).sort(), keys);
+      assert("列出：每份帶原始內容與時間", left.every((item) => typeof item.raw === "string" && item.at > 0));
+      const parentPage = await import("../js/ui/parent.js");
+      const doc = new DOMParser().parseFromString(String(parentPage.brokenCopiesMarkup([], true, left)), "text/html");
+      assertEqual("面板：沒有新存法的留存也照樣顯示這區", doc.querySelectorAll('[data-action="download-legacy-broken"]').length, 2);
+      assert("面板：標「舊版留在這台裝置」", doc.body.textContent.includes("舊版留在這台裝置"));
+      assertEqual("面板：還沒下載就沒有刪除鈕", doc.querySelectorAll('[data-action="delete-legacy-broken"]').length, 0);
+      assertEqual("刪除：鑰匙名稱不是留存格式就不動", realDb.removeLegacyBroken("money-island.v1.brokenish"), false);
+      assertEqual("刪除：不是留存的鑰匙還在", fakes.storage.getItem("money-island.v1.brokenish"), "不是留存");
+      assertEqual("刪除：只刪那一把", realDb.removeLegacyBroken(keys[0]), true);
+      assertEqual("刪除：那一把不見了、另一把還在", [fakes.storage.getItem(keys[0]), fakes.storage.getItem(keys[1])], [null, "{舊版留在這台裝置第 2 份"]);
+      fakes.storage.removeItem(keys[1]);
+      fakes.storage.removeItem("money-island.v1.brokenish");
     });
 
     // ---------- 20. 操作碼鎖定（放最後，會把操作碼鎖住 15 分鐘）----------

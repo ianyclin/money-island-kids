@@ -535,13 +535,16 @@ function paintDreamFormError(message) {
   if (form) paintError(form, message, form.querySelector(".dream-submit"));
 }
 
+// 驗收 A2：整排停用（holdList）先把這顆停用了，記原狀態時要記成「可按」；處理中標記起來，停用期到了也不放開，
+// 失敗還原時交給 common.settleAfterBusy（停用期還沒過就維持停用）。
 function startBusy(button, label) {
   if (!button) return () => {};
   const previousLabel = button.textContent;
-  const previousDisabled = button.disabled;
+  const previousDisabled = common.busyBaseline(button);
   button.disabled = true;
+  common.markBusy(button);
   if (label) button.textContent = label;
-  return () => { button.disabled = previousDisabled; button.textContent = previousLabel; };
+  return () => { common.settleAfterBusy(button, previousDisabled); button.textContent = previousLabel; };
 }
 
 // ---------- 動作 ----------
@@ -601,7 +604,12 @@ async function createDream(root, ctx, form) {
 async function completeDream(root, ctx, dreamId, button) {
   const jar = jarsOf(ctx.state, ctx.profile.id).find((item) => item.id === dreamId);
   if (!jar) return;
-  const ok = await common.confirmDialog(`把「${jar.title}」記錄為已完成嗎？完成金額會記為 ${money(jar.targetAmount)}，帳戶餘額不會因此改變。`);
+  // 驗收 C2：不是破壞性（不用紅色）但收不回來：寫具體動詞、焦點在取消、確定鈕同樣先停用 600ms
+  const ok = await common.confirmDialog(`把「${jar.title}」記錄為已完成嗎？完成金額會記為 ${money(jar.targetAmount)}，帳戶餘額不會因此改變。`, {
+    confirmLabel: "完成這個夢想",
+    focusCancel: true,
+    note: "完成後就不能再改回進行中。",
+  });
   if (!ok) return;
   await postDream(root, ctx, { action: "complete", dreamId: jar.id, completedAmount: jar.targetAmount }, button, "記錄中…");
 }

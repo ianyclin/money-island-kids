@@ -275,6 +275,26 @@ document.addEventListener("keydown", (event) => {
   document.querySelectorAll(".info-tip[open]").forEach((tip) => { tip.open = false; });
 });
 
+// 驗收 C6：泡泡打開時夾在視窗內（左右各留 8px）。泡泡靠 .info-tip-left／-right 貼著「?」的一邊展開，
+// 「?」靠近畫面邊緣時（320／390 寬）會被切掉：量一次實際位置，超出多少就往回推多少。
+const TIP_MARGIN = 8;
+export function clampInfoTip(tip) {
+  const popover = tip && tip.querySelector(".info-tip-popover");
+  if (!popover) return;
+  popover.style.transform = "";
+  popover.style.maxWidth = `${Math.max(0, window.innerWidth - TIP_MARGIN * 2)}px`;
+  const rect = popover.getBoundingClientRect();
+  let shift = 0;
+  if (rect.right > window.innerWidth - TIP_MARGIN) shift = window.innerWidth - TIP_MARGIN - rect.right;
+  if (rect.left + shift < TIP_MARGIN) shift = TIP_MARGIN - rect.left;
+  if (shift) popover.style.transform = `translateX(${Math.round(shift)}px)`;
+}
+document.addEventListener("toggle", (event) => {
+  const tip = event.target;
+  if (!(tip instanceof Element) || !tip.matches(".info-tip") || !tip.open) return;
+  clampInfoTip(tip);
+}, true);
+
 // ---------- 狀態吐司 ----------
 const toneIcons = { success: "✓", waiting: "⌛", error: "!" };
 let toastTimer = 0;
@@ -299,9 +319,42 @@ export function showStatus(message, tone = "success", options = {}) {
     ${options.action ? html`<button type="button" class="toast-action" data-toast-action>${options.action}</button>` : ""}
     <button type="button" class="toast-close" aria-label="關閉提示" data-toast-close>×</button>
   </div>`);
+  placeToast();
   clearTimeout(toastTimer);
   const ms = Number(options.ms) || (kind === "error" ? 7000 : 4500);
   toastTimer = setTimeout(dismissStatus, ms);
+}
+
+// 驗收 C5：彈窗開著時吐司的位置。窄螢幕（< 768，彈窗是底部抽屜）交給 app.css 的 html.has-modal .toast；
+// 桌機（≥ 768，彈窗置中）改成對齊彈窗面板的左緣與寬度、放在面板上方；面板上方放不下時才貼畫面頂端，
+// 這時寬度扣掉右側 64px，不蓋到面板右上角的 ×。visualViewport.offsetTop 補 iOS 鍵盤把可視區往下推的那一段。
+const TOAST_GAP = 8;
+const TOAST_EDGE = 12;
+const CLOSE_ZONE = 64;
+function placeToast() {
+  const root = toastRoot();
+  const toast = root ? root.querySelector(".toast") : null;
+  if (!toast) return;
+  for (const prop of ["left", "right", "top", "bottom", "width", "maxWidth", "transform"]) toast.style[prop] = "";
+  if (!document.documentElement.classList.contains("has-modal") || window.innerWidth < 768) return;
+  const panel = document.querySelector("#modal-root .modal");
+  if (!panel) return;
+  const rect = panel.getBoundingClientRect();
+  if (!rect.width) return;
+  const viewTop = window.visualViewport ? window.visualViewport.offsetTop || 0 : 0;
+  Object.assign(toast.style, { left: `${Math.round(rect.left)}px`, right: "auto", bottom: "auto", width: `${Math.round(rect.width)}px`, maxWidth: "none", transform: "none" });
+  const height = toast.getBoundingClientRect().height;
+  if (rect.top - viewTop >= height + TOAST_GAP + TOAST_EDGE) {
+    toast.style.top = `${Math.round(rect.top - height - TOAST_GAP)}px`;
+  } else {
+    toast.style.width = `${Math.max(160, Math.round(rect.width - CLOSE_ZONE))}px`;
+    toast.style.top = `${Math.round(viewTop + TOAST_EDGE)}px`;
+  }
+}
+window.addEventListener("resize", placeToast);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", placeToast);
+  window.visualViewport.addEventListener("scroll", placeToast);
 }
 
 export function dismissStatus() {
@@ -336,6 +389,7 @@ function backdropInert(on) {
   }
   // 批 5：彈窗開著時吐司改到畫面上方（app.css 的 html.has-modal .toast），不再蓋住彈窗底部的送出鈕
   document.documentElement.classList.toggle("has-modal", !!on);
+  placeToast();
 }
 
 // ---------- 批 5：彈窗剛關掉時吞掉落在原彈窗區域的點擊 ----------
@@ -385,40 +439,87 @@ window.addEventListener("click", (event) => {
 // 清單照狀態／金額重排時，連點的第二下會落到滑過來的別張卡上。holdList(selector) 把符合的按鈕
 // 全部停用 ms 毫秒（只動原本能按的，放開時也只放開自己停用的）；app.js 每次重繪完呼叫 applyListHolds()，
 // 停用期還沒過的話新畫出來的按鈕照樣停用。同一個 selector 再按一次就從頭算。
+// 驗收 A1：options.recheck(element) 回傳「這顆現在能不能按」。放開時由頁面重新判斷——例如持股的
+// 「記錄今日市值」欄位在停用期間被清空，放開後要維持停用，不能一律恢復可按。
+// 驗收 A2：正在處理中的按鈕（markBusy 標過的）放開時跳過，等處理完由 settleAfterBusy 收尾。
 const LIST_HOLD_MS = 800;
-const listHolds = new Map();   // selector → until
+const listHolds = new Map();   // selector → { until, recheck }
+const skippedRelease = new WeakMap();   // 放開時正在處理中而被跳過的按鈕 → 那一排的 recheck
 
-export function holdList(selector, ms = LIST_HOLD_MS) {
-  listHolds.set(selector, Date.now() + ms);
+export function holdList(selector, ms = LIST_HOLD_MS, options = {}) {
+  const previous = listHolds.get(selector);
+  const recheck = typeof options.recheck === "function" ? options.recheck : (previous ? previous.recheck : null);
+  listHolds.set(selector, { until: Date.now() + ms, recheck });
   applyListHolds(document);
 }
 
 export function listHeld(selector) {
-  const until = listHolds.get(selector);
-  return Boolean(until && until > Date.now());
+  const hold = listHolds.get(selector);
+  return Boolean(hold && hold.until > Date.now());
 }
 
 export function applyListHolds(root = document) {
   const now = Date.now();
-  for (const [selector, until] of listHolds) {
-    if (until <= now) { listHolds.delete(selector); continue; }
+  for (const [selector, hold] of listHolds) {
+    if (hold.until <= now) { listHolds.delete(selector); continue; }
     root.querySelectorAll(selector).forEach((element) => {
       if (element.disabled) return;
       element.disabled = true;
       element.dataset.listHeld = "1";
     });
-    setTimeout(() => releaseListHold(selector, until), until - now);
+    setTimeout(() => releaseListHold(selector, hold), hold.until - now);
   }
 }
 
-function releaseListHold(selector, until) {
-  if (listHolds.get(selector) !== until) return;   // 中途又按了一次，等新的期限
+function canEnable(recheck, element) {
+  if (typeof recheck !== "function") return true;
+  try { return Boolean(recheck(element)); } catch (e) { return false; }
+}
+
+function releaseListHold(selector, hold) {
+  if (listHolds.get(selector) !== hold) return;   // 中途又按了一次，等新的期限
   listHolds.delete(selector);
   document.querySelectorAll(selector).forEach((element) => {
     if (!element.dataset.listHeld) return;
+    if (element.dataset.busy) { skippedRelease.set(element, hold.recheck); return; }   // 處理中：不放開
     delete element.dataset.listHeld;
-    element.disabled = false;
+    element.disabled = !canEnable(hold.recheck, element);
   });
+}
+
+function activeHoldOf(element) {
+  const now = Date.now();
+  for (const [selector, hold] of listHolds) {
+    if (hold.until > now && element.matches(selector)) return hold;
+  }
+  return null;
+}
+
+// 驗收 A2：頁面的 startBusy 記原狀態時用這支——帶整排停用標記的按鈕本來是「可按」的，只是被暫時停用。
+export function busyBaseline(element) {
+  return element.dataset.listHeld ? false : element.disabled;
+}
+
+// 處理中標記：releaseListHold 看到就跳過，處理中期間不會被放開而又能按。
+export function markBusy(element) {
+  if (element) element.dataset.busy = "1";
+}
+
+// 處理完（失敗、要還原）時用這支把按鈕還回去：停用期還沒過就維持停用（交給 releaseListHold）；
+// 停用期已過、放開時被跳過的，照那一排的 recheck 重新判斷；其餘照記下的原狀態。
+export function settleAfterBusy(element, disabled) {
+  if (!element) return;
+  delete element.dataset.busy;
+  if (element.dataset.listHeld) {
+    const hold = activeHoldOf(element);
+    if (hold) { element.disabled = true; return; }
+    const recheck = skippedRelease.get(element);
+    skippedRelease.delete(element);
+    delete element.dataset.listHeld;
+    element.disabled = Boolean(disabled) || !canEnable(recheck, element);
+    return;
+  }
+  element.disabled = Boolean(disabled);
 }
 
 // openModal(htmlString, { labelledBy, onClose, className })
@@ -426,8 +527,11 @@ function releaseListHold(selector, until) {
 export function openModal(content, options = {}) {
   const root = document.getElementById("modal-root");
   if (!root) return null;
-  if (modalSession) closeModal();
-  tapGuard = null;   // 批 5：新的彈窗蓋上來了（含重繪後補開），點擊要照常進得去
+  // 驗收 C1：彈窗換彈窗（例如紀錄列的「⋯」選單按「刪除」→ 確認框）時，關掉舊彈窗那一下記下的吞點擊要留著：
+  // 連點的第二下會落在新彈窗的確定鈕上。只有原本沒有彈窗（含重繪後補開）時才清，點擊照常進得去。
+  const swapping = Boolean(modalSession);
+  if (swapping) closeModal();
+  if (!swapping) tapGuard = null;   // 批 5：新的彈窗蓋上來了（含重繪後補開），點擊要照常進得去
   const opener = document.activeElement;
   root.innerHTML = String(html`<div class="modal-backdrop" role="presentation" data-modal-backdrop>
     <div class="${classNames("modal", options.className)}" role="dialog" aria-modal="true" ${options.labelledBy ? raw(`aria-labelledby="${options.labelledBy}"`) : ""}>
@@ -508,6 +612,10 @@ document.addEventListener("visibilitychange", () => {
 // 用 modal 做的確認框（不用 window.confirm：iOS 的 PWA 會把它畫成瀏覽器對話框，很嚇人）
 // 批 5：options.danger＝刪除、撤銷、還原、移除這類收不回來的動作：確認鈕用 .btn-danger、
 // 不預設聚焦（焦點落在「取消」），確認鈕文字由呼叫端用 confirmLabel 寫出具體動詞。
+// 驗收 C1：確定鈕一打開先停用 600ms（停用樣式），之後才能按——連點的第二下不會直接按到確定。
+// 驗收 C2：options.focusCancel＝不是破壞性、但收不回來的動作（例如完成夢想）：不用紅色，焦點同樣落在「取消」；
+// options.note＝確認文字下面再補一行說明。
+export const CONFIRM_WARMUP_MS = 600;
 export function confirmDialog(message, options = {}) {
   return new Promise((resolve) => {
     let settled = false;
@@ -516,13 +624,13 @@ export function confirmDialog(message, options = {}) {
       settled = true;
       resolve(value);
     };
+    const focusCancel = Boolean(options.danger || options.focusCancel);
     const dialog = openModal(html`<h2 id="confirm-dialog-title">${options.title || "請確認"}</h2>
       <p class="confirm-dialog-copy">${message}</p>
+      ${options.note ? html`<p class="confirm-dialog-copy confirm-dialog-note">${options.note}</p>` : ""}
       <div class="confirm-dialog-actions">
-        <button type="button" class="btn btn-secondary" data-confirm-cancel>${options.cancelLabel || "取消"}</button>
-        ${options.danger
-          ? html`<button type="button" class="btn btn-danger" data-confirm-ok>${options.confirmLabel || "確定"}</button>`
-          : html`<button type="button" class="btn btn-primary" data-confirm-ok autofocus>${options.confirmLabel || "確定"}</button>`}
+        <button type="button" class="btn btn-secondary" data-confirm-cancel${focusCancel ? raw(" autofocus") : ""}>${options.cancelLabel || "取消"}</button>
+        <button type="button" class="${options.danger ? "btn btn-danger" : "btn btn-primary"}" data-confirm-ok data-confirm-warming disabled>${options.confirmLabel || "確定"}</button>
       </div>`, {
       labelledBy: "confirm-dialog-title",
       className: "confirm-dialog",
@@ -530,10 +638,26 @@ export function confirmDialog(message, options = {}) {
       onClose: () => finish(false),
     });
     if (!dialog) { finish(false); return; }
+    // 沒有可聚焦的按鈕時（確定鈕還在停用）焦點先放在對話框本身
+    if (!focusCancel) { try { dialog.setAttribute("tabindex", "-1"); dialog.focus({ preventScroll: true }); } catch (e) {} }
+    const okButton = dialog.querySelector("[data-confirm-ok]");
+    setTimeout(() => {
+      if (!okButton || !okButton.isConnected || settled) return;
+      okButton.disabled = false;
+      delete okButton.dataset.confirmWarming;
+      // 一般確認框原本預設聚焦確定鈕：使用者還沒動過焦點的話，停用期過了再把焦點交給它
+      if (!focusCancel && (document.activeElement === dialog || document.activeElement === document.body)) {
+        try { okButton.focus({ preventScroll: true }); } catch (e) {}
+      }
+    }, CONFIRM_WARMUP_MS);
     dialog.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      if (target.closest("[data-confirm-ok]")) { finish(true); closeModal(); }
+      const ok = target.closest("[data-confirm-ok]");
+      if (ok) {
+        if (ok.disabled || ok.dataset.confirmWarming) return;   // 停用期間的點擊（含冒泡上來的）一律不算
+        finish(true); closeModal();
+      }
       else if (target.closest("[data-confirm-cancel]")) { finish(false); closeModal(); }
     });
   });
@@ -634,7 +758,8 @@ export function backupStatusText(state) {
   else base = `${new Intl.DateTimeFormat("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Taipei" }).format(new Date(value))} 已儲存`;
   const cloud = cloudStatus();
   if (!cloud) return base;
-  return `${base} · ${cloud === "synced" ? "雲端已同步" : cloud === "invalid" ? "雲端暫停上傳" : "雲端待同步"}`;
+  // 驗收 B4：拍板卡掛著（等家長決定要用雲端還是這台裝置）時照實講，不講「待同步」或「暫停上傳」
+  return `${base} · ${cloud === "synced" ? "雲端已同步" : cloud === "invalid" ? "雲端暫停上傳" : cloud === "deciding" ? "等你決定要用哪一份" : "雲端待同步"}`;
 }
 
 // savedStatus(state, message)：Gist 開啟且同步失敗時才加後綴。

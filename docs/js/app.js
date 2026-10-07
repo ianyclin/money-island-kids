@@ -90,14 +90,35 @@ let pendingRender = false;
 let lastRenderedRoute = "";   // 批 5：上一次畫出來的路由，用來分辨「換頁」與「同一頁重繪」
 
 // ---------- 疑問-1：上一頁／下一頁回到離開時的捲動位置 ----------
-// 依路由（# 後、? 前）記住捲動位置，只放記憶體。分辨「上一頁／下一頁」與「點連結進新頁」的方法：
-// 每一筆畫過的瀏覽紀錄都在 history.state 蓋一個記號；點連結、分頁列或程式改 location.hash 都會產生
-// 一筆沒有記號的新紀錄，回到有記號的紀錄就是上一頁／下一頁。瀏覽器自己的捲動還原關掉，免得兩邊打架。
-const scrollMemo = new Map();
-let scrollKey = "";
+// 分辨「上一頁／下一頁」與「點連結進新頁」的方法：每一筆畫過的瀏覽紀錄都在 history.state 蓋一個記號；
+// 點連結、分頁列或程式改 location.hash 都會產生一筆沒有記號的新紀錄，回到有記號的紀錄就是上一頁／下一頁。
+// 瀏覽器自己的捲動還原關掉，免得兩邊打架。
+// 驗收 C3：捲動位置改記在每一筆瀏覽紀錄自己的 history.state 上（以前依頁面記，同一頁的兩筆紀錄會共用一個位置）。
+// 捲動停下來 120ms 後寫一次；點擊（捕捉階段，在連結換網址之前）也先寫一次，免得剛捲完馬上點連結時沒記到。
 const ENTRY_MARK = "moneyIslandEntry";
+const ENTRY_SCROLL = "moneyIslandScrollY";
+let scrollSaveTimer = 0;
+let scrollTracking = false;    // 這一筆紀錄畫好、捲動位置定下來之後才開始記（換頁途中的捲動不算）
 try { if ("scrollRestoration" in history) history.scrollRestoration = "manual"; } catch (e) {}
-window.addEventListener("scroll", () => { if (scrollKey) scrollMemo.set(scrollKey, window.scrollY); }, { passive: true });
+
+function currentEntryState() {
+  try { return history.state && typeof history.state === "object" ? history.state : {}; } catch (e) { return {}; }
+}
+
+function saveEntryScroll() {
+  clearTimeout(scrollSaveTimer);
+  if (!scrollTracking || !entryVisited()) return;
+  const current = currentEntryState();
+  const y = Math.round(window.scrollY);
+  if (current[ENTRY_SCROLL] === y) return;
+  try { history.replaceState({ ...current, [ENTRY_SCROLL]: y }, ""); } catch (e) {}
+}
+window.addEventListener("scroll", () => {
+  clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = setTimeout(saveEntryScroll, 120);
+}, { passive: true });
+document.addEventListener("click", saveEntryScroll, true);
+window.addEventListener("pagehide", saveEntryScroll);
 
 function entryVisited() {
   try { return Boolean(history.state && history.state[ENTRY_MARK]); } catch (e) { return false; }
@@ -105,24 +126,32 @@ function entryVisited() {
 
 function markEntry() {
   if (entryVisited()) return;
-  try {
-    const current = history.state && typeof history.state === "object" ? history.state : {};
-    history.replaceState({ ...current, [ENTRY_MARK]: true }, "");
-  } catch (e) {}
+  try { history.replaceState({ ...currentEntryState(), [ENTRY_MARK]: true }, ""); } catch (e) {}
 }
 
-export function scrollTargetFor(key, traversal) {
-  return traversal ? (scrollMemo.get(key) || 0) : 0;
+// 上一頁／下一頁回到這一筆紀錄離開時的位置；點連結、分頁列進新頁一律回頂端
+export function scrollTargetFor(entryState, traversal) {
+  if (!traversal || !entryState || typeof entryState !== "object") return 0;
+  const y = Number(entryState[ENTRY_SCROLL]);
+  return Number.isFinite(y) && y > 0 ? y : 0;
+}
+
+// 路由（# 後、? 前；#/dreams 是 #/growth 的別名）
+function routeOf(hash) {
+  const base = String(hash || "#/").split("?")[0] || "#/";
+  const route = ROUTES[base];
+  return route ? route.id : base;
 }
 
 // 批 5：點目前所在的分頁（分頁列、側欄、左上角品牌）不會觸發 hashchange，自己捲回頂端。
+// 驗收 C3：比路由、不比完整網址（#/growth?… 時點「成長」也算同一頁）。
 document.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof Element)) return;
   const link = target.closest(".tabbar a[href], .sidenav a[href], .sidebar .brand[href]");
   if (!link || event.defaultPrevented) return;
   const href = link.getAttribute("href") || "";
-  if (href !== (location.hash || "#/")) return;
+  if (routeOf(href) !== routeOf(location.hash || "#/")) return;
   event.preventDefault();
   window.scrollTo({ top: 0, behavior: "smooth" });
 });
@@ -146,11 +175,20 @@ async function render() {
     // 開著的確認框換頁後還留著，在別頁按確定照樣執行。出路畫面本身算同一頁（不管網址是哪個），重繪不關確認框。
     const routeKey = recovering ? "recovery" : hash;
     const navigated = routeKey !== lastRenderedRoute;
-    // 疑問-1：換頁前先把舊頁的捲動位置記下來（瀏覽器的捲動還原已關，這時 scrollY 還是舊頁的）
+    // 驗收 C3：開頭記下網址與這一筆紀錄的狀態；畫完要捲動、蓋記號之前比對網址沒變才做——
+    // 排隊中的重繪畫完時網址可能已經是下一頁了，不能把這一頁的捲動與記號蓋到別筆紀錄上。
+    const startHash = location.hash;
     const traversal = navigated && entryVisited();
-    if (navigated && scrollKey) scrollMemo.set(scrollKey, window.scrollY);
-    if (navigated) scrollKey = "";
+    const entryState = currentEntryState();
+    if (navigated) { scrollTracking = false; clearTimeout(scrollSaveTimer); }
     lastRenderedRoute = routeKey;
+    const settleEntry = () => {
+      if (!navigated) return;
+      if (location.hash !== startHash) { lastRenderedRoute = ""; return; }   // 交給排隊的那次重繪當成換頁處理
+      window.scrollTo(0, scrollTargetFor(entryState, traversal));
+      markEntry();
+      scrollTracking = true;
+    };
     // 批 1 驗收 #11：同一頁重繪（例如另一個分頁存檔）會把開著的彈窗關掉再補開，補開時焦點固定跳到第一個欄位；
     // 先記下焦點在哪個欄位、游標在哪，畫完再還回去
     const focusMemo = navigated ? null : rememberModalFocus();
@@ -162,6 +200,7 @@ async function render() {
       if (recovering) {
         mount.innerHTML = String(recoveryGate());
         syncModalBackdrop();
+        settleEntry();   // 驗收 C3：出路畫面這條提早 return 也一樣捲回頂端、蓋記號
         void loadRecoverySnapshots();
         void refreshBrokenCopyText();
         return;
@@ -203,13 +242,8 @@ async function render() {
     syncModalBackdrop();      // 確認框不跟著重繪關掉，新的 #app 要重新鎖住
     restoreModalFocus(focusMemo);
     // 批 5：換頁捲回頂端；同一頁重繪不動捲動位置（深連結 ?open= 自己會在下一拍捲到區塊）
-    // 疑問-1：上一頁／下一頁回到這一頁離開時的位置；點連結、分頁列進新頁才回頂端
-    if (navigated) {
-      window.scrollTo(0, scrollTargetFor(routeKey, traversal));
-      scrollKey = routeKey;
-      scrollMemo.set(routeKey, window.scrollY);
-      markEntry();
-    }
+    // 疑問-1：上一頁／下一頁回到這一筆紀錄離開時的位置；點連結、分頁列進新頁才回頂端
+    settleEntry();
     updateInstallHint();
   } finally {
     rendering = false;
@@ -554,6 +588,8 @@ function setupKeyboardLift() {
   const apply = () => {
     const lift = Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop));
     document.documentElement.style.setProperty("--kb", (lift > 60 ? lift : 0) + "px");
+    // 驗收 C5：彈窗開著時吐司貼在畫面上方；鍵盤把可視區往下推（offsetTop）時跟著往下，不被推出可視區
+    document.documentElement.style.setProperty("--vv-top", Math.max(0, Math.round(vv.offsetTop || 0)) + "px");
   };
   vv.addEventListener("resize", apply);
   vv.addEventListener("scroll", apply);
@@ -587,10 +623,14 @@ function hydrateFromStorage() {
 }
 
 // 另一個分頁改了帳本（批 1 #4）：重讀、重繪；正開著彈窗的話說一聲，免得家長以為自己填的東西被吃掉。
-function reloadFromOtherTab() {
+// 驗收 B1：雲端設定（凍結、中斷連線）也一起重讀，不拿記憶體裡的舊設定繼續上傳。
+// 驗收 B2：兩個分頁同時存檔、這個分頁那一筆被另一個分頁蓋掉（db 判斷 lostWrite）：明確講出來，不靜默消失。
+function reloadFromOtherTab(event, info = {}) {
   const hadModal = isModalOpen();
+  gist.reloadGistFromStorage();
   hydrateFromStorage();          // hydrate 會通知 subscribe → refresh 整頁重繪
-  if (hadModal) showStatus("另一個分頁更新了帳本，畫面已重新整理", "waiting", { ms: 6000 });
+  if (info.lostWrite) showStatus(db.LOST_WRITE_ERROR, "error", { ms: 9000 });
+  else if (hadModal) showStatus("另一個分頁更新了帳本，畫面已重新整理", "waiting", { ms: 6000 });
 }
 
 async function boot() {

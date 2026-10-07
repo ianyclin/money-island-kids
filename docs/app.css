@@ -1263,7 +1263,8 @@ img { height: auto; display: block; }
    ───────────────────────────────────────────────────────── */
 /* 彈窗開著時吐司移到畫面上方：不再蓋住彈窗底部的送出鈕（common.js 在 <html> 上切 .has-modal） */
 html.has-modal .toast {
-  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  /* 驗收 C5：--vv-top＝iOS 鍵盤開著時可視區往下推的距離（app.js 用 visualViewport.offsetTop 量），吐司不被推出可視區 */
+  top: calc(env(safe-area-inset-top, 0px) + 12px + var(--vv-top, 0px));
   bottom: auto;
   /* 驗收低-2：右側讓出 64px，兩三行的吐司也不會蓋到彈窗右上角的 ×（× 在彈窗右緣往內 14–58px） */
   left: 16px;
@@ -1272,6 +1273,22 @@ html.has-modal .toast {
   max-width: 520px;
   transform: none;
 }
+/* 驗收 C5：窄螢幕左右再收一點（左 8、右 56，× 在右緣往內 14–58px），字級維持一般內文、不放大；
+   ≥ 768 由 common.js 的 placeToast 對齊彈窗面板 */
+@media (max-width: 479.98px) {
+  html.has-modal .toast { left: 8px; right: 56px; padding-left: 12px; gap: var(--space-2); }
+  html.has-modal .toast strong { font-size: var(--fs-body); }
+}
+
+/* 驗收 A3：吐司不擋點擊——整張吐司讓點擊穿過去，只有吐司裡的按鈕（×、去看）接得到 */
+.toast { pointer-events: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.toast button { pointer-events: auto; }
+
+/* 驗收 C1：確認框的確定鈕在打開後 600ms 內停用（.btn:disabled 已經是停用樣式），補一行說明的樣式 */
+.confirm-dialog-note { margin-top: var(--space-2); }
+
+/* 驗收 C6：說明泡泡不超出視窗（common.clampInfoTip 量完再推回來；這裡先限寬） */
+.info-tip-popover { max-width: calc(100vw - 16px); }
 
 /* 遮罩一定蓋過分頁列（.tabbar z 40；遮罩 z 50）：寫明在這裡，之後改 z-index 的人看得到這條約束 */
 .modal-backdrop { z-index: 50; }

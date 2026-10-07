@@ -6,10 +6,20 @@ export const calls = [];
 export const snapshots = [];          // takeSnapshot 收到的每一份：{ reason, raw, preRestore }
 
 // 批 1 自我測試用的開關：模擬「localStorage 寫不進去」「IndexedDB 快照寫不進去」「帳本讀不出來」
-export const control = { failSave: false, failSnapshot: false, broken: false, keepBroken: true, preserved: 0 };
+// stale：模擬「另一個分頁剛存過」（save 回 STALE_SAVE）；reloadWith：那時候 load() 讀回來的帳本
+export const control = { failSave: false, failSnapshot: false, broken: false, keepBroken: true, preserved: 0, stale: false, reloadWith: null, loads: 0 };
 let lastError = "";
+export const STALE_SAVE = "stale";
+
+export function load() {
+  control.loads += 1;
+  return control.reloadWith ? JSON.parse(JSON.stringify(control.reloadWith)) : null;
+}
+
+export function markBroken() {}
 
 export function save(state, reason) {
+  if (control.stale) return STALE_SAVE;
   calls.push({ reason, at: new Date().toISOString(), size: JSON.stringify(state).length });
   state.latestBackup = { id: "selftest-backup", reason, createdAt: new Date().toISOString(), copyStatus: "ready" };
   if (control.failSave) {
@@ -34,6 +44,10 @@ export const INVALID_LEDGER_CLOUD_TEXT = "帳本有地方不對，暫停上傳�
 export const SNAPSHOT_READ_ERROR = "快照讀不出來（這台裝置的瀏覽器資料庫有問題），請改用備份檔";
 export const BROKEN_COPIES_READ_ERROR = "這台裝置留存的原始內容讀不出來（瀏覽器資料庫有問題）";
 export async function listBrokenCopies() { return []; }
+export const LEGACY_BROKEN_LABEL = "舊版留在這台裝置";
+export const LOST_WRITE_ERROR = "另一個畫面同時改了帳本，剛剛那一筆沒有存進去，請再做一次";
+export async function listLegacyBrokenLeft() { return []; }
+export function removeLegacyBroken() { return false; }
 export function isRestorable() { return true; }
 
 export async function takeSnapshot(state, reason, options = {}) {
@@ -59,7 +73,7 @@ export function setCloudBridge() {}
 export function reset() {
   calls.length = 0;
   snapshots.length = 0;
-  Object.assign(control, { failSave: false, failSnapshot: false, broken: false, keepBroken: true, preserved: 0 });
+  Object.assign(control, { failSave: false, failSnapshot: false, broken: false, keepBroken: true, preserved: 0, stale: false, reloadWith: null, loads: 0 });
   lastError = "";
 }
 

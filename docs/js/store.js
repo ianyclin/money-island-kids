@@ -19,7 +19,7 @@ import {
 import { GARDEN_SPECIES, MAX_PROFILES, rewardClaimedIn, sortAll } from "./state.js";
 import { assertParentPin } from "./pin.js";
 import { fetchTwseClosingQuotes, isTwseSymbol, TWSE_QUOTE_SOURCE } from "./quotes.js";
-import { ensureBrokenPreserved, hasBrokenLedger, save, saveError, saveErrorHint, takeSnapshot } from "./db.js";
+import { STALE_SAVE, ensureBrokenPreserved, hasBrokenLedger, load, markBroken, save, saveError, saveErrorHint, takeSnapshot } from "./db.js";
 
 // ---------- 單例狀態與提交 ----------
 
@@ -121,6 +121,15 @@ function recomputeHoldingTotals(next) {
 // 還原備份都會把 store 換成新的物件；這時呼叫端改的是舊物件，若照樣存「現在那份」，改動會默默不見，
 // 卻回報成功。所以傳進來的不是目前那份就丟錯、什麼都不存。
 export const STALE_LEDGER_ERROR = "另一個畫面剛改過帳本，這次沒有存，請再做一次";
+
+function reloadAfterStale() {
+  try {
+    hydrate(load());
+  } catch (error) {
+    markBroken(error && error.message ? error.message : "內容不是帳本");
+    hydrate(null);
+  }
+}
 export function commit(reason, expected) {
   if (expected !== undefined && expected !== state) throw new Error(STALE_LEDGER_ERROR);
   const next = requireState();
@@ -128,6 +137,11 @@ export function commit(reason, expected) {
   ensureMeta(next).meta.updatedAt = nowIso();
   sortAll(next);
   const saved = save(next, reason);
+  if (saved === STALE_SAVE) {
+    // 驗收 B2：另一個分頁剛存過帳本，這一份沒有寫進去：丟掉這個分頁記憶體裡的改動、重讀現在那一份，明確報錯
+    reloadAfterStale();
+    throw new Error(STALE_LEDGER_ERROR);
+  }
   notify();
   if (saved === false) {
     throw new Error(`${saveError() || "存不進去"}。剛剛的改動還在畫面上，但還沒存進這台裝置，關掉 app 就會不見；${saveErrorHint() || "請先到家長區下載備份"}`);

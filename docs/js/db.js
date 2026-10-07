@@ -47,10 +47,55 @@ export function hasState() {
 let loadProblem = "";
 export function loadError() { return loadProblem; }
 
+/* ───────── 驗收 B2：帳本修訂號（meta.rev） ─────────
+   每次存檔 +1。存檔前先看 localStorage 現在那一份：跟這個分頁上次讀到／寫入的不一樣，就是另一個分頁剛存過，
+   這次不寫（回 STALE_SAVE，store.commit 會丟 STALE_LEDGER_ERROR 並重讀帳本）。比的是整份內容而不只是 rev：
+   兩個分頁在同一瞬間都從 rev N 存成 N+1 時，rev 一樣、內容不一樣，只比 rev 會把對方那一筆默默蓋掉。
+   rev 用來分辨「蓋掉我的那一份是不是從我的那一份接著改的」：同一瞬間兩邊都通過檢查、後寫的蓋掉先寫的時，
+   先寫的那個分頁收到 storage 事件會發現現在那一份的 rev 沒有比自己寫的大＝自己那一筆沒了，明確報錯（LOST_WRITE_ERROR）。
+   舊帳本沒有 rev 視為 0。換整份帳本（匯入、還原、雲端拿回、另外建立）一樣走 save，rev 一律接著這個分頁知道的往上加，
+   不沿用備份檔裡的 rev，所以不會被自己擋掉。 */
+export const STALE_SAVE = "stale";
+export const LOST_WRITE_ERROR = "另一個畫面同時改了帳本，剛剛那一筆沒有存進去，請再做一次";
+let knownRaw;            // 這個分頁上次讀到／寫入的原文；undefined＝還沒讀過（不檢查），null＝讀到的時候沒有帳本
+let knownRev = 0;
+let lastWritten = null;  // { raw, rev }：這個分頁最近一次寫進去的那一份（收到 storage 事件時用來判斷有沒有被蓋掉）
+
+function revOf(parsed) {
+  const value = Number(parsed && typeof parsed === "object" && parsed.meta && typeof parsed.meta === "object" ? parsed.meta.rev : 0);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+function revOfRaw(raw) {
+  try { return revOf(JSON.parse(raw)); } catch (e) { return 0; }
+}
+export function ledgerRev() { return knownRev; }
+
+function staleLedger() {
+  if (knownRaw === undefined) return false;
+  let current = null;
+  try { current = localStorage.getItem(KEY); } catch (e) { return false; }
+  /* 現在沒有帳本（被整個清掉）：沒有東西會被蓋掉，照常寫 */
+  return current !== null && current !== knownRaw;
+}
+
+/* 收到另一個分頁的 storage 事件時呼叫：這個分頁最近寫進去的那一份，是不是被一份「不是從它接著改」的內容蓋掉了 */
+function lostLastWrite() {
+  const mine = lastWritten;
+  if (!mine) return false;
+  let current = null;
+  try { current = localStorage.getItem(KEY); } catch (e) { return false; }
+  if (current === mine.raw) return false;      // 我寫的那一份還在
+  lastWritten = null;
+  if (current === null) return false;          // 整個被清掉，不是這一筆被蓋
+  return revOfRaw(current) <= mine.rev;
+}
+
 export function load() {
   loadProblem = "";
   let raw = null;
   try { raw = localStorage.getItem(KEY); } catch (e) {}
+  knownRaw = raw;
+  knownRev = raw ? revOfRaw(raw) : 0;
   if (!raw) return null;
   try {
     return coerceLedger(JSON.parse(raw));
@@ -275,12 +320,40 @@ export async function listBrokenCopies() {
 
 /* 另一個分頁（或另一個視窗）改了帳本：瀏覽器只會對「其他」分頁發 storage 事件。
    key 是 null 表示整個 localStorage 被清掉，也要重讀。 */
+const lostByEvent = new WeakMap();   // 同一個事件有好幾個監聽者時只判斷一次（判斷會清掉 lastWritten）
 export function watchExternalChanges(onChange) {
   addEventListener("storage", (event) => {
     if (event.key !== KEY && event.key !== null) return;
     try { if (event.storageArea && event.storageArea !== localStorage) return; } catch (e) {}
-    onChange(event);
+    if (!lostByEvent.has(event)) lostByEvent.set(event, lostLastWrite());
+    onChange(event, { lostWrite: lostByEvent.get(event) });   // 驗收 B2
   });
+}
+
+/* 驗收 B5：舊版 .broken.* 超過三份上限（或這次沒搬成）還留在 localStorage 的，家長區也列出來、可以下載；
+   下載後可以刪掉那一把鑰匙。開機的搬家還在跑的話先等它，清單才不會列出正要搬走的那幾份。 */
+export const LEGACY_BROKEN_LABEL = "舊版留在這台裝置";
+export async function listLegacyBrokenLeft() {
+  if (legacyMigration) { try { await legacyMigration; } catch (e) {} }
+  let keys = [];
+  try { keys = legacyBrokenKeys(); } catch (e) { return []; }
+  const out = [];
+  for (const { key, at } of keys) {
+    let raw = null;
+    try { raw = localStorage.getItem(key); } catch (e) { raw = null; }
+    if (typeof raw === "string") out.push({ key, at, raw });
+  }
+  return out;
+}
+
+/* 只刪那一把鑰匙；鑰匙名稱不是舊版留存的格式就不動 */
+export function removeLegacyBroken(key) {
+  const name = String(key || "");
+  if (name !== LEGACY_BROKEN_KEY && !name.startsWith(LEGACY_BROKEN_KEY + ".")) return false;
+  try {
+    localStorage.removeItem(name);
+    return localStorage.getItem(name) === null;
+  } catch (e) { return false; }
 }
 
 export function estimateSize(state) {
@@ -288,6 +361,8 @@ export function estimateSize(state) {
 }
 
 export function save(state, reason) {
+  /* 驗收 B2：另一個分頁剛存過（localStorage 現在那一份不是這個分頁上次讀到／寫入的）：不寫、也不排快照與雲端 */
+  if (staleLedger()) return STALE_SAVE;
   /* 快照與雲端不依賴 localStorage，一定要排在 try 外面：
      容量滿的那一刻，正是最需要備份還活著的一刻 */
   scheduleSnapshot(state, reason);
@@ -306,6 +381,8 @@ export function save(state, reason) {
       ? { status: "pending" }
       : { status: "ready" };
   if (state.meta) state.meta.updatedAt = stamp;
+  const rev = knownRev + 1;
+  if (state.meta) state.meta.rev = rev;
 
   let json = "";
   try {
@@ -324,6 +401,9 @@ export function save(state, reason) {
 
   try {
     localStorage.setItem(KEY, json);
+    knownRaw = json;
+    knownRev = rev;
+    lastWritten = { raw: json, rev };
     lastSaveError = "";
     lastSaveHint = HINT_BACKUP;
     loadProblem = "";        /* 已經換成一份讀得懂的帳本了 */

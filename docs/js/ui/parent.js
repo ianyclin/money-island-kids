@@ -35,6 +35,9 @@ const ui = {
   restoreEnvelope: null,
   snapshots: null,               // null=尚未讀取、[]=沒有、false=不支援
   brokenCopies: null,            // 批 2 C：讀不出來時留存的原始內容。null=尚未讀取、[]=沒有、false=讀不出來
+  legacyBroken: [],              // 驗收 B5：舊版留在 localStorage 的 .broken.*：{ key, at, raw }
+  legacyDownloaded: new Set(),   // 這次開啟期間已經下載過的舊版留存（鑰匙名稱）；下載過才出「刪除這份」
+  legacyArm: null,               // 「刪除這份」按了第一下：{ key, at, timer }
   openDetails: new Set(),        // "guide" | "backup-file" | "snapshots" | "gist"（v2 只剩這四個抽屜）
   drafts: Object.create(null),
   piggyKey: "",
@@ -634,7 +637,7 @@ function dataPanelMarkup(state, unlocked) {
         <summary>GitHub 雲端備份</summary>
         <div class="subpanel-body" data-gist-root>${raw(gist.renderGistPanel())}</div>
       </details>
-      <div data-broken-copies>${brokenCopiesMarkup(ui.brokenCopies, unlocked)}</div>
+      <div data-broken-copies>${brokenCopiesMarkup(ui.brokenCopies, unlocked, ui.legacyBroken)}</div>
     </section>`;
 }
 
@@ -650,25 +653,54 @@ function sizeText(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function brokenCopiesMarkup(list, unlocked) {
-  if (list === null || (Array.isArray(list) && !list.length)) return "";
+// 驗收 B5：legacy＝舊版留在 localStorage、超過三份上限搬不進 IndexedDB 的 .broken.*（db.listLegacyBrokenLeft）。
+// 一樣列出來、可以下載；下載過的那一份才出「刪除這份」（兩段確認：按一下後 600ms「稍等…」，之後 5 秒內再按一次才刪），
+// 刪除只刪那一把 localStorage 鑰匙。
+const LEGACY_ARM_MS = 5000;
+const LEGACY_WARM_MS = 600;
+
+function legacyDeleteButton(record, unlocked) {
+  const armed = ui.legacyArm && ui.legacyArm.key === record.key ? ui.legacyArm : null;
+  const warming = Boolean(armed) && Date.now() - armed.at < LEGACY_WARM_MS;
+  const label = warming ? "稍等…" : armed ? "再按一次：刪除這份" : "刪除這份";
+  return html`<button type="button" class="btn btn-danger" data-action="delete-legacy-broken" data-key="${record.key}" ${!unlocked || warming ? raw("disabled") : ""}>${label}</button>`;
+}
+
+export function brokenCopiesMarkup(list, unlocked, legacy = []) {
+  const legacyList = Array.isArray(legacy) ? legacy : [];
+  const stored = Array.isArray(list) ? list : [];
+  if ((list === null || (Array.isArray(list) && !list.length)) && !legacyList.length) return "";
   const open = isOpen("broken-copies") ? raw("open") : "";
+  const count = stored.length + legacyList.length;
+  const legacyRows = legacyList.map((record) => html`<div class="parent-row">
+      <div><b>${record.at ? formatDateTime(record.at) : "時間不明"}</b><small>${db.LEGACY_BROKEN_LABEL} · ${sizeText(byteSize(record.raw))}</small></div>
+      <button type="button" class="btn btn-secondary" data-action="download-legacy-broken" data-key="${record.key}" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載</button>
+      ${ui.legacyDownloaded.has(record.key) ? legacyDeleteButton(record, unlocked) : ""}
+    </div>`);
   if (list === false) {
     return html`<details class="subpanel" data-open-key="broken-copies" ${open}>
-        <summary>讀不出來時留下的原始內容（讀不出來）</summary>
-        <div class="subpanel-body"><p class="empty-history">${db.BROKEN_COPIES_READ_ERROR}，重新整理後可以再看一次。</p></div>
+        <summary>讀不出來時留下的原始內容（${legacyList.length ? `讀不出來；另有 ${legacyList.length} 份舊版留存` : "讀不出來"}）</summary>
+        <div class="subpanel-body"><p class="empty-history">${db.BROKEN_COPIES_READ_ERROR}，重新整理後可以再看一次。</p>
+          ${legacyList.length ? html`<div class="device-list">${legacyRows}</div>` : ""}</div>
       </details>`;
   }
   return html`<details class="subpanel" data-open-key="broken-copies" ${open}>
-      <summary>讀不出來時留下的原始內容（${list.length} 份）</summary>
+      <summary>讀不出來時留下的原始內容（${count} 份）</summary>
       <div class="subpanel-body">
         <p>帳本曾經讀不出來時，app 把當時的原始內容另外留在這台裝置（最多留最近 3 份）。不是正式備份，修復時用得到；下載是 .txt 檔。</p>
-        <div class="device-list">${list.map((record) => html`<div class="parent-row">
+        ${legacyList.length ? html`<p>標「${db.LEGACY_BROKEN_LABEL}」的是更早的版本留下、超過三份上限沒搬進新存法的；下載之後可以刪掉，騰出這台裝置的空間。</p>` : ""}
+        <div class="device-list">${stored.map((record) => html`<div class="parent-row">
             <div><b>${formatDateTime(record.ts)}</b><small>${sizeText(byteSize(record.raw))}</small></div>
             <button type="button" class="btn btn-secondary" data-action="download-broken" data-ts="${record.ts}" data-busy-label="準備中…" ${!unlocked ? raw("disabled") : ""}>下載</button>
-          </div>`)}</div>
+          </div>`)}${legacyRows}</div>
       </div>
     </details>`;
+}
+
+function repaintBrokenCopies(root, ctx) {
+  // 計時器到期時頁面可能已經整頁重繪過：找現在畫面上的那一個
+  const container = (root && root.isConnected ? root : document).querySelector("[data-broken-copies]");
+  if (container) container.innerHTML = String(brokenCopiesMarkup(ui.brokenCopies, (ctx || ctxRef || {}).pinStatus === "unlocked", ui.legacyBroken));
 }
 
 async function loadBrokenCopies(root, ctx) {
@@ -677,8 +709,8 @@ async function loadBrokenCopies(root, ctx) {
   } catch {
     ui.brokenCopies = false;
   }
-  const container = root.querySelector("[data-broken-copies]");
-  if (container) container.innerHTML = String(brokenCopiesMarkup(ui.brokenCopies, ctx.pinStatus === "unlocked"));
+  try { ui.legacyBroken = await db.listLegacyBrokenLeft(); } catch { ui.legacyBroken = []; }
+  repaintBrokenCopies(root, ctx);
 }
 
 function restoreSummaryMarkup(summary, unlocked) {
@@ -1220,6 +1252,13 @@ async function handleClick(root, ctx, button) {
       ui.addProfileOpen = !ui.addProfileOpen;
       if (!ui.addProfileOpen) clearDrafts("new-profile-name");
       await ctx.refresh();
+      // 驗收 C4：整頁重繪把按鈕換掉了，焦點會掉到 body：還給重繪後的那一顆切換鈕
+      const focusToggle = () => {
+        const toggle = document.querySelector('#app [data-action="toggle-add-profile"]');
+        if (toggle && document.activeElement !== toggle) { try { toggle.focus({ preventScroll: true }); } catch (e) {} }
+      };
+      focusToggle();
+      window.setTimeout(focusToggle, 0);   // 重繪排隊中（render 正在跑）時，等它畫完再補一次
       // 批 5：表單就在按鈕正下方，打開後捲進畫面（不自動聚焦：手機會直接彈出鍵盤）
       if (ui.addProfileOpen) window.setTimeout(() => document.getElementById("profile-add-form")?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 0);
       return;
@@ -1348,6 +1387,49 @@ async function handleClick(root, ctx, button) {
       }
       return;
     }
+    case "download-legacy-broken": {
+      const record = (ui.legacyBroken || []).find((item) => item.key === button.dataset.key);
+      if (!record) return;
+      startBusy(root, button);
+      clearOperationError(root, "backup");
+      try {
+        const stamp = record.at ? new Date(record.at).toISOString().slice(0, 10) : "時間不明";
+        const filename = `小小理財島讀不出來的原始內容-舊版-${stamp}-${record.at || "x"}.txt`;
+        const result = await backup.shareOrDownload(record.raw, filename, { type: "text/plain", title: "小小理財島讀不出來的原始內容（舊版留存）" });
+        endBusy();
+        if (result === "share" || result === "download") ui.legacyDownloaded.add(record.key);
+        if (result !== "cancelled") common.showStatus(result === "clipboard" ? "下載不了，已經把原始內容複製到剪貼簿；請先貼到備忘錄存起來" : "已經下載這份舊版留存（.txt）；需要的話可以刪掉它", result === "clipboard" ? "waiting" : "success");
+        repaintBrokenCopies(root, ctx);
+      } catch (caught) {
+        endBusy();
+        reportOperationError(root, "backup", caught, "下載不了這份舊版留存");
+      }
+      return;
+    }
+    case "delete-legacy-broken": {
+      const key = button.dataset.key;
+      if (!key || !ui.legacyDownloaded.has(key)) return;
+      const armed = ui.legacyArm && ui.legacyArm.key === key ? ui.legacyArm : null;
+      if (!armed) {
+        if (ui.legacyArm) clearTimeout(ui.legacyArm.timer);
+        ui.legacyArm = { key, at: Date.now(), timer: setTimeout(() => { ui.legacyArm = null; repaintBrokenCopies(root, ctxRef); }, LEGACY_ARM_MS) };
+        setTimeout(() => repaintBrokenCopies(root, ctxRef), LEGACY_WARM_MS + 10);
+        repaintBrokenCopies(root, ctx);
+        return;
+      }
+      if (Date.now() - armed.at < LEGACY_WARM_MS) return;   // 太快的第二下當成連點
+      clearTimeout(armed.timer);
+      ui.legacyArm = null;
+      if (db.removeLegacyBroken(key)) {
+        ui.legacyBroken = (ui.legacyBroken || []).filter((item) => item.key !== key);
+        ui.legacyDownloaded.delete(key);
+        common.showStatus("已經刪掉這份舊版留存", "success");
+      } else {
+        common.showStatus("刪不掉這份舊版留存，請稍後再試", "error");
+      }
+      repaintBrokenCopies(root, ctx);
+      return;
+    }
     case "restore-backup": {
       if (!ui.restoreEnvelope || !ui.restoreSummary) return;
       const warning = ui.restoreSummary.portable
@@ -1358,6 +1440,8 @@ async function handleClick(root, ctx, button) {
       startBusy(root, button);
       clearOperationError(root, "backup");
       try {
+        // 驗收 B6：比照出路畫面——換帳本前先凍結雲端，還原後下一次同步出「要用哪一份」卡，不直接覆蓋雲端那份
+        gist.freezeForLedgerSwap();
         // backup.restore 內部已經 setState 並存檔，這裡不再寫第二次。
         await backup.restore(ui.restoreEnvelope);
         ui.restoreEnvelope = null;
@@ -1380,6 +1464,7 @@ async function handleClick(root, ctx, button) {
       try {
         // 讀不到快照會丟錯（不再什麼都沒換卻說已還原）；換帳本前先存「還原前」快照，存不進去也丟錯
         const restored = await db.restoreSnapshot(ts);
+        gist.freezeForLedgerSwap();   // 驗收 B6：同上，還原後由家長決定要用哪一份
         await store.replaceState(restored, "還原本機快照");
         ui.snapshots = null;
         announce(root, `已還原到 ${formatDateTime(ts)} 的樣子`);

@@ -235,7 +235,7 @@ export function render(ctx) {
                 </article>
                 <div class="market-editor">
                   <input class="input" type="number" min="0" inputmode="numeric" data-draft="market-${holding.id}" value="${marketDraft}" placeholder="更新市值，目前 ${holding.marketValue}" />
-                  <button type="button" class="btn btn-secondary" data-action="update-market-value" data-id="${holding.id}" data-busy-label="更新中…" ${marketDraft === "" ? raw("disabled") : ""}>記錄今日市值</button>
+                  <button type="button" class="btn btn-secondary" data-action="update-market-value" data-id="${holding.id}" data-busy-label="更新中…" ${!marketValueReady(marketDraft) ? raw("disabled") : ""}>記錄今日市值</button>
                 </div>
               </div>
             `;
@@ -355,24 +355,28 @@ const MARKET_VALUE_BUTTONS = '#app [data-action="update-market-value"]';
 // ---------- 忙碌狀態與錯誤（照 parent.js 原本的模式） ----------
 let busyRestore = null;
 
+// 驗收 A2：記原狀態時，帶整排停用標記的按鈕記成「可按」（它只是被暫時停用）；處理中的按鈕標記起來，
+// 整排停用期到了也不放開。還原時交給 common.settleAfterBusy：停用期還沒過就維持停用，過了再照頁面重新判斷。
 function startBusy(root, button) {
   busyRestore = [];
   if (button) {
-    busyRestore.push({ element: button, html: button.innerHTML, disabled: button.disabled });
+    busyRestore.push({ element: button, html: button.innerHTML, disabled: common.busyBaseline(button) });
     if (button.dataset.busyLabel) button.textContent = button.dataset.busyLabel;
     button.disabled = true;
+    common.markBusy(button);
   }
   root.querySelectorAll("[data-busy-lock]").forEach((element) => {
     if (element === button) return;
-    busyRestore.push({ element, html: element.innerHTML, disabled: element.disabled });
+    busyRestore.push({ element, html: element.innerHTML, disabled: common.busyBaseline(element) });
     element.disabled = true;
+    common.markBusy(element);
   });
 }
 
 function endBusy() {
   for (const entry of busyRestore ?? []) {
     entry.element.innerHTML = entry.html;
-    entry.element.disabled = entry.disabled;
+    common.settleAfterBusy(entry.element, entry.disabled);
   }
   busyRestore = null;
 }
@@ -477,11 +481,24 @@ function syncHarvestSubmit(root, ctx) {
   syncHarvestForm(root, limits.maxHarvest, limits.harvestedThisYear, limits.holdingCount);
 }
 
+// 驗收 A1：「記錄今日市值」能不能按＝欄位不是空白、而且是有限的數字
+export function marketValueReady(value) {
+  const text = String(value ?? "").trim();
+  return text !== "" && Number.isFinite(Number(text));
+}
+
+function marketButtonReady(button) {
+  const input = document.querySelector(`#app [data-draft="market-${CSS.escape(button.dataset.id || "")}"]`);
+  return Boolean(input) && marketValueReady(input.value);
+}
+
 function syncMarketEditor(root, holdingId) {
   const input = root.querySelector(`[data-draft="market-${holdingId}"]`);
   const button = root.querySelector(`[data-action="update-market-value"][data-id="${holdingId}"]`);
   if (!input || !button) return;
-  button.disabled = input.value === "";
+  // 整排停用期間或處理中不在這裡放開：停用期到了由 holdList 的 recheck 重新判斷
+  if (button.dataset.listHeld || button.dataset.busy) return;
+  button.disabled = !marketValueReady(input.value);
 }
 
 // ---------- 深連結（規格 2.4.1 第 6 項） ----------
@@ -740,12 +757,16 @@ async function handleClick(root, ctx, button) {
     }
     case "update-market-value": {
       const input = root.querySelector(`[data-draft="market-${id}"]`);
-      const next = Math.round(Number(input?.value));
+      // 驗收 A1：欄位空白（trim 後）或不是有限數字就什麼都不做——不寫入、不提示成功。
+      // 以前空白會變成 Number("") = 0，把市值記成 0 元。
+      if (!input || !marketValueReady(input.value)) return;
+      const next = Math.round(Number(String(input.value).trim()));
       // 驗收中-1：持股照市值排序，改完市值這張卡可能換位置，別張卡（已經填了數字的）的
       // 「記錄今日市值」會滑到手指底下：按下時與完成時都把這一排按鈕停用 800ms。
-      common.holdList(MARKET_VALUE_BUTTONS);
+      // 驗收 A1：放開時由頁面重新判斷（欄位空白的維持停用）。
+      common.holdList(MARKET_VALUE_BUTTONS, undefined, { recheck: marketButtonReady });
       const ok = await runParentAction(root, ctx, { button, scope: "holdings" }, () => store.updateHoldingMarketValue({ holdingId: id, marketValue: next }));
-      if (ok) { clearDrafts(`market-${id}`); common.holdList(MARKET_VALUE_BUTTONS); }
+      if (ok) { clearDrafts(`market-${id}`); common.holdList(MARKET_VALUE_BUTTONS, undefined, { recheck: marketButtonReady }); }
       return;
     }
     case "refresh-quotes": {

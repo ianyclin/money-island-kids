@@ -21,13 +21,49 @@ const GKEY = KEY + ".gist";
 const FILE = "money-island-backup.json";
 let gist = null;                    /* {token, gistId, lastSyncAt, lastError} */
 
-export function loadGist() { try { gist = JSON.parse(localStorage.getItem(GKEY) || "null"); } catch (e) { gist = null; } }
-function saveGist() { try { if (gist) localStorage.setItem(GKEY, JSON.stringify(gist)); else localStorage.removeItem(GKEY); } catch (e) {} }
+/* 驗收 B1：多個分頁共用同一份雲端設定。gistRaw＝這個分頁上次讀到／寫入的原文：
+   localStorage 現在那一份跟它不一樣，就是別的分頁改過（換帳本凍結、中斷連線…），一律採用 localStorage 的版本，
+   不拿記憶體裡的舊設定上傳、也不把舊設定寫回去蓋掉別頁的凍結／中斷。 */
+let gistRaw = null;
+function readGistRaw() { try { return localStorage.getItem(GKEY); } catch (e) { return null; } }
+export function loadGist() {
+  const raw = readGistRaw();
+  gistRaw = raw;
+  try { gist = JSON.parse(raw || "null"); } catch (e) { gist = null; }
+}
+/* 別的分頁改過雲端設定：採用那一份並回 true。換了金鑰／雲端那份、或被中斷時，這個分頁的待決卡與拿回武裝都作廢 */
+function adoptOtherTabGist() {
+  if (readGistRaw() === gistRaw) return false;
+  const before = gist;
+  loadGist();
+  if (!gist || !before || gist.token !== before.token || gist.gistId !== before.gistId) {
+    pendingCloud = null; pullCache = null; pullFreeze = false; clearTimeout(pullTimer);
+  }
+  return true;
+}
+export function reloadGistFromStorage() {
+  if (adoptOtherTabGist()) refreshSettings();
+}
+/* force：使用者親手做的連線、中斷、刪除——照寫。其餘一律先看別的分頁有沒有改過，改過就不寫、改用那一份（回 false） */
+function saveGist(force) {
+  if (!force && adoptOtherTabGist()) return false;
+  try {
+    const raw = gist ? JSON.stringify(gist) : null;
+    if (raw === null) localStorage.removeItem(GKEY); else localStorage.setItem(GKEY, raw);
+    gistRaw = raw;
+  } catch (e) {}
+  return true;
+}
+addEventListener("storage", (event) => {
+  if (event.key !== GKEY && event.key !== null) return;
+  reloadGistFromStorage();
+});
 export const cloudOn = () => !!(gist && gist.token);
 let cloudTimer = 0, cloudBusy = false, cloudPending = false;
 let pendingCloud = null;      /* 連線時發現兩邊都有資料：等使用者拍板前，凍結所有上傳 */
 let pullFreeze = false;       /* 「從雲端拿回」按了第一下、還沒確認：這段期間不准任何上傳 */
 let pullTimer = 0;            /* 武裝解除計時器放模組層級：重繪後的舊計時器要能被清掉 */
+let pullCache = null;         /* 「從雲端拿回」第一按讀到的那一份（說明在 pullFromCloud） */
 /* gist.pending＝「還沒決定要用雲端還是本機」的持久旗標：
    跟執行期的 pendingCloud 不同，關掉 app 再開它還在，凍結所有上傳直到使用者決定 */
 export const cloudFrozen = () => pullFreeze || pendingCloud || (gist && gist.pending);
@@ -72,7 +108,8 @@ function sameState(raw) {
      都是單機才會動的畫面狀態，不該讓紀錄相同的兩份被判成不同 */
   const strip = o => {
     const n = normalize(o);
-    if (n.meta) { n.meta.selectedProfileId = ""; n.meta.installHintDismissed = false; n.meta.updatedAt = null; }
+    /* 驗收 B2：meta.rev 是這台裝置的存檔次數，兩份紀錄一樣時 rev 不同也算全等 */
+    if (n.meta) { n.meta.selectedProfileId = ""; n.meta.installHintDismissed = false; n.meta.updatedAt = null; delete n.meta.rev; }
     n.latestBackup = null; n.backupHealth = null;
     return JSON.stringify(n);
   };
@@ -175,10 +212,16 @@ function uploadableState() {
    「上次建檔、回條被吞掉」的那份，直接再建一份新的，留下孤兒備份。所以這時另外落一個
    「曾嘗試建立」的記號（swapSearch）：下一次同步先在帳號裡找本 app 的備份，找到就掛回去、
    走「要用哪一份」拍板卡；確定沒有才新建。搜尋連不上就這趟失敗、記號留著下次再找。 */
+/* 驗收 B3：記號不論 gistId 有沒有值都設——意思是「曾嘗試建立／以前有過雲端備份」。gistId 有值而同步遇到 404 時，
+   有這個記號就跟沒換帳本的對照組一樣走「備份不見了」卡，不准自動 POST 一份新的（指紋已經清掉，光看 remoteStamp 會誤以為從沒同步過）。
+   上傳成功一次才清掉。
+   驗收 B4：換帳本後「帳本壞了、暫停上傳」那個錯誤已經不成立（換上去的是一份新帳本），一起清掉。 */
 export function freezeForLedgerSwap() {
+  adoptOtherTabGist();
   if (!cloudOn()) return false;
   clearTimeout(cloudTimer);
-  if (!gist.gistId) gist.swapSearch = true;
+  gist.swapSearch = true;
+  if (gist.lastError === LOCAL_NOT_UPLOADABLE) gist.lastError = null;
   gist.remoteStamp = null;
   gist.lastPush = null;
   gist.pendingPush = null;
@@ -193,6 +236,8 @@ export function scheduleCloudSync() {
 let lastSyncOutcome = "";     /* 'ok'／'busy'／'frozen'／'error'：「立刻同步」鈕靠它講對話，不再把排隊或回音說成失敗 */
 export async function syncCloud(force, _retried) {
   lastSyncOutcome = "frozen";
+  /* 驗收 B1：開始前先看別的分頁有沒有改過雲端設定（凍結、中斷）：改過就用那一份重新判斷 */
+  adoptOtherTabGist();
   if (!cloudOn() || cloudFrozen()) return false;
   if (!uploadableState()) {
     lastSyncOutcome = "invalid";
@@ -226,8 +271,9 @@ export async function syncCloud(force, _retried) {
       });
       if (chk.status === 404) {
         /* 以前同步過（有指紋）表示雲端那份確實存在過、現在不見了：不准自動重建，
-           交給 freezeForGone 撿回別台重建的那份或讓使用者拍板 */
-        if (g.remoteStamp) { gone = true; }
+           交給 freezeForGone 撿回別台重建的那份或讓使用者拍板。
+           驗收 B3：換帳本凍結過（swapSearch）也一樣——指紋被清掉了，但雲端那份是存在過的 */
+        if (g.remoteStamp || g.swapSearch) { gone = true; }
         else { g.gistId = null; g.remoteStamp = null; }
       }
       else if (!chk.ok) throw new Error("GitHub 回應 " + chk.status);
@@ -250,8 +296,11 @@ export async function syncCloud(force, _retried) {
     const files = { [FILE]: { content: body } };
     /* 上傳「前」先把要傳的內容指紋落地：iOS 切背景常把成功回條吞掉，
        之後在雲端看到這個指紋，就知道那是自己傳成功的，不是別台裝置 */
+    /* 驗收 B1：真的要送出去的這一刻再從 localStorage 重讀一次雲端設定：上面那幾支請求在等網路的期間，
+       別的分頁可能換了帳本（凍結）或中斷了連線。跟記憶體不一致就放棄這一趟、採用 localStorage 的版本 */
+    if (gist !== g || adoptOtherTabGist()) { lastSyncOutcome = "frozen"; throw { conflict: true, aborted: true }; }
     g.pendingPush = hashStr(body);
-    if (gist === g) saveGist();
+    if (gist === g && !saveGist()) { lastSyncOutcome = "frozen"; throw { conflict: true, aborted: true }; }
     const url = g.gistId ? "https://api.github.com/gists/" + g.gistId : "https://api.github.com/gists";
     const res = await gfetch(url, {
       method: g.gistId ? "PATCH" : "POST",
@@ -259,8 +308,8 @@ export async function syncCloud(force, _retried) {
       body: JSON.stringify(g.gistId ? { files } : { description: "小小理財島備份（自動同步）", public: false, files }),
     });
     if (res.status === 404 && g.gistId) {
-      if (g.remoteStamp && !force) {
-        gone = true;                               /* 同上：曾經有過的雲端份不見了，不自動重建 */
+      if ((g.remoteStamp || g.swapSearch) && !force) {
+        gone = true;                               /* 同上：曾經有過的雲端份不見了，不自動重建（驗收 B3：換帳本凍結過也算） */
       } else {
         /* 使用者親手拍板覆蓋（force）或本來就沒同步過：忘掉編號，讓控制流走出 try、
            等 finally 放完鎖，函式最後一行才重試建新的 */
@@ -275,6 +324,7 @@ export async function syncCloud(force, _retried) {
       g.gistId = j.id; g.remoteStamp = j.updated_at || null;
       g.lastPush = g.pendingPush; g.pendingPush = null;   /* 回條到手：這份內容確定在雲端了 */
       g.lastSyncAt = new Date().toISOString(); g.lastError = null;
+      g.swapSearch = false;                                 /* 驗收 B3：傳成功一次，「換帳本凍結過」的記號才清掉 */
       if (gist === g) { saveGist(); ok = true; lastSyncOutcome = "ok"; }     /* 途中被中斷連線就不落地也不宣稱成功 */
     }
   } catch (e) {
@@ -374,6 +424,8 @@ export function cloudInfo() {
 // db.save 靠這個決定 latestBackup.copyStatus；common.js 的儲存狀態文字也靠它
 function bridgeStatus() {
   if (!cloudOn()) return null;
+  /* 驗收 B4：拍板卡掛著＝等家長決定要用哪一份，這時候不講「暫停上傳」或「稍後重試」 */
+  if (pendingCloud) return "deciding";
   /* 批 1 驗收 #5：帳本驗證不過而暫停上傳，跟「網路失敗、稍後重試」是兩回事，畫面要講對 */
   if (gist.lastError === LOCAL_NOT_UPLOADABLE) return "invalid";
   if (gist.lastError || (gist.pending && !pendingCloud && !gist.gistId)) return "failed";
@@ -406,7 +458,7 @@ export async function connect(token) {
     /* 指紋先留空：要等「真的採用了哪個版本」才寫。連線當下就抄雲端的版本戳，
        等於還沒拍板就宣稱同步過，之後的自動上傳會直接放行 */
     gist = { token, gistId: existing ? existing.id : null, lastSyncAt: null, lastError: null, remoteStamp: null };
-    saveGist();
+    saveGist(true);
     if (!existing) {
       const ok = await syncCloud(true);
       toast(ok ? "已連線，之後每次改動都會自動備份" : "已連線，但第一次上傳失敗：" + (gist.lastError || ""), { ms: 5000, tone: ok ? "success" : "waiting" });
@@ -583,8 +635,7 @@ export async function syncNow() {
 }
 
 /* 從雲端拿回備份：第一按只讀、武裝 5 秒；第二按才套用「第一按當時看到的那一份」。
-   重抓可能拿到別的版本，跟你剛剛看到的筆數對不上，卻被直接套用 */
-let pullCache = null;
+   重抓可能拿到別的版本，跟你剛剛看到的筆數對不上，卻被直接套用（pullCache 宣告在檔案開頭） */
 export async function pullFromCloud() {
   if (pullCache) {
     /* 批 1 驗收 #4：跟其他兩段式確認一樣，武裝後 600ms 內的第二按當成連點，不執行（也不解除武裝） */
@@ -656,7 +707,7 @@ export async function deleteCloudBackup() {
       method: "DELETE", headers: { Authorization: "Bearer " + gist.token, Accept: "application/vnd.github+json" },
     });
     if (res.status === 204 || res.status === 404) {
-      gist = null; pendingCloud = null; pullCache = null; pullFreeze = false; saveGist();
+      gist = null; pendingCloud = null; pullCache = null; pullFreeze = false; saveGist(true);
       toast("雲端備份已刪除、連線已中斷。要更保險的話，可以到 GitHub 把金鑰也撤銷。", { ms: 6000, tone: "success" });
       refreshSettings();
       return { ok: true };
@@ -672,7 +723,7 @@ export async function deleteCloudBackup() {
 /* 中斷連線：雲端從來沒建成的話，別謊稱那裡還有一份 */
 export function disconnect() {
   const had = !!(gist && gist.gistId);
-  gist = null; pendingCloud = null; pullCache = null; pullFreeze = false; saveGist();
+  gist = null; pendingCloud = null; pullCache = null; pullFreeze = false; saveGist(true);
   toast(had ? "已中斷，雲端那份備份還在你的 GitHub 裡" : "已中斷連線", { ms: 4000 });
   refreshSettings();
   return { had };
