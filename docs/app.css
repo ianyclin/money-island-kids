@@ -1273,10 +1273,10 @@ html.has-modal .toast {
   max-width: 520px;
   transform: none;
 }
-/* 驗收 C5：窄螢幕左右再收一點（左 8、右 56，× 在右緣往內 14–58px），字級維持一般內文、不放大；
+/* 驗收 C5：窄螢幕左右再收一點（左 8、右 60，× 在右緣往內 14–58px；v14 由 56 改 60，消掉跟 × 的 2px 重疊），字級維持一般內文、不放大；
    ≥ 768 由 common.js 的 placeToast 對齊彈窗面板 */
 @media (max-width: 479.98px) {
-  html.has-modal .toast { left: 8px; right: 56px; padding-left: 12px; gap: var(--space-2); }
+  html.has-modal .toast { left: 8px; right: 60px; padding-left: 12px; gap: var(--space-2); }
   html.has-modal .toast strong { font-size: var(--fs-body); }
 }
 

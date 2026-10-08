@@ -14,6 +14,13 @@ export function setCloudStatusProvider(fn) { cloudStatusProvider = fn; }
 function cloudStatus() {
   try { return cloudStatusProvider ? cloudStatusProvider() : null; } catch (e) { return null; }
 }
+// v14：家長區雲端面板現在掛的是哪一張卡（"decide"／"gone"／"stale"／""），同樣由 gist.js 掛進來。
+// 只給 backupStatusText 用：「備份不見了」卡掛著時，狀態文字要跟面板講同一句。
+let cloudCardProvider = null;
+export function setCloudCardProvider(fn) { cloudCardProvider = fn; }
+function cloudCard() {
+  try { return cloudCardProvider ? cloudCardProvider() : ""; } catch (e) { return ""; }
+}
 
 // ---------- 本機存檔失敗的橋接（批 1 資料安全） ----------
 // 同樣的理由（db → common 已經有相依），由 db.js 在載入時把「最近一次存檔失敗的原因」掛進來。
@@ -650,6 +657,29 @@ export function confirmDialog(message, options = {}) {
         try { okButton.focus({ preventScroll: true }); } catch (e) {}
       }
     }, CONFIRM_WARMUP_MS);
+    // v14：點到停用中的確定鈕，瀏覽器會把焦點移走（危險確認框掉到 body、一般確認框停在對話框本身）；
+    // 下一拍把焦點交回「取消」。停用期間焦點因為別的原因掉到 body 或對話框本身，也一樣交回「取消」。
+    const cancelButton = dialog.querySelector("[data-confirm-cancel]");
+    const refocusCancel = (alsoFromDialog) => {
+      setTimeout(() => {
+        if (settled || !cancelButton || !cancelButton.isConnected) return;
+        const active = document.activeElement;
+        if (!active || active === document.body || (alsoFromDialog && active === dialog)) {
+          try { cancelButton.focus({ preventScroll: true }); } catch (e) {}
+        }
+      }, 0);
+    };
+    dialog.addEventListener("pointerdown", (event) => {
+      const target = event.target;
+      const ok = target instanceof Element ? target.closest("[data-confirm-ok]") : null;
+      if (ok && (ok.disabled || ok.dataset.confirmWarming)) refocusCancel(true);
+    });
+    // 觸控的相容 mousedown 會晚於 pointerdown：焦點可能先交回取消、又被移到對話框本身，所以「移到對話框本身」也算。
+    // 只管確定鈕還在停用的這段時間；停用期過了維持原本行為。
+    dialog.addEventListener("focusout", (event) => {
+      const warming = okButton && (okButton.disabled || okButton.dataset.confirmWarming);
+      if (warming && (!event.relatedTarget || event.relatedTarget === dialog)) refocusCancel(true);
+    });
     dialog.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
@@ -758,6 +788,8 @@ export function backupStatusText(state) {
   else base = `${new Intl.DateTimeFormat("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Taipei" }).format(new Date(value))} 已儲存`;
   const cloud = cloudStatus();
   if (!cloud) return base;
+  // v14：「備份不見了」卡掛著（bridgeStatus 回 "failed"）時跟雲端面板講同一句；其他 failed 維持「雲端待同步」
+  if (cloud === "failed" && cloudCard() === "gone") return `${base} · 雲端那份備份不見了，自動上傳暫停`;
   // 驗收 B4：拍板卡掛著（等家長決定要用雲端還是這台裝置）時照實講，不講「待同步」或「暫停上傳」
   return `${base} · ${cloud === "synced" ? "雲端已同步" : cloud === "invalid" ? "雲端暫停上傳" : cloud === "deciding" ? "等你決定要用哪一份" : "雲端待同步"}`;
 }

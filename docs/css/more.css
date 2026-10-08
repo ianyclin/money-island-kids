@@ -155,4 +155,7 @@
   padding: 0 var(--space-2);
   margin: -14px calc(-1 * var(--space-2));
   vertical-align: middle;
+  /* v14：命中區往下伸進下一行的 <small>v2</small>，後畫的那行會蓋住連結下緣；把連結疊到上面（v2 只是字，不接點擊） */
+  position: relative;
+  z-index: 1;
 }

@@ -9,7 +9,7 @@ import * as backup from "../js/backup.js";
 import * as gist from "../js/gist.js";
 import * as common from "../js/ui/common.js";
 import { parseStockDayAvg } from "../js/quotes.js";
-import { taipeiDate } from "../js/util.js";
+import { taipeiDate, entryScrollPlan, ENTRY_SCROLL_KEY } from "../js/util.js";
 import * as db from "./db-mock.js";
 import { installFakeFetch, installStorageFakes, jsonResponse } from "./fakes.js";
 
@@ -1564,7 +1564,7 @@ export async function runSelfTest(report) {
           if (freeze) gist.freezeForLedgerSwap();
           const afterFreeze = JSON.parse(fakes.storage.getItem(GIST_KEY) || "null") || {};
           await gist.syncCloud();
-          return { writes: net.calls.filter((call) => call.method === "PATCH" || call.method === "POST").length, info: gist.cloudInfo(), afterFreeze };
+          return { writes: net.calls.filter((call) => call.method === "PATCH" || call.method === "POST").length, info: gist.cloudInfo(), afterFreeze, status: common.backupStatusText({ latestBackup: null }) };
         } finally {
           net.restore();
           gist.disconnect();
@@ -1573,11 +1573,19 @@ export async function runSelfTest(report) {
       const control = await run({ freeze: false, remoteStamp: "2026-01-01T00:00:00Z" });
       assertEqual("對照組（沒換帳本、同步過）：404 → 0 次 POST", control.writes, 0);
       assertEqual("對照組：出「備份不見了」卡", control.info.card, "gone");
+      assertEqual("v14：「備份不見了」卡掛著時，儲存狀態跟雲端面板講同一句", control.status, "等待第一次儲存 · 雲端那份備份不見了，自動上傳暫停");
       const swapped = await run({ freeze: true, remoteStamp: "2026-01-01T00:00:00Z", lastError: "這台裝置的帳本讀不出來或資料對不起來，先暫停上傳，以免蓋掉雲端那份備份" });
       assertEqual("換帳本凍結（gistId 有值）：記號照樣設", swapped.afterFreeze.swapSearch, true);
       assertEqual("換帳本凍結：清掉「帳本壞了、暫停上傳」的錯誤", swapped.afterFreeze.lastError, null);
       assertEqual("換帳本凍結後遇到 404：0 次 POST（不自動新建）", swapped.writes, 0);
       assertEqual("換帳本凍結後遇到 404：出「備份不見了」卡（跟對照組一樣）", swapped.info.card, "gone");
+      assertEqual("v14：換帳本凍結後「備份不見了」：儲存狀態也講同一句", swapped.status, "等待第一次儲存 · 雲端那份備份不見了，自動上傳暫停");
+      // 其他 failed（例如網路失敗、沒有卡）：維持「雲端待同步」
+      connectGist({ lastError: "網路斷了（selftest）" });
+      try {
+        assertEqual("v14 對照：一般同步失敗沒有卡", gist.cloudInfo().card, "");
+        assertEqual("v14 對照：一般同步失敗的儲存狀態維持「雲端待同步」", common.backupStatusText({ latestBackup: null }), "等待第一次儲存 · 雲端待同步");
+      } finally { gist.disconnect(); }
       db.reset();
     });
 
@@ -1651,6 +1659,45 @@ export async function runSelfTest(report) {
       assertEqual("刪除：那一把不見了、另一把還在", [fakes.storage.getItem(keys[0]), fakes.storage.getItem(keys[1])], [null, "{舊版留在這台裝置第 2 份"]);
       fakes.storage.removeItem(keys[1]);
       fakes.storage.removeItem("money-island.v1.brokenish");
+    });
+
+    await section("v14 出路畫面一律回頂端、不記捲動", async () => {
+      const visited = { moneyIslandEntry: true, [ENTRY_SCROLL_KEY]: 1500 };
+      assertEqual("對照：上一頁回到有記號的紀錄，恢復 1500", entryScrollPlan(visited, true), { top: 1500, track: true });
+      assertEqual("對照：點連結進新頁回頂端", entryScrollPlan(visited, false), { top: 0, track: true });
+      assertEqual("出路畫面：同一筆有記號、位置 1500，照樣回頂端而且不記捲動", entryScrollPlan(visited, true, true), { top: 0, track: false });
+      assertEqual("出路畫面：沒有記號也回頂端、不記捲動", entryScrollPlan({}, false, true), { top: 0, track: false });
+    });
+
+    await section("v14 確認框：點到停用中的確定鈕，焦點回到「取消」", async () => {
+      const modalRoot = document.createElement("div");
+      modalRoot.id = "modal-root";
+      document.body.append(modalRoot);
+      try {
+        for (const danger of [true, false]) {
+          const label = danger ? "危險確認框" : "一般確認框";
+          const answer = common.confirmDialog("測試焦點", danger ? { danger: true, confirmLabel: "刪除這筆紀錄" } : {});
+          const dialog = modalRoot.querySelector(".modal");
+          const okButton = modalRoot.querySelector("[data-confirm-ok]");
+          const cancelButton = modalRoot.querySelector("[data-confirm-cancel]");
+          assertEqual(`${label}：剛打開時確定鈕停用`, okButton.disabled, true);
+          // 模擬瀏覽器點停用按鈕的結果：pointerdown 之後焦點移走（危險確認框掉到 body、一般確認框停在對話框本身）
+          okButton.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          if (danger) document.activeElement.blur(); else dialog.focus();
+          await wait(20);
+          assert(`${label}：焦點沒有掉到 body`, document.activeElement !== document.body);
+          assert(`${label}：焦點回到「取消」`, Boolean(cancelButton) && document.activeElement === cancelButton);
+          // 停用期間焦點直接被移走（沒有點確定鈕）也交回取消
+          cancelButton.blur();
+          await wait(20);
+          assert(`${label}：停用期間焦點掉到 body 也交回「取消」`, document.activeElement === cancelButton);
+          common.closeModal();
+          assertEqual(`${label}：關掉照舊回答「取消」`, await answer, false);
+        }
+      } finally {
+        common.closeModal();
+        modalRoot.remove();
+      }
     });
 
     // ---------- 20. 操作碼鎖定（放最後，會把操作碼鎖住 15 分鐘）----------

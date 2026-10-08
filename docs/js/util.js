@@ -168,3 +168,15 @@ export const reduceMotion = () => globalThis.matchMedia && globalThis.matchMedia
 export function errorMessage(error, fallback) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
+
+// ---------- 換頁後的捲動位置（app.js 的 settleEntry 用；放這裡是為了 selftest 測得到） ----------
+// 上一頁／下一頁回到這一筆紀錄離開時的位置；點連結、分頁列進新頁一律回頂端。
+// v14：帳本讀不出來的出路畫面一律 forceTop＝回頂端，而且不記捲動（track＝false）：
+// 那一筆瀏覽紀錄的位置維持進出路畫面前的值，帳本恢復回到原頁時不會沿用出路畫面上的位置。
+export const ENTRY_SCROLL_KEY = "moneyIslandScrollY";
+export function entryScrollPlan(entryState, traversal, forceTop = false) {
+  if (forceTop) return { top: 0, track: false };
+  if (!traversal || !entryState || typeof entryState !== "object") return { top: 0, track: true };
+  const y = Number(entryState[ENTRY_SCROLL_KEY]);
+  return { top: Number.isFinite(y) && y > 0 ? y : 0, track: true };
+}

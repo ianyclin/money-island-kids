@@ -10,7 +10,7 @@ import * as gist from "./gist.js";
 import * as backup from "./backup.js";
 import * as setup from "./ui/setup.js";
 import { stateGate, showStatus, closeModal, confirmDialog, isModalOpen, syncModalBackdrop, timestampText, applyListHolds } from "./ui/common.js";
-import { html, raw } from "./util.js";
+import { html, raw, entryScrollPlan, ENTRY_SCROLL_KEY } from "./util.js";
 
 // ---------- 路由表 ----------
 // hash 路由：GitHub Pages 沒有伺服器可以改寫網址，所有頁面共用同一份 index.html。
@@ -96,7 +96,7 @@ let lastRenderedRoute = "";   // 批 5：上一次畫出來的路由，用來分
 // 驗收 C3：捲動位置改記在每一筆瀏覽紀錄自己的 history.state 上（以前依頁面記，同一頁的兩筆紀錄會共用一個位置）。
 // 捲動停下來 120ms 後寫一次；點擊（捕捉階段，在連結換網址之前）也先寫一次，免得剛捲完馬上點連結時沒記到。
 const ENTRY_MARK = "moneyIslandEntry";
-const ENTRY_SCROLL = "moneyIslandScrollY";
+const ENTRY_SCROLL = ENTRY_SCROLL_KEY;
 let scrollSaveTimer = 0;
 let scrollTracking = false;    // 這一筆紀錄畫好、捲動位置定下來之後才開始記（換頁途中的捲動不算）
 try { if ("scrollRestoration" in history) history.scrollRestoration = "manual"; } catch (e) {}
@@ -129,11 +129,9 @@ function markEntry() {
   try { history.replaceState({ ...currentEntryState(), [ENTRY_MARK]: true }, ""); } catch (e) {}
 }
 
-// 上一頁／下一頁回到這一筆紀錄離開時的位置；點連結、分頁列進新頁一律回頂端
+// 上一頁／下一頁回到這一筆紀錄離開時的位置；點連結、分頁列進新頁一律回頂端（v14：算法搬到 util.entryScrollPlan）
 export function scrollTargetFor(entryState, traversal) {
-  if (!traversal || !entryState || typeof entryState !== "object") return 0;
-  const y = Number(entryState[ENTRY_SCROLL]);
-  return Number.isFinite(y) && y > 0 ? y : 0;
+  return entryScrollPlan(entryState, traversal).top;
 }
 
 // 路由（# 後、? 前；#/dreams 是 #/growth 的別名）
@@ -182,12 +180,14 @@ async function render() {
     const entryState = currentEntryState();
     if (navigated) { scrollTracking = false; clearTimeout(scrollSaveTimer); }
     lastRenderedRoute = routeKey;
-    const settleEntry = () => {
+    // v14：forceTop＝不管是不是上一頁，一律回頂端、蓋記號，但不開始記捲動（出路畫面用）
+    const settleEntry = (forceTop = false) => {
       if (!navigated) return;
       if (location.hash !== startHash) { lastRenderedRoute = ""; return; }   // 交給排隊的那次重繪當成換頁處理
-      window.scrollTo(0, scrollTargetFor(entryState, traversal));
+      const plan = entryScrollPlan(entryState, traversal, forceTop);
+      window.scrollTo(0, plan.top);
       markEntry();
-      scrollTracking = true;
+      scrollTracking = plan.track;
     };
     // 批 1 驗收 #11：同一頁重繪（例如另一個分頁存檔）會把開著的彈窗關掉再補開，補開時焦點固定跳到第一個欄位；
     // 先記下焦點在哪個欄位、游標在哪，畫完再還回去
@@ -200,7 +200,10 @@ async function render() {
       if (recovering) {
         mount.innerHTML = String(recoveryGate());
         syncModalBackdrop();
-        settleEntry();   // 驗收 C3：出路畫面這條提早 return 也一樣捲回頂端、蓋記號
+        // 驗收 C3：出路畫面這條提早 return 也一樣捲回頂端、蓋記號。
+        // v14：一律回頂端（另一個分頁弄壞帳本時，這一筆紀錄可能有記號，會被當成上一頁恢復舊位置）；
+        // 出路畫面上的捲動不記，帳本恢復回原頁時用的是進出路畫面前的位置
+        settleEntry(true);
         void loadRecoverySnapshots();
         void refreshBrokenCopyText();
         return;

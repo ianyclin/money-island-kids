@@ -9,7 +9,7 @@ import { normalize } from "./state.js";
 import * as store from "./store.js";
 import * as pin from "./pin.js";
 import { setCloudBridge, KEY, INVALID_LEDGER_CLOUD_TEXT } from "./db.js";
-import { showStatus, closeModal, setCloudStatusProvider } from "./ui/common.js";
+import { showStatus, closeModal, setCloudStatusProvider, setCloudCardProvider } from "./ui/common.js";
 
 /* ───────── 雲端自動備份（GitHub Gist） ─────────
    iPhone 上的網頁 app 進不了 iCloud，這是 Apple 不開放的；
@@ -416,7 +416,7 @@ export function cloudInfo() {
     pullFreeze,
     pullArmed: !!pullCache,
     // 三張卡：拍板卡（decide）、備份不見了（gone）、還沒比對完（stale）
-    card: pendingCloud ? "decide" : (gist && gist.pending && !gist.gistId) ? "gone" : (gist && gist.pending) ? "stale" : "",
+    card: cloudCard(),
     cloudSummary: pendingCloud ? summary(pendingCloud.cloud) : null,
     localSummary: local ? summary(local) : null,
   };
@@ -434,6 +434,11 @@ function bridgeStatus() {
 }
 setCloudBridge({ schedule: scheduleCloudSync, status: bridgeStatus });
 setCloudStatusProvider(bridgeStatus);
+// v14：三張卡的判斷抽出來，家長區面板（cloudInfo）與儲存狀態文字（common.backupStatusText）共用同一個
+function cloudCard() {
+  return pendingCloud ? "decide" : (gist && gist.pending && !gist.gistId) ? "gone" : (gist && gist.pending) ? "stale" : "";
+}
+setCloudCardProvider(cloudCard);
 
 /* ───────── 設定頁的行為（stamps 3547–3818 行） ───────── */
 
