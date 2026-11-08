@@ -194,6 +194,11 @@ export function createLockModal({ getPinStatus, onUnlocked, parentHref } = {}) {
     const button = form.querySelector("button");
     const busyLabel = button && button.dataset.busyLabel;
     const idleLabel = button ? button.textContent : "";
+    // v18（驗收 45bce23）：送出時讀欄位現值——瀏覽器自動填入不一定發 input 事件，只靠 value 會送出空字串。
+    // 不先濾掉數字以外的字：「第一次設定」時把自動填入的英數密碼濾成剛好 4 碼，會設下一組家長沒選過的操作碼；
+    // 原樣交給 pin.setup／pin.assert 擋（兩支都只收 4–8 位數字，assert 擋下的不計錯誤次數）
+    const input = form.querySelector("#lock-modal-pin");
+    if (input) value = String(input.value ?? "").trim();
     if (button) { button.disabled = true; if (busyLabel) button.textContent = busyLabel; }
     try {
       if (pinStatus === "setup") await pin.setup(value); else await pin.assert(value);

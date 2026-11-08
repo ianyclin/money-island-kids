@@ -11,6 +11,7 @@ import * as store from "../store.js";
 import * as pin from "../pin.js";
 import * as backup from "../backup.js";
 import * as gist from "../gist.js";
+import * as db from "../db.js";
 import { field, infoTip, showStatus, timestampText, PIN_INPUT_ATTRS } from "./common.js";
 import * as backupStatus from "../backup-status.js";
 
@@ -59,12 +60,28 @@ function needsPinSetup() {
   try { return pin.status() === "setup"; } catch (e) { return true; }
 }
 
+// v18：操作碼三態——"setup"＝這台裝置沒有操作碼；"replace"＝有操作碼、但 localStorage 完全沒有帳本鍵
+// （這次輸入的直接取代舊的，不驗、不計錯誤次數）；"existing"＝有操作碼、帳本鍵也在但讀不出來
+// （出路畫面帶來另建／還原的情況），維持要舊碼。每次畫面與送出都重算：另一個分頁可能剛建好帳本。
+function pinMode() {
+  if (needsPinSetup()) return "setup";
+  let ledgerKey = true;
+  try { ledgerKey = db.hasState(); } catch (e) { ledgerKey = true; }
+  return ledgerKey ? "existing" : "replace";
+}
+
 // 帳本讀不出來的出路畫面（app.js）帶家長來這裡時，直接切到對應的那一條路。
 export function presetMode(next) {
   mode = next === "restore" ? "restore" : "create";
+  clearPinDrafts();
   clearError();
   summary = null;
   parsed = null;
+}
+
+// v18：換一條路進來（出路畫面帶來、從雲端拿回成功）時操作碼草稿一律清掉；家庭名稱、孩子、比例的草稿留著
+function clearPinDrafts() {
+  for (const key of ["createPin", "createPinAgain", "restorePin", "restorePinAgain"]) drafts[key] = "";
 }
 
 function clearError() {
@@ -134,6 +151,13 @@ export function render() {
   </main>`;
 }
 
+function pinHelp() {
+  const how = pinMode();
+  if (how === "replace") return html`<p class="setup-help" data-setup-pin-replace>${REPLACE_PIN_TEXT}</p>`;
+  if (how === "existing") return html`<p class="setup-help">這台裝置已經設定過家長操作碼，請輸入原本那一組。</p>`;
+  return "";
+}
+
 function createForm(cloud) {
   return html`<h2 class="setup-subtitle">建立新帳本</h2>
     <p class="setup-copy">填好之後就可以開始記帳。之後在家長區都能改：孩子的名字、照片、預先儲蓄比例、還可以再加或移除小朋友。</p>
@@ -147,7 +171,7 @@ function createForm(cloud) {
           <label class="sr-only" for="setup-kid-3">小朋友 3</label><input class="input" id="setup-kid-3" name="kid" data-setup-draft="kid3" value="${drafts.kid3}" placeholder="小朋友 3" maxlength="12">
         </div>
       </div>
-      ${needsPinSetup() ? "" : html`<p class="setup-help">這台裝置已經設定過家長操作碼，請輸入原本那一組。</p>`}
+      ${pinHelp()}
       ${pinFields("create")}
       ${field({ label: "預先儲蓄比例", input: html`<input class="input" type="number" name="savingsRate" data-setup-draft="savingsRate" value="${drafts.savingsRate}" min="0" max="100" step="5" inputmode="numeric" required>` })}
       <p class="setup-help">零用錢進來時，這個比例會先留給未來（存進爸媽銀行），其餘由孩子自己安排。預設 30%，以 5% 為單位。</p>
@@ -183,7 +207,8 @@ function restoreForm() {
       <small>${summary.portable ? `完整可攜備份${summary.photoCount ? `，包含 ${summary.photoCount} 張照片` : ""}` : "帳本備份"}</small>
       <small>${summary.counts.profiles} 位孩子、${summary.counts.activities} 筆紀錄、${summary.counts.dreams} 個夢想、${summary.counts.holdings} 個投資標的</small>
       <form data-form="restore" novalidate>
-        ${needsPinSetup() ? html`<p class="setup-help">備份檔裡不含家長操作碼（它從來不會被匯出）。先設定一組，還原完就能用它解鎖家長區。</p>${pinFields("restore")}` : ""}
+        ${pinMode() === "setup" ? html`<p class="setup-help">備份檔裡不含家長操作碼（它從來不會被匯出）。先設定一組，還原完就能用它解鎖家長區。</p>${pinFields("restore")}` : ""}
+        ${pinMode() === "replace" ? html`<p class="setup-help" data-setup-pin-replace>${REPLACE_PIN_TEXT}</p>${pinFields("restore")}` : ""}
         <div class="form-actions">
           <button class="btn btn-primary btn-block restore-button" ${busy === "restore" ? raw("disabled") : ""}>${busy === "restore" ? "還原中…" : "確認覆蓋並還原"}</button>
         </div>
@@ -243,7 +268,13 @@ export function mount(root, ctx) {
 
 // 這台裝置已經有操作碼、第一次使用頁卻打了另一組（作者 iPhone 回報）：說清楚要打原本那一組，並指出資料可能還在
 export const EXISTING_PIN_TEXT = "這台裝置之前設定過家長操作碼，請輸入原本那組。";
-export const EXISTING_PIN_HINT = "這通常表示這台裝置以前用過小小理財島，資料可能還在：可以改用上面的「從備份還原」，或聯絡家長確認。";
+// v18：只剩「帳本鍵還在、讀不出來」（出路畫面另建）才會要舊碼。不指向「從備份還原」：還原不會換操作碼，
+// 還原完舊碼原封不動，走不通；也不承諾其他出路
+export const EXISTING_PIN_HINT = "這台裝置原本就有一份帳本和家長操作碼，請輸入原本那組。";
+export const SAVINGS_RATE_REQUIRED_TEXT = "請輸入預先儲蓄比例（0% 到 100%，以 5% 為單位）";
+// v18（驗收 45bce23）：有操作碼、但 localStorage 完全沒有帳本鍵（不是讀不出來，是不存在）——
+// 多半是帳本被清掉、操作碼卻留著，家長也忘了舊碼。這時候建立或還原直接用這次輸入的那組取代，不驗舊碼
+export const REPLACE_PIN_TEXT = "這台裝置以前設過家長操作碼，但沒有帳本，這次輸入的會成為新的操作碼。";
 
 function readPin(form, prefix) {
   const value = String(form.elements[`${prefix}Pin`].value || "").trim();
@@ -266,7 +297,9 @@ async function createLedger(form, ctx) {
   captureDrafts(form);
   clearError();
   // 帳本讀不出來後另建時，這台裝置早就有操作碼了：驗原本那一組，不重設（pin.setup 會擋「已經設定」）
-  const firstPin = needsPinSetup();
+  // v18：有操作碼但完全沒有帳本鍵（"replace"）：不驗舊碼，帳本建好之後清掉舊的、設成這次輸入的
+  const how = pinMode();
+  const firstPin = how !== "existing";
   let asserting = false;
   try {
     const familyName = String(form.elements.familyName.value || "").trim().slice(0, 30);
@@ -275,7 +308,11 @@ async function createLedger(form, ctx) {
       .map((input) => String(input.value || "").trim())
       .filter(Boolean);
     if (!kidNames.length) throw new Error("至少要填一位小朋友的名字");
-    const savingsRate = Math.round(Number(form.elements.savingsRate.value));
+    // v18（驗收 45bce23）：Number("") 是 0——欄位清空（或 type=number 打了數字以外的字，value 也是空字串）
+    // 以前會默默變成 0%；空白或不是數字一律擋下來請家長填
+    const rateText = String(form.elements.savingsRate.value ?? "").trim();
+    if (!rateText || !Number.isFinite(Number(rateText))) throw new Error(SAVINGS_RATE_REQUIRED_TEXT);
+    const savingsRate = Math.round(Number(rateText));
     if (!Number.isFinite(savingsRate) || savingsRate < 0 || savingsRate > 100 || savingsRate % 5 !== 0) {
       throw new Error("預先儲蓄比例請以 5% 為單位，設定在 0% 到 100% 之間");
     }
@@ -294,6 +331,7 @@ async function createLedger(form, ctx) {
     // 讀不出來的那份會在 replaceState 裡先留存，留存不了就丟錯、不另建
     await store.replaceState(next, "建立新帳本");
     // 批 1 驗收 #3：新的操作碼等帳本真的換好了才設——以前先設，換帳本失敗時操作碼已經變了、帳本卻沒建
+    if (how === "replace") pin.clearForNewLedger();
     if (firstPin) await pin.setup(parentPin);
     busy = "";
     drafts = { ...EMPTY_DRAFTS };
@@ -328,6 +366,7 @@ async function pullCloud(ctx) {
   if (result && result.tooSoon) return;
   if (result && result.applied) {
     cloudNote = "";
+    clearPinDrafts();
     location.hash = "#/";
     return;
   }
@@ -361,7 +400,9 @@ async function restoreLedger(form, ctx) {
   captureDrafts(form);
   clearError();
   try {
-    const parentPin = needsPinSetup() ? readPin(form, "restore") : "";
+    // v18："replace"（有操作碼、沒有帳本鍵）也要家長設一組新的，還原成功後取代舊的
+    const how = pinMode();
+    const parentPin = how !== "existing" ? readPin(form, "restore") : "";
     // 驗證過了才畫成忙碌狀態（這次重繪也會停用選檔欄）；欄位值在草稿裡，重繪不會清掉
     busy = "restore";
     ctx.refresh();
@@ -370,6 +411,7 @@ async function restoreLedger(form, ctx) {
     // backup.restore 內部已經 setState 並存檔。
     await backup.restore(parsed);
     // 批 1 驗收 #3：還原真的成功了才設操作碼，不先設
+    if (parentPin && how === "replace") pin.clearForNewLedger();
     if (parentPin) await pin.setup(parentPin);
     busy = "";
     summary = null;

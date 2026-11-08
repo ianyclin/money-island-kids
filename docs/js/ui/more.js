@@ -5,6 +5,7 @@
 
 import { html, raw, money, errorMessage } from "../util.js";
 import { appShell, showStatus, stateGate } from "./common.js";
+import { reloadIfShellIsOld } from "../build.js";   // v18 跨版守衛：舊殼載到新頁面就整頁重新整理一次
 import * as store from "../store.js";
 
 // 規格 5.4 第 4 列：版本號寫死一行（sw.js 的 VERSION 讀不到）。
@@ -53,6 +54,7 @@ function rule(number, title, text) {
 
 // ---------- render ----------
 export function render(ctx) {
+  if (reloadIfShellIsOld()) return "";
   const state = ctx.state;
   const profile = ctx.profile;
   if (!state || !profile) return stateGate("", () => ctx.refresh());
@@ -153,6 +155,7 @@ async function runProject(ctx, projectAction, projectId, button) {
 
 // ---------- mount ----------
 export function mount(root, ctx) {
+  if (reloadIfShellIsOld()) return;
   currentCtx = ctx;
   if (!ctx.profile) return;
   if (!boundRoots.has(root)) {

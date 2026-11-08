@@ -41,7 +41,7 @@
 
 <!-- 開機骨架：app.js 接手後會整個換掉。內容與 MoneyStateGate 的載入態一致 -->
 <div id="app">
-  <main class="money-state-gate" aria-live="polite">
+  <main class="money-state-gate" aria-live="polite" data-boot-skeleton>
     <div class="money-state-gate-card">
       <span class="brand-mark" aria-hidden="true">¢</span>
       <div class="state-skeleton state-skeleton-title"></div>
@@ -55,6 +55,31 @@
 <div id="toast-root"></div>
 <div id="modal-root"></div>
 
-<script type="module" src="./js/app.js"></script>
+<!-- v18（驗收 45bce23）開機失敗畫面：第一次造訪時網路不穩，模組沒載完整，以前會永遠停在上面的骨架。
+     兩條路換成同一張重試卡：(1) module script 的 onerror——app.js 或它靜態匯入的任何一支抓不到時觸發；
+     (2) 保險計時器——15 秒內 app.js 的 boot() 還沒設 window.__appBooted（很慢、或模組執行時就炸了，那不會觸發 onerror）。
+     只在骨架還在時換（可以重複呼叫、只換一次）；換完之後模組才到的話，app.js 開機照常畫，會整個換掉這張卡。
+     這段要在 module script 之前，onerror 叫得到它；不依賴 app.css（可能也沒載到），按鈕大小用 inline。 -->
+<script>
+(function () {
+  var timer = 0;
+  window.__bootFailed = function () {
+    clearTimeout(timer);
+    if (window.__appBooted) return;
+    var app = document.getElementById("app");
+    if (!app || !app.querySelector("[data-boot-skeleton]")) return;
+    app.innerHTML = '<main class="money-state-gate" role="alert" data-boot-failed>'
+      + '<div class="money-state-gate-card">'
+      + '<span class="brand-mark" aria-hidden="true">¢</span>'
+      + '<p>小小理財島沒有載完整，可能是網路不穩。帳本還在這台裝置裡，不會不見。</p>'
+      + '<button type="button" data-boot-reload style="min-width:44px;min-height:44px;padding:0 20px">重新載入</button>'
+      + '</div></main>';
+    var button = app.querySelector("[data-boot-reload]");
+    if (button) button.addEventListener("click", function () { location.reload(); });
+  };
+  timer = setTimeout(function () { if (!window.__appBooted) window.__bootFailed(); }, 15000);
+})();
+</script>
+<script type="module" src="./js/app.js" onerror="window.__bootFailed &amp;&amp; window.__bootFailed()"></script>
 </body>
 </html>

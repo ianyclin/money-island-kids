@@ -5,6 +5,7 @@
 
 import { html, raw, money, formatMonthLabel, errorMessage } from "../util.js";
 import * as common from "./common.js";
+import { reloadIfShellIsOld } from "../build.js";   // v18 跨版守衛：舊殼載到新頁面就整頁重新整理一次
 import * as store from "../store.js";
 import * as appState from "../state.js";
 import * as pin from "../pin.js";
@@ -176,6 +177,7 @@ function listSection(page, pinStatus) {
 }
 
 export function render(ctx) {
+  if (reloadIfShellIsOld()) return "";
   currentCtx = ctx;
   const profile = ctx.profile;
   if (!ctx.state || !profile) return common.stateGate("", () => ctx.refresh());
@@ -446,6 +448,7 @@ function onClick(event) {
 }
 
 export function mount(root, ctx) {
+  if (reloadIfShellIsOld()) return;
   currentCtx = ctx;
   if (!ctx.state || !ctx.profile) return;
   root.addEventListener("input", onInput);

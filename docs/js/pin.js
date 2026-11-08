@@ -91,6 +91,13 @@ export async function setup(pin) {
   unlockedPin = pin;
 }
 
+// v18：第一次使用頁「有操作碼、但完全沒有帳本鍵」時，帳本建好（或還原好）之後先清掉舊紀錄，再由 setup() 設新的。
+// 只給 setup.js 這一條路用：不驗舊碼、不計錯誤次數。帳本讀不出來（帳本鍵還在）的情況不准呼叫。
+export function clearForNewLedger() {
+  globalThis.localStorage?.removeItem(STORAGE_KEY);
+  unlockedPin = "";
+}
+
 // money-store.ts assertParentPin L754–774。
 // 單機版差異：本次開啟期間解鎖成功後，UI 可以不再重送操作碼；沒帶 pin 時改用記住的那一組再驗一次。
 export async function assert(pin) {

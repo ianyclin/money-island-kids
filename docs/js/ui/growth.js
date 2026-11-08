@@ -6,6 +6,7 @@
 
 import { html, raw, money, signedMoney, formatDate, formatDateTime, formatMonthLabel, taipeiMonth, errorMessage } from "../util.js";
 import * as common from "./common.js";
+import { reloadIfShellIsOld } from "../build.js";   // v18 跨版守衛：舊殼載到新頁面就整頁重新整理一次
 import * as store from "../store.js";
 import * as pin from "../pin.js";
 import { totalAssets, assetTimeline } from "./common.js";   // 與首頁共用同一份
@@ -292,6 +293,7 @@ function reviewSection(ctx, hidden) {
 
 // ---------- render ----------
 export function render(ctx) {
+  if (reloadIfShellIsOld()) return "";
   currentCtx = ctx;
   if (!ctx.state || !ctx.profile) return common.stateGate(undefined, () => ctx.refresh());
   syncProfile(ctx);
@@ -342,6 +344,7 @@ export function render(ctx) {
 
 // ---------- mount ----------
 export function mount(root, ctx) {
+  if (reloadIfShellIsOld()) return;
   currentCtx = ctx;
   if (!ctx.state || !ctx.profile) return;
   // 規格 4.3：重繪後如果 modal「該開卻沒開」，補開並回填欄位值。

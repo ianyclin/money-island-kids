@@ -12,6 +12,7 @@ import * as setup from "./ui/setup.js";
 import * as backupStatus from "./backup-status.js";
 import { stateGate, showStatus, closeModal, confirmDialog, isModalOpen, syncModalBackdrop, timestampText, applyListHolds } from "./ui/common.js";
 import { html, raw, entryScrollPlan, ENTRY_SCROLL_KEY } from "./util.js";
+import { BUILD } from "./build.js";
 
 // ---------- 路由表 ----------
 // hash 路由：GitHub Pages 沒有伺服器可以改寫網址，所有頁面共用同一份 index.html。
@@ -89,6 +90,18 @@ export function navigate(hash) {
 let rendering = false;
 let pendingRender = false;
 let lastRenderedRoute = "";   // 批 5：上一次畫出來的路由，用來分辨「換頁」與「同一頁重繪」
+const loadedRoutes = new Set();   // v18：這個分頁已經載入過的延遲載入頁面模組（路由 id）
+
+// v18（驗收 45bce23）：頁面模組最多等 15 秒。網路不穩時 import() 可能一直不回來，畫面就永遠停在上一頁或骨架；
+// 逾時走既有的「這一頁載不進來＋再試一次」。模組之後才到也不會再畫一次：這一次 render 已經放棄它了，
+// 按「再試一次」時 import() 會拿到同一個（已經到了的）模組。
+const ROUTE_LOAD_TIMEOUT_MS = 15000;
+const ROUTE_LOAD_TIMEOUT_TEXT = "等了 15 秒還沒載完，可能是網路不穩";
+function withTimeout(promise, ms, message) {
+  let timer = 0;
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 // ---------- 疑問-1：上一頁／下一頁回到離開時的捲動位置 ----------
 // 分辨「上一頁／下一頁」與「點連結進新頁」的方法：每一筆畫過的瀏覽紀錄都在 history.state 蓋一個記號；
@@ -219,8 +232,18 @@ async function render() {
     const route = ROUTES[hash];
     let mod = route.module;
     if (!mod) {
+      // v18：新版 SW 已經接管這個分頁（見下面「新版已接管」）：換了路由、或要載入一支還沒載過的模組之前，
+      // 整頁重新整理，不要把新版的頁面模組配上記憶體裡的舊版 common.js／store.js。
+      // 只在這裡做：同一頁重繪（打字中、背景同步、另一分頁存檔）不重新整理，不會打斷輸入；
+      // 換路由時彈窗已經被上面的 closeModal("navigate") 收掉，萬一還開著（沒換路由、重試載入）就先不整理、照常載入。
+      // 第一次使用頁與出路畫面不經過這裡（setup.js 靜態載入、出路畫面在 app.js 裡），等下一次進一般頁面才整理。
+      if (newVersionTookOver && (navigated || !loadedRoutes.has(route.id)) && !isModalOpen()) {
+        location.reload();
+        return;
+      }
       try {
-        mod = await route.load();
+        mod = await withTimeout(route.load(), ROUTE_LOAD_TIMEOUT_MS, ROUTE_LOAD_TIMEOUT_TEXT);
+        loadedRoutes.add(route.id);
       } catch (error) {
         mount.innerHTML = String(stateGate(`這一頁載不進來（${error && error.message ? error.message : "未知的錯誤"}）`, () => { void render(); }));
         return;
@@ -543,12 +566,31 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // ---------- Service Worker：離線 + 新版提示 ----------
+// v18（驗收 45bce23）「新版已接管」：sw.js 安裝完就 skipWaiting＋clients.claim，開著的舊版分頁會被新版 SW 接手。
+// 這個分頁已經載入的模組（app.js、common.js、store.js…）還是舊版，之後才延遲載入的頁面模組（parent.js 等）卻是新版——
+// 新版 parent.js 配舊版 common.js 時，common.PIN_INPUT_ATTRS 是 undefined，家長操作碼欄就變成明碼。
+// 所以一偵測到新版 SW 接管，就記下 newVersionTookOver；render() 在下一次換路由或載入還沒載過的頁面模組之前
+// 改成 location.reload() 整頁重新整理，讓所有模組同一版。不在偵測到的當下就整理：使用者可能正在填表或開著彈窗。
+// 只認「開機時就已經被 SW 控制」的分頁：第一次安裝時 clients.claim() 也會觸發 controllerchange，
+// 那時候頁面本來就是從網路載的、沒有混版，整理只會白白吃掉「帳本建好了」這種提示。
+// 標記只在記憶體裡：整理完的新頁面開機時就被新版控制，不會再觸發，不會一直重新整理。
+const bootControlled = (() => {
+  try { return Boolean("serviceWorker" in navigator && navigator.serviceWorker.controller); } catch (e) { return false; }
+})();
+let newVersionTookOver = false;
+
 function registerServiceWorker() {
   if ("serviceWorker" in navigator && /^https?:/.test(location.protocol)) {
+    // 不放進 load 裡：瀏覽器自己在導覽時檢查更新，新版可能在 load 之前就接管
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (bootControlled) newVersionTookOver = true;
+    });
     addEventListener("load", () => {
       navigator.serviceWorker.register("./sw.js").catch(() => {});
       navigator.serviceWorker.addEventListener("message", e => {
         if (e.data && e.data.type === "shell-updated") {
+          // sw.js 只在換掉舊版快取（＝升級）時發這個；它發的時候 clients.claim() 已經做完
+          newVersionTookOver = true;
           showStatus("有新版本", "waiting", { ms: 8000, action: "更新", onAction: () => location.reload() });
         }
       });
@@ -634,6 +676,11 @@ function reloadFromOtherTab(event, info = {}) {
 }
 
 async function boot() {
+  // v18：跟 index.html 的保險計時器說「模組都載到了、開機了」，15 秒後就不會換成「沒有載完整」的重試卡。
+  // 走到這一行＝app.js 與它靜態匯入的每一支模組都載好、執行完了。
+  window.__appBooted = true;
+  // v18：殼的版本。延遲載入的頁面模組拿它跟自己的 BUILD 比，不一樣就整頁重新整理一次（見 build.js）
+  window.__APP_BUILD = BUILD;
   // 先把 localStorage 的帳本放進 store（不回寫）；讀不到就維持 null，render 會導去第一次使用。
   hydrateFromStorage();
   // 批 2 B：舊版留在 localStorage 的 .broken 搬進 IndexedDB；確定存進去才移除，存不進去就留著

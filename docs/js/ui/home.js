@@ -6,6 +6,7 @@
 
 import { html, raw, money, formatShortDate, taipeiMonth, uuid, errorMessage } from "../util.js";
 import { kindName } from "../state.js";
+import { reloadIfShellIsOld } from "../build.js";   // v18 跨版守衛：舊殼載到新頁面就整頁重新整理一次
 import {
   appShell,
   btn,
@@ -184,6 +185,7 @@ function islandGarden({ avatar, name, value, futureValue, futurePrincipal, speci
 // 規格 1：折線圖整段原樣搬（首頁不畫，成長頁 import 這一支）。
 // ---------- render ----------
 export function render(ctx) {
+  if (reloadIfShellIsOld()) return "";
   const state = ctx.state;
   const profile = ctx.profile;
   if (!state || !profile) return stateGate("", () => ctx.refresh());
@@ -614,6 +616,7 @@ async function chooseGarden(ctx, next, buttons) {
 
 // ---------- mount ----------
 export function mount(root, ctx) {
+  if (reloadIfShellIsOld()) return;
   currentCtx = ctx;
   if (!ctx.profile) return;
 

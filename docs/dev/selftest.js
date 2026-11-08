@@ -11,6 +11,7 @@ import * as common from "../js/ui/common.js";
 import { parseStockDayAvg } from "../js/quotes.js";
 import { taipeiDate, entryScrollPlan, ENTRY_SCROLL_KEY } from "../js/util.js";
 import * as db from "./db-mock.js";
+import { BUILD, buildDecision, reloadIfShellIsOld, resetBuildGuardForTest } from "../js/build.js";
 import { installFakeFetch, installStorageFakes, jsonResponse } from "./fakes.js";
 
 const PARENT_PIN = "2468";
@@ -27,6 +28,9 @@ function clone(value) {
 }
 
 export async function runSelfTest(report) {
+  // v18：這一頁直接呼叫頁面模組的 render／mount，沒有經過 app.js 開機；先把殼的版本設成同一版，
+  // 不然跨版守衛（build.js）會把測試頁當成「舊殼載到新頁面」整頁重新整理
+  globalThis.__APP_BUILD = BUILD;
   let pass = 0;
   let fail = 0;
   const ok = (label) => { pass += 1; report(true, label); };
@@ -977,7 +981,13 @@ export async function runSelfTest(report) {
             input.files = transfer.files;
             input.dispatchEvent(new Event("change", { bubbles: true }));
             await waitFor(() => Boolean(host.querySelector('form[data-form="restore"]')));
-            host.querySelector('form[data-form="restore"]').dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+            // v18：有操作碼、沒有帳本鍵時還原表單也要設一組（取代舊的）；用同一組數字，後面的段落照常解得開
+            const restoreForm = host.querySelector('form[data-form="restore"]');
+            if (restoreForm.elements.restorePin) {
+              restoreForm.elements.restorePin.value = PARENT_PIN;
+              restoreForm.elements.restorePinAgain.value = PARENT_PIN;
+            }
+            restoreForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
             done = await waitFor(() => Boolean(store.getState()) && store.getState().family.name === "批二還原家");
           }
           await gist.syncCloud();
@@ -1057,8 +1067,10 @@ export async function runSelfTest(report) {
       const errorText = () => { const node = host.querySelector("[data-setup-error] .form-error"); return node ? node.textContent.trim() : ""; };
       const hintText = () => { const node = host.querySelector("[data-setup-error-hint]"); return node ? node.textContent.trim() : ""; };
       try {
-        // 這一段開頭：這台裝置已經有操作碼（第 1 段設的 PARENT_PIN），帳本不在
+        // 這一段開頭：這台裝置已經有操作碼（第 1 段設的 PARENT_PIN），帳本讀不出來
+        // v18：帳本鍵還在（出路畫面另建的情況）才維持要舊碼；完全沒有帳本鍵的情況改由下面「v18 忘記舊操作碼」那一段測
         db.reset();
+        db.control.ledgerKey = true;
         store.hydrate(null);
         setup.presetMode("create");
         ctx.refresh();
@@ -1080,9 +1092,10 @@ export async function runSelfTest(report) {
         assertEqual("v16：setup／common／parent 原始碼沒有 type=\"password\"",
           ["../js/ui/setup.js", "../js/ui/common.js", "../js/ui/parent.js"].filter((file) => sources[file].includes('type="password"')), []);
         assertEqual("v16：四個檔都沒有 autocomplete=\"new-password\"", Object.keys(sources).filter((file) => sources[file].includes("new-password")), []);
+        // v18：parent.js 改掛 PIN_ATTRS（common.PIN_INPUT_ATTRS 讀不到時的備援，見下一條）
         assertEqual("v16：操作碼欄位都掛共用屬性（解鎖彈窗 1、家長區解鎖 1、變更操作碼 1、第一次使用 2）",
           [(sources["../js/ui/common.js"].match(/id="lock-modal-pin" \$\{PIN_INPUT_ATTRS\}/g) || []).length,
-            (sources["../js/ui/parent.js"].match(/\$\{common\.PIN_INPUT_ATTRS\}/g) || []).length,
+            (sources["../js/ui/parent.js"].match(/\$\{PIN_ATTRS\}/g) || []).length,
             (sources["../js/ui/setup.js"].match(/\$\{PIN_INPUT_ATTRS\}/g) || []).length],
           [1, 2, 2]);
         assert("v16：GitHub 金鑰欄維持 autocomplete=\"off\"（不是 new-password）", /data-gist-token autocomplete="off"/.test(sources["../js/gist.js"]));
@@ -1131,7 +1144,8 @@ export async function runSelfTest(report) {
         submit();
         await waitFor(() => errorText() === setup.EXISTING_PIN_TEXT);
         assertEqual("v16：已有操作碼時打新的一組：錯誤字樣", errorText(), "這台裝置之前設定過家長操作碼，請輸入原本那組。");
-        assertEqual("v16：已有操作碼時打新的一組：第二行提示", hintText(), "這通常表示這台裝置以前用過小小理財島，資料可能還在：可以改用上面的「從備份還原」，或聯絡家長確認。");
+        assertEqual("v16：已有操作碼時打新的一組：第二行提示（v18：帳本鍵在、讀不出來時不指向走不通的「從備份還原」）", hintText(), "這台裝置原本就有一份帳本和家長操作碼，請輸入原本那組。");
+        assert("v18：讀不出來時的提示不再提「從備份還原」", !hintText().includes("從備份還原") && !setup.EXISTING_PIN_HINT.includes("從備份還原"));
         assertEqual("v16：已有操作碼時打新的一組：帳本沒建、欄位都還在", [store.getState(), values()], [null, ["防清空測試家", "小甲", "小乙", "", "20", "9999", "9999"]]);
 
         // 六、手打原本那組數字：建立成功，草稿清空
@@ -1180,6 +1194,273 @@ export async function runSelfTest(report) {
         if (location.hash !== hashBefore) history.replaceState(null, "", location.pathname + location.search + hashBefore);
         store.hydrate(stateBefore);
         db.reset();
+      }
+    });
+
+    // ================= v18（驗收 45bce23）=================
+    await section("v18 第一次使用頁：比例欄空白、忘記舊操作碼、操作碼草稿、解鎖彈窗讀現值", async () => {
+      const setup = await import("../js/ui/setup.js");
+      const host = document.createElement("div");
+      document.body.append(host);
+      const ctx = { refresh() { host.innerHTML = String(setup.render()); } };
+      setup.mount(host, ctx);
+      const hashBefore = location.hash;
+      const SECURITY = "money-island.v1.security";
+      const securityBefore = globalThis.localStorage.getItem(SECURITY);
+      const unlockedBefore = pin.isUnlocked();
+      const stateBefore = store.getState();
+      const form = (kind = "create") => host.querySelector(`form[data-form="${kind}"]`);
+      const typeInto = (input, value) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+      const submit = (kind = "create") => form(kind).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      const errorText = () => { const node = host.querySelector("[data-setup-error] .form-error"); return node ? node.textContent.trim() : ""; };
+      const fillCreate = (name, rate, code) => {
+        typeInto(form().elements.familyName, name);
+        typeInto(form().querySelector('input[name="kid"]'), "小丁");
+        typeInto(form().elements.savingsRate, rate);
+        typeInto(form().elements.createPin, code);
+        typeInto(form().elements.createPinAgain, code);
+      };
+      const freshSecurity = async (code, extra = {}) => {
+        globalThis.localStorage.removeItem(SECURITY);
+        pin.lock();
+        await pin.setup(code);
+        pin.lock();
+        const record = JSON.parse(globalThis.localStorage.getItem(SECURITY));
+        globalThis.localStorage.setItem(SECURITY, JSON.stringify({ ...record, ...extra }));
+        return globalThis.localStorage.getItem(SECURITY);
+      };
+      const LOCKED = { failedAttempts: 3, lockedUntil: new Date(Date.now() + 10 * 60000).toISOString() };
+      try {
+        // 一、預先儲蓄比例欄空白：擋下來，不准變成 0%
+        db.reset();
+        globalThis.localStorage.removeItem(SECURITY);
+        pin.lock();
+        store.hydrate(null);
+        setup.presetMode("create");
+        ctx.refresh();
+        fillCreate("比例測試家", "", "8642");
+        submit();
+        await waitFor(() => Boolean(errorText()));
+        assertEqual("v18：比例欄空白：錯誤字樣", errorText(), "請輸入預先儲蓄比例（0% 到 100%，以 5% 為單位）");
+        assertEqual("v18：比例欄空白：帳本沒建、操作碼沒設", [store.getState(), pin.status()], [null, "setup"]);
+        typeInto(form().elements.savingsRate, "   ");
+        submit();
+        await wait(50);
+        assertEqual("v18：比例欄只有空白：一樣擋下", [errorText(), store.getState()], ["請輸入預先儲蓄比例（0% 到 100%，以 5% 為單位）", null]);
+        assertEqual("v18：比例欄空白出錯後其他欄位都還在", [form().elements.familyName.value, form().elements.createPin.value], ["比例測試家", "8642"]);
+        typeInto(form().elements.savingsRate, "0");
+        submit();
+        assert("v18：比例 0 還是可以（是家長自己填的 0）", await waitFor(() => Boolean(store.getState()) && store.getState().family.name === "比例測試家"), errorText());
+        assertEqual("v18：比例 0 的帳本：savingsRate 是 0", store.getState() ? store.getState().savingsRate : null, 0);
+
+        // 二、有操作碼（而且輸錯到上鎖）、完全沒有帳本鍵：建立新帳本直接用新的一組取代，不驗舊碼、不計錯誤次數
+        const oldRecord = await freshSecurity(PARENT_PIN, LOCKED);
+        db.reset();
+        store.hydrate(null);
+        setup.presetMode("create");
+        ctx.refresh();
+        const replaceNote = () => { const node = form() && form().querySelector("[data-setup-pin-replace]"); return node ? node.textContent.trim() : ""; };
+        assertEqual("v18：沒有帳本鍵：建立表單講清楚這次輸入的會成為新的操作碼", replaceNote(), "這台裝置以前設過家長操作碼，但沒有帳本，這次輸入的會成為新的操作碼。");
+        assert("v18：沒有帳本鍵：不出「請輸入原本那一組」", !host.textContent.includes("請輸入原本那一組"));
+        fillCreate("取代測試家", "30", "8642");
+        submit();
+        const replaced = await waitFor(() => Boolean(store.getState()) && store.getState().family.name === "取代測試家");
+        assert("v18：沒有帳本鍵：舊碼上鎖中也建得起來", replaced, errorText());
+        const newRecord = JSON.parse(globalThis.localStorage.getItem(SECURITY) || "null");
+        assert("v18：沒有帳本鍵：操作碼紀錄換掉了（鹽與雜湊都不同）", Boolean(newRecord) && newRecord.salt !== JSON.parse(oldRecord).salt && newRecord.hash !== JSON.parse(oldRecord).hash);
+        assertEqual("v18：沒有帳本鍵：新紀錄錯誤次數 0、沒上鎖", newRecord ? [newRecord.failedAttempts, newRecord.lockedUntil] : null, [0, null]);
+        pin.lock();
+        let newWorks = true;
+        try { await pin.assert("8642"); } catch (e) { newWorks = false; }
+        assert("v18：沒有帳本鍵：建好之後用新的那一組解得開", newWorks);
+
+        // 三、同樣的情況走「從備份還原」：還原表單也出操作碼欄與說明，還原成功後取代舊的
+        await freshSecurity(PARENT_PIN, LOCKED);
+        db.reset();
+        store.hydrate(null);
+        setup.presetMode("restore");
+        ctx.refresh();
+        const restoreFile = backup.exportEnvelope(normalize(clone(freshState({ familyName: "v18還原家", kidNames: ["阿己"], savingsRate: 30 }))));
+        const pickFile = async () => {
+          const fileInput = host.querySelector("[data-backup-file]");
+          const transfer = new DataTransfer();
+          transfer.items.add(new File([JSON.stringify(restoreFile)], "selftest.json", { type: "application/json" }));
+          fileInput.files = transfer.files;
+          fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+          await waitFor(() => Boolean(form("restore")));
+        };
+        await pickFile();
+        assertEqual("v18：沒有帳本鍵：還原表單有說明與兩個操作碼欄",
+          [((form("restore").querySelector("[data-setup-pin-replace]") || {}).textContent || "").trim(), Boolean(form("restore").elements.restorePin), Boolean(form("restore").elements.restorePinAgain)],
+          ["這台裝置以前設過家長操作碼，但沒有帳本，這次輸入的會成為新的操作碼。", true, true]);
+        typeInto(form("restore").elements.restorePin, "7531");
+        typeInto(form("restore").elements.restorePinAgain, "7531");
+        submit("restore");
+        const restoredOk = await waitFor(() => Boolean(store.getState()) && store.getState().family.name === "v18還原家");
+        assert("v18：沒有帳本鍵：還原成功", restoredOk, errorText());
+        pin.lock();
+        let restoreWorks = true;
+        try { await pin.assert("7531"); } catch (e) { restoreWorks = false; }
+        assert("v18：沒有帳本鍵：還原之後用新的那一組解得開", restoreWorks);
+
+        // 四、帳本鍵在但讀不出來（出路畫面另建／還原）：維持要舊碼，還原表單不出操作碼欄、操作碼紀錄不動
+        const keptRecord = await freshSecurity(PARENT_PIN);
+        db.reset();
+        db.control.ledgerKey = true;
+        store.hydrate(null);
+        setup.presetMode("create");
+        ctx.refresh();
+        assert("v18：帳本鍵在：建立表單仍說「請輸入原本那一組」、不出取代說明", host.textContent.includes("請輸入原本那一組") && !replaceNote());
+        fillCreate("讀不出來另建家", "30", "9753");
+        submit();
+        await waitFor(() => errorText() === setup.EXISTING_PIN_TEXT);
+        assertEqual("v18：帳本鍵在：打新的一組照樣擋下", [errorText(), store.getState()], [setup.EXISTING_PIN_TEXT, null]);
+        setup.presetMode("restore");
+        ctx.refresh();
+        await pickFile();
+        assertEqual("v18：帳本鍵在：還原表單沒有操作碼欄", Boolean(form("restore").elements.restorePin), false);
+        submit("restore");
+        await waitFor(() => Boolean(store.getState()) && store.getState().family.name === "v18還原家");
+        const keptAfter = JSON.parse(globalThis.localStorage.getItem(SECURITY) || "null");
+        assertEqual("v18：帳本鍵在：還原後操作碼紀錄的鹽與雜湊沒換", keptAfter ? [keptAfter.salt, keptAfter.hash] : null, [JSON.parse(keptRecord).salt, JSON.parse(keptRecord).hash]);
+
+        // 五、操作碼草稿：presetMode 換路進來時清掉操作碼，其他欄位留著
+        db.reset();
+        store.hydrate(null);
+        setup.presetMode("create");
+        ctx.refresh();
+        typeInto(form().elements.familyName, "草稿測試家");
+        typeInto(form().elements.createPin, "1111");
+        typeInto(form().elements.createPinAgain, "1111");
+        setup.presetMode("create");
+        ctx.refresh();
+        assertEqual("v18：presetMode 之後操作碼草稿清空、家庭名稱留著", [form().elements.familyName.value, form().elements.createPin.value, form().elements.createPinAgain.value], ["草稿測試家", "", ""]);
+
+        // 六、從雲端拿回成功之後也清掉操作碼草稿
+        const cloudBody = JSON.stringify(normalize(clone(validEnvelope)), null, 1);
+        const STAMP = "2026-01-01T00:00:00Z";
+        connectGist({ remoteStamp: STAMP, lastSyncAt: STAMP });
+        const net = installFakeFetch(() => jsonResponse(200, { id: "selftest-gist", updated_at: STAMP, files: { "money-island-backup.json": { content: cloudBody } } }));
+        try {
+          ctx.refresh();
+          typeInto(form().elements.createPin, "2222");
+          typeInto(form().elements.createPinAgain, "2222");
+          host.querySelector('[data-mode="cloud"]').click();
+          host.querySelector("[data-setup-cloud]").click();
+          await waitFor(() => gist.armState("pull") !== "idle");
+          await wait(650);
+          ctx.refresh();
+          host.querySelector("[data-setup-cloud]").click();
+          const pulled = await waitFor(() => Boolean(store.getState()) && store.getState().family.id === validEnvelope.state.family.id);
+          assert("v18：從雲端拿回成功（測試前提）", pulled);
+          store.hydrate(null);
+          ctx.refresh();
+          host.querySelector('[data-mode="create"]').click();
+          assertEqual("v18：從雲端拿回成功後操作碼草稿清空、家庭名稱留著", [form().elements.familyName.value, form().elements.createPin.value, form().elements.createPinAgain.value], ["草稿測試家", "", ""]);
+        } finally {
+          net.restore();
+          gist.disconnect();
+        }
+
+        // 七、解鎖彈窗：自動填入只改 value、不發 input 事件，送出照樣讀得到
+        await freshSecurity(PARENT_PIN);
+        const modalRoot = document.createElement("div");
+        modalRoot.id = "modal-root";
+        document.body.append(modalRoot);
+        let unlockedCalls = 0;
+        try {
+          const lock = common.createLockModal({ getPinStatus: () => pin.status(), onUnlocked() { unlockedCalls += 1; common.closeModal(); } });
+          lock.open();
+          const field = () => modalRoot.querySelector("#lock-modal-pin");
+          const sendLock = () => modalRoot.querySelector("[data-lock-form]").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          field().value = "Ab12-cd34";            // 自動填入英數：原樣交給 pin.assert 擋，不濾成數字、不計錯誤次數
+          sendLock();
+          await waitFor(() => Boolean(modalRoot.querySelector(".form-error")));
+          const afterBad = JSON.parse(globalThis.localStorage.getItem(SECURITY));
+          assertEqual("v18：解鎖彈窗自動填入英數：沒解鎖、不計錯誤次數", [pin.isUnlocked(), unlockedCalls, afterBad.failedAttempts], [false, 0, 0]);
+          field().value = PARENT_PIN;              // 自動填入：不發 input 事件
+          sendLock();
+          await waitFor(() => unlockedCalls > 0);
+          assertEqual("v18：解鎖彈窗：沒有 input 事件也用欄位現值解鎖", [unlockedCalls, pin.isUnlocked()], [1, true]);
+        } finally {
+          common.closeModal();
+          modalRoot.remove();
+        }
+      } finally {
+        if (securityBefore === null) globalThis.localStorage.removeItem(SECURITY); else globalThis.localStorage.setItem(SECURITY, securityBefore);
+        pin.lock();
+        if (unlockedBefore) await pin.assert(PARENT_PIN);
+        setup.presetMode("create");
+        host.remove();
+        if (location.hash !== hashBefore) history.replaceState(null, "", location.pathname + location.search + hashBefore);
+        store.hydrate(stateBefore);
+        db.reset();
+      }
+    });
+
+    await section("v18 新舊版混用與開機失敗的掛勾（原始碼層級；實際行為由瀏覽器端到端驗）", async () => {
+      const read = async (file) => (await fetch(new URL(file, import.meta.url), { cache: "no-store" })).text();
+      const [parentSrc, appSrc, indexSrc, swSrc] = await Promise.all(["../js/ui/parent.js", "../js/app.js", "../index.html", "../sw.js"].map(read));
+      const fallback = /const PIN_ATTRS = common\.PIN_INPUT_ATTRS\s*\|\|\s*raw\('([^']*)'\)/.exec(parentSrc);
+      assert("v18：parent.js 讀不到 common.PIN_INPUT_ATTRS 時有備援", Boolean(fallback));
+      const fallbackAttrs = fallback ? fallback[1] : "";
+      const sharedAttrs = String(common.PIN_INPUT_ATTRS);
+      assert("v18：備援字串包含共用屬性的每一項", sharedAttrs.split(" ").every((part) => fallbackAttrs.includes(part)), fallbackAttrs);
+      assert("v18：備援字串帶 inline 遮字（舊版 app.css 沒有 [data-pin-input] 規則）", fallbackAttrs.includes('style="-webkit-text-security:disc"'));
+      assert("v18：parent.js 不再直接插 common.PIN_INPUT_ATTRS", !/\$\{common\.PIN_INPUT_ATTRS\}/.test(parentSrc));
+      assert("v18：app.js 聽 controllerchange、只認開機時就被控制的分頁", /addEventListener\("controllerchange"/.test(appSrc) && /if \(bootControlled\) newVersionTookOver = true/.test(appSrc));
+      assert("v18：app.js 換路由／載新模組前整頁重新整理", /if \(newVersionTookOver && \(navigated \|\| !loadedRoutes\.has\(route\.id\)\) && !isModalOpen\(\)\) \{\s*location\.reload\(\);/.test(appSrc));
+      assert("v18：app.js 頁面模組載入 15 秒逾時", /withTimeout\(route\.load\(\), ROUTE_LOAD_TIMEOUT_MS/.test(appSrc) && /ROUTE_LOAD_TIMEOUT_MS = 15000/.test(appSrc));
+      assert("v18：app.js boot 開頭設 __appBooted", /async function boot\(\) \{[\s\S]{0,200}window\.__appBooted = true;/.test(appSrc));
+      assert("v18：index.html 的 module script 有 onerror", /<script type="module" src="\.\/js\/app\.js" onerror="[^"]*__bootFailed/.test(indexSrc));
+      assert("v18：index.html 的保險計時器 15 秒、在 module script 之前", /setTimeout\(function \(\) \{ if \(!window\.__appBooted\) window\.__bootFailed\(\); \}, 15000\)/.test(indexSrc) && indexSrc.indexOf("window.__bootFailed = function") < indexSrc.indexOf('<script type="module"'));
+      assert("v18：重試卡文案與按鈕", indexSrc.includes("小小理財島沒有載完整，可能是網路不穩。帳本還在這台裝置裡，不會不見。") && /data-boot-reload style="min-width:44px;min-height:44px/.test(indexSrc));
+      assertEqual("v18：sw.js 版本", (/const VERSION = '([^']+)'/.exec(swSrc) || [])[1], "v18");
+    });
+
+    await section("v18 跨版守衛（build.js）：舊殼載到新頁面整頁重新整理一次、不會無限迴圈", async () => {
+      const read = async (file) => (await fetch(new URL(file, import.meta.url), { cache: "no-store" })).text();
+      const swSrc = await read("../sw.js");
+      const appSrc = await read("../js/app.js");
+      assertEqual("v18：build.js 的 BUILD 等於 sw.js 的 VERSION", BUILD, (/const VERSION = '([^']+)'/.exec(swSrc) || [])[1]);
+      assert("v18：build.js 在 sw.js 的 CORE 裡", /const CORE = \[[\s\S]*'\.\/js\/build\.js'[\s\S]*\];/.test(swSrc));
+      assert("v18：app.js 靜態載入 build.js、開機時設 window.__APP_BUILD", /^import \{ BUILD \} from "\.\/build\.js";/m.test(appSrc) && /window\.__APP_BUILD = BUILD;/.test(appSrc));
+      // app.js 的 route.load 載入的每一支都要掛守衛（render、mount 第一行）
+      const lazy = Array.from(appSrc.matchAll(/load: \(\) => import\("\.\/ui\/([\w-]+\.js)"\)/g)).map((match) => match[1]);
+      assertEqual("v18：延遲載入的頁面模組清單", lazy, ["home.js", "growth.js", "history.js", "more.js", "parent.js", "parent-investments.js"]);
+      for (const file of lazy) {
+        const src = await read(`../js/ui/${file}`);
+        assert(`v18：${file} 從 build.js 匯入守衛`, /^import \{ reloadIfShellIsOld \} from "\.\.\/build\.js";/m.test(src));
+        assert(`v18：${file} 的 render 第一行就是守衛`, /export function render\(ctx\) \{\s*if \(reloadIfShellIsOld\(\)\) return "";/.test(src));
+        assert(`v18：${file} 的 mount 第一行就是守衛`, /export function mount\(root, ctx\) \{\s*if \(reloadIfShellIsOld\(\)\) return;/.test(src));
+      }
+      const buildSrc = await read("../js/build.js");
+      assert("v18：build.js 不匯入任何模組（舊殼的 common.js 沒有新匯出）", !/^\s*import\s/m.test(buildSrc));
+
+      assertEqual("v18：判斷——同一版", buildDecision("v18", "v18", null), "same");
+      assertEqual("v18：判斷——舊殼（v14 沒設版本）第一次", buildDecision(undefined, "v18", null), "reload");
+      assertEqual("v18：判斷——已經為這一版整理過一次仍不符：照常畫", buildDecision(undefined, "v18", "v18"), "draw");
+      assertEqual("v18：判斷——整理過的是更舊的一版：這一版還要再整理一次", buildDecision("v18", "v19", "v18"), "reload");
+
+      const fakeStorage = () => { const map = new Map(); return { getItem: (k) => (map.has(k) ? map.get(k) : null), setItem: (k, v) => { map.set(k, String(v)); }, map }; };
+      const shellBefore = globalThis.__APP_BUILD;
+      try {
+        let reloads = 0;
+        const storage = fakeStorage();
+        globalThis.__APP_BUILD = BUILD;
+        assertEqual("v18：同一版：不整理", [reloadIfShellIsOld({ storage, reload: () => { reloads += 1; } }), reloads, storage.map.size], [false, 0, 0]);
+        delete globalThis.__APP_BUILD;   // v14 的殼沒有設
+        assertEqual("v18：舊殼第一次：整理一次並記下", [reloadIfShellIsOld({ storage, reload: () => { reloads += 1; } }), reloads, storage.getItem("money-island.build-reloaded")], [true, 1, BUILD]);
+        assertEqual("v18：已經在整理：render 之後的 mount 也收手、不再叫第二次", [reloadIfShellIsOld({ storage, reload: () => { reloads += 1; } }), reloads], [true, 1]);
+        resetBuildGuardForTest();        // 模擬整理完的下一頁（sessionStorage 還在）
+        assertEqual("v18：整理過一次仍不符：照常畫、不再整理（防無限迴圈）", [reloadIfShellIsOld({ storage, reload: () => { reloads += 1; } }), reloads], [false, 1]);
+        const broken = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } };
+        assertEqual("v18：sessionStorage 不能用：不整理（記不下就不冒迴圈的險）", [reloadIfShellIsOld({ storage: broken, reload: () => { reloads += 1; } }), reloads], [false, 1]);
+        const readOnly = { getItem: () => null, setItem() {} };
+        assertEqual("v18：sessionStorage 寫了讀不回來：不整理", [reloadIfShellIsOld({ storage: readOnly, reload: () => { reloads += 1; } }), reloads], [false, 1]);
+      } finally {
+        resetBuildGuardForTest();
+        globalThis.__APP_BUILD = shellBefore === undefined ? BUILD : shellBefore;
       }
     });
 

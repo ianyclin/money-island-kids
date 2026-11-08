@@ -7,7 +7,7 @@ export const snapshots = [];          // takeSnapshot 收到的每一份：{ rea
 
 // 批 1 自我測試用的開關：模擬「localStorage 寫不進去」「IndexedDB 快照寫不進去」「帳本讀不出來」
 // stale：模擬「另一個分頁剛存過」（save 回 STALE_SAVE）；reloadWith：那時候 load() 讀回來的帳本
-export const control = { failSave: false, failSnapshot: false, broken: false, keepBroken: true, preserved: 0, stale: false, reloadWith: null, loads: 0 };
+export const control = { failSave: false, failSnapshot: false, broken: false, keepBroken: true, preserved: 0, stale: false, reloadWith: null, loads: 0, ledgerKey: false };
 let lastError = "";
 export const STALE_SAVE = "stale";
 
@@ -62,6 +62,11 @@ export function hasBrokenLedger() {
   return control.broken;
 }
 
+// v18：localStorage 有沒有帳本鍵（不管讀不讀得出來）。預設沒有；測「帳本鍵在、讀不出來」時把 ledgerKey 設成 true
+export function hasState() {
+  return control.ledgerKey;
+}
+
 export async function ensureBrokenPreserved() {
   control.preserved += 1;
   await Promise.resolve();
@@ -73,7 +78,7 @@ export function setCloudBridge() {}
 export function reset() {
   calls.length = 0;
   snapshots.length = 0;
-  Object.assign(control, { failSave: false, failSnapshot: false, broken: false, keepBroken: true, preserved: 0, stale: false, reloadWith: null, loads: 0 });
+  Object.assign(control, { failSave: false, failSnapshot: false, broken: false, keepBroken: true, preserved: 0, stale: false, reloadWith: null, loads: 0, ledgerKey: false });
   lastError = "";
 }
 

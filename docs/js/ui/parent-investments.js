@@ -12,6 +12,7 @@
 
 import { html, raw, money, taipeiDate, formatDate, formatDateTime, errorMessage, uuid } from "../util.js";
 import * as common from "./common.js";
+import { reloadIfShellIsOld } from "../build.js";   // v18 跨版守衛：舊殼載到新頁面就整頁重新整理一次
 import * as store from "../store.js";
 
 // 原本 readInvestmentPresets 只回 active = 1（money-store.ts L1398–1402）
@@ -105,6 +106,7 @@ function soleHoldingUpdatedLabel(holding) {
 
 // ---------- render ----------
 export function render(ctx) {
+  if (reloadIfShellIsOld()) return "";
   // 規格 1.2／2.4.1：新路由的解鎖保護。
   if (!ctx.unlocked) {
     // 裁判 9/11：不用 stateGate（它的大標是「暫時讀不到家庭帳本」，會誤導），改用殼包一張說明卡。
@@ -547,6 +549,7 @@ const boundRoots = new WeakSet();
 let ctxRef = null;
 
 export function mount(root, ctx) {
+  if (reloadIfShellIsOld()) return;
   ctxRef = ctx;
   if (!ctx.unlocked || !ctx.state || !ctx.profile) return;
 

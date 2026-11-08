@@ -10,12 +10,20 @@
 
 import { html, raw, money, formatDate, formatDateTime, errorMessage, uuid } from "../util.js";
 import * as common from "./common.js";
+import { reloadIfShellIsOld } from "../build.js";   // v18 跨版守衛：舊殼載到新頁面就整頁重新整理一次
 import * as store from "../store.js";
 import * as pin from "../pin.js";
 import * as backup from "../backup.js";
 import * as db from "../db.js";
 import * as gist from "../gist.js";
 import * as backupStatus from "../backup-status.js";
+
+// v18（驗收 45bce23）：新舊版混用時的保險。這一支是換頁時才延遲載入的：開著的舊版分頁在新版 SW 接管後才進家長區，
+// 會拿到新版的 parent.js，配上記憶體裡舊版的 common.js（v16 以前沒有 PIN_INPUT_ATTRS → undefined → 操作碼欄變成明碼）。
+// 所以讀不到就用一份完整的屬性字串；舊版 app.css 也沒有 [data-pin-input] 的遮字規則，備援這份另外帶 inline 遮字。
+// 根治在 app.js：偵測到新版 SW 接管後，下一次換頁整頁重新整理（見 app.js「新版已接管」）。
+const PIN_ATTRS = common.PIN_INPUT_ATTRS
+  || raw('type="text" inputmode="numeric" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-pin-input style="-webkit-text-security:disc"');
 
 // ---------- 頁面暫存（重繪後還原） ----------
 const ui = {
@@ -152,7 +160,7 @@ function piggyCorrectionModalBody(profile) {
 function pinChangeField(label, key) {
   return common.field({
     label,
-    input: html`<input class="input" ${common.PIN_INPUT_ATTRS} pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits data-field="${key}" value="${ui.pinChangeDrafts[key] || ""}" required />`,
+    input: html`<input class="input" ${PIN_ATTRS} pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits data-field="${key}" value="${ui.pinChangeDrafts[key] || ""}" required />`,
   });
 }
 
@@ -185,6 +193,7 @@ export function returnTargetOf(hash) {
 
 // ---------- render ----------
 export function render(ctx) {
+  if (reloadIfShellIsOld()) return "";
   const state = ctx.state;
   const profile = ctx.profile;
   if (!state || !profile) return raw(common.stateGate(null, () => ctx.refresh()));
@@ -221,7 +230,7 @@ function lockedBody(pinStatus) {
         ${common.field({
           label: "家長操作碼",
           id: "parent-pin",
-          input: html`<input id="parent-pin" class="input" ${common.PIN_INPUT_ATTRS} pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits placeholder="4–8 位數字" required />`,
+          input: html`<input id="parent-pin" class="input" ${PIN_ATTRS} pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits placeholder="4–8 位數字" required />`,
         })}
         <div class="form-actions">
           <button class="btn btn-primary btn-block" data-busy-label="驗證中…">${setupMode ? "設定並解鎖" : "解鎖"}</button>
@@ -1074,6 +1083,7 @@ const boundRoots = new WeakSet();
 let ctxRef = null;
 
 export function mount(root, ctx) {
+  if (reloadIfShellIsOld()) return;
   ctxRef = ctx;
   if (!ctx.state || !ctx.profile) return;
 
