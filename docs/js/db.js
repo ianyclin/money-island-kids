@@ -4,7 +4,7 @@
 
 import { taipeiDate, uuid, nowIso } from "./util.js";
 import { coerceLedger, normalize } from "./state.js";
-import { showStatus, setSaveErrorProvider } from "./ui/common.js";
+import { showStatus, setSaveErrorProvider, CLOUD_TOKEN_TEXT } from "./ui/common.js";
 
 export const KEY = "money-island.v1";
 
@@ -371,10 +371,12 @@ export function save(state, reason) {
   const cloud = cloudStatus();
   const stamp = nowIso();
   // copyStatus 反映的是「雲端那一份的狀態」：沒開雲端就是這台裝置存好了 = ready。
-  const copyStatus = !cloud ? "ready" : cloud === "synced" ? "ready" : (cloud === "failed" || cloud === "invalid") ? "failed" : "pending";
+  const copyStatus = !cloud ? "ready" : cloud === "synced" ? "ready" : (cloud === "failed" || cloud === "invalid" || cloud === "token") ? "failed" : "pending";
   state.latestBackup = { id: uuid(), reason: reason || "資料異動", createdAt: stamp, copyStatus };
   state.backupHealth = cloud === "invalid"
     ? { status: "failed", message: INVALID_LEDGER_CLOUD_TEXT }
+    : cloud === "token"
+    ? { status: "failed", message: `帳本已儲存在這台裝置；${CLOUD_TOKEN_TEXT}` }
     : copyStatus === "failed"
     ? { status: "failed", message: "帳本已儲存在這台裝置，雲端備份稍後重試" }
     : copyStatus === "pending"

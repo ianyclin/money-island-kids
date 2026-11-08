@@ -19,6 +19,17 @@ import {
 } from "./common.js";
 import * as store from "../store.js";
 import { totalAssets, assetTimeline } from "./common.js";
+import * as gist from "../gist.js";
+import { backupReminder, BACKUP_REMINDER_HREF } from "../backup-status.js";
+
+// 稽核批 3：「該備份了」一行小提醒（不擋操作、不是彈窗）。點下去到家長區（要操作碼），解鎖後回到備份卡片；
+// 孩子看得到，但沒有操作碼什麼都動不了。
+function backupReminderBar(state) {
+  let reminder = null;
+  try { reminder = backupReminder(state, gist.cloudInfo().lastSyncAt); } catch (e) { reminder = null; }
+  if (!reminder) return "";
+  return html`<a class="backup-reminder" href="${BACKUP_REMINDER_HREF}" data-backup-reminder><span aria-hidden="true">💾</span><span>${reminder.text}</span><b aria-hidden="true">›</b></a>`;
+}
 
 // ---------- 頁面暫存（重繪後由 render 讀回） ----------
 let action = null;              // null | "allowance" | "spend"
@@ -191,6 +202,7 @@ export function render(ctx) {
     : 0;
 
   const body = html`
+      ${backupReminderBar(state)}
       <div class="grid-2 grid-2-home">
         <section class="greeting" aria-label="${profile.name}的錢，正在慢慢長大">
           <h1>${profile.name}的錢，正在慢慢長大。</h1>

@@ -21,6 +21,12 @@ export function setCloudCardProvider(fn) { cloudCardProvider = fn; }
 function cloudCard() {
   try { return cloudCardProvider ? cloudCardProvider() : ""; } catch (e) { return ""; }
 }
+// 稽核批 3 第 3 條：金鑰失效（GitHub 回 401／403）重試幾次都一樣，要直接講該做什麼；
+// 網路失敗不外露瀏覽器的英文訊息（Failed to fetch／Load failed）。gist.js 與 db.js 共用這兩句。
+export const CLOUD_TOKEN_TEXT = "GitHub 金鑰失效，請重新貼一組";
+export const CLOUD_OFFLINE_TEXT = "連不上 GitHub，晚點會再試";
+// 403 但其實是流量限制（不是金鑰壞了）：照「稍後重試」那一類處理
+export const CLOUD_RATE_TEXT = "GitHub 暫時限制次數，晚點會再試";
 
 // ---------- 本機存檔失敗的橋接（批 1 資料安全） ----------
 // 同樣的理由（db → common 已經有相依），由 db.js 在載入時把「最近一次存檔失敗的原因」掛進來。
@@ -798,6 +804,7 @@ export function backupStatusText(state) {
   if (!cloud) return base;
   // v14：「備份不見了」卡掛著（bridgeStatus 回 "failed"）時跟雲端面板講同一句；其他 failed 維持「雲端待同步」
   if (cloud === "failed" && cloudCard() === "gone") return `${base} · 雲端那份備份不見了，自動上傳暫停`;
+  if (cloud === "token") return `${base} · ${CLOUD_TOKEN_TEXT}`;
   // 驗收 B4：拍板卡掛著（等家長決定要用雲端還是這台裝置）時照實講，不講「待同步」或「暫停上傳」
   return `${base} · ${cloud === "synced" ? "雲端已同步" : cloud === "invalid" ? "雲端暫停上傳" : cloud === "deciding" ? "等你決定要用哪一份" : "雲端待同步"}`;
 }
@@ -809,6 +816,7 @@ export function savedStatus(state, message) {
   if (problem) return { message: `${problem}：剛剛的改動還沒存進這台裝置，${saveErrorHint()}`, tone: "error" };
   // 批 1 驗收 #5：帳本驗證不過而暫停上傳時，不要一直說「稍後重試」——重試幾次都一樣，要家長先把原始內容帶走
   if (cloudStatus() === "invalid") return { message: `${message}；帳本有地方不對，暫停上傳；請先下載原始內容`, tone: "waiting" };
+  if (cloudStatus() === "token") return { message: `${message}；${CLOUD_TOKEN_TEXT}`, tone: "waiting" };
   if (cloudStatus() === "failed") return { message: `${message}；雲端備份稍後重試`, tone: "waiting" };
   return { message, tone: "success" };
 }

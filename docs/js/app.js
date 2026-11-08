@@ -9,6 +9,7 @@ import { derive } from "./state.js";
 import * as gist from "./gist.js";
 import * as backup from "./backup.js";
 import * as setup from "./ui/setup.js";
+import * as backupStatus from "./backup-status.js";
 import { stateGate, showStatus, closeModal, confirmDialog, isModalOpen, syncModalBackdrop, timestampText, applyListHolds } from "./ui/common.js";
 import { html, raw, entryScrollPlan, ENTRY_SCROLL_KEY } from "./util.js";
 
@@ -564,7 +565,9 @@ function updateInstallHint() {
   if (!el) return;
   const state = readState();
   const dismissed = !!(state && state.meta && state.meta.installHintDismissed);
-  el.hidden = !(isIos && !isStandalone && !dismissed);
+  // 稽核批 3：第一次使用頁在 iOS 的 Safari 分頁裡已經有一張講得更清楚的說明卡（setup.js），不再疊一條
+  const setupWarned = currentHash() === "#/setup" && backupStatus.needsTabWarning(backupStatus.currentEnv());
+  el.hidden = !(isIos && !isStandalone && !dismissed) || setupWarned;
 }
 
 function setupInstallHint() {
@@ -599,17 +602,11 @@ function setupKeyboardLift() {
   apply();
 }
 
-/* 第一次互動後跟系統要「持久儲存」：讓 iOS/瀏覽器少一個自動清掉資料的理由。
-   要不到也沒關係（Safari 常常自己決定），備份三層還在 */
+/* 跟系統要「持久儲存」：讓 iOS/瀏覽器少一個自動清掉資料的理由。
+   稽核批 3：改成開機就要（以前等第一次觸控），結果記下來給家長區備份卡片顯示；
+   要不到的話 backup-status.js 會在第一次觸控時再要一次（有些瀏覽器要使用者動過才答應） */
 function askPersist() {
-  addEventListener("pointerdown", function askPersistOnce() {
-    removeEventListener("pointerdown", askPersistOnce);
-    try {
-      if (navigator.storage && navigator.storage.persisted) {
-        navigator.storage.persisted().then(p => { if (!p && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }).catch(() => {});
-      }
-    } catch (e) {}
-  }, { once: true });
+  void backupStatus.requestPersist().catch(() => {});
 }
 
 // ---------- 開機 ----------
@@ -650,6 +647,8 @@ async function boot() {
   setupInstallHint();
   setupKeyboardLift();
   askPersist();
+  // 稽核批 3：還沒有帳本（會走第一次使用頁）時測一次是不是私密瀏覽；結果回來直接打開頁面上的警告
+  if (!readState()) void backupStatus.detectPrivateMode().catch(() => {});
 
   if (readState()) await runMonthlyRewards();
   await render();

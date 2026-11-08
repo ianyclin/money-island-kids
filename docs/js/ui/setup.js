@@ -12,6 +12,23 @@ import * as pin from "../pin.js";
 import * as backup from "../backup.js";
 import * as gist from "../gist.js";
 import { field, infoTip, showStatus, timestampText, PIN_INPUT_ATTRS } from "./common.js";
+import * as backupStatus from "../backup-status.js";
+
+// 稽核批 3：iOS 在 Safari 分頁（不是主畫面 app）打開第一次使用頁時，頁首先講清楚兩邊資料不相通。
+// 不擋表單；「我知道了，仍要在這裡用」記在 sessionStorage，只對這次有效。
+function tabWarningCard() {
+  if (!backupStatus.showTabWarning()) return "";
+  return html`<section class="setup-warning" role="note" data-tab-warning>
+      <p>${backupStatus.TAB_WARNING_TEXT}</p>
+      <button type="button" class="btn btn-secondary btn-block" data-tab-warning-ok>${backupStatus.TAB_WARNING_DISMISS}</button>
+    </section>`;
+}
+
+// 私密瀏覽偵測是非同步的：先畫成隱藏，結果回來由 backup-status.js 直接打開（不整頁重繪）
+function privateWarning() {
+  const shown = backupStatus.privateModeStatus() === true;
+  return html`<p class="setup-warning setup-private-warning" role="alert" data-private-warning ${shown ? "" : raw("hidden")}>${backupStatus.PRIVATE_WARNING_TEXT}</p>`;
+}
 
 // 頁面自己的 UI 狀態放模組層級：重繪之後 render 讀回來，使用者不會被踢出流程。
 let mode = "create";          // "create" | "restore" | "cloud"（"cloud" 只在這台裝置還留著雲端設定時出現）
@@ -92,6 +109,8 @@ export function render() {
   const placed = (errorAt === "create" && shown === "create") || (errorAt === "restore" && shown === "restore" && Boolean(summary));
   return html`<main class="setup-page">
     <section class="card setup-card">
+      ${tabWarningCard()}
+      ${privateWarning()}
       <div class="setup-brand">
         <span class="brand-mark" aria-hidden="true">¢</span>
         <div><strong>小小理財島</strong><small>第一次使用</small></div>
@@ -156,7 +175,7 @@ function cloudForm() {
 
 function restoreForm() {
   return html`<h2 class="setup-subtitle">從備份檔還原</h2>
-    <p class="setup-copy">選一份以前下載的帳本備份或完整可攜備份（.json）。還原會用備份的內容取代這台裝置上的帳本。</p>
+    <p class="setup-copy">選一份以前下載的帳本備份或完整可攜備份（.json）。還原會用備份的內容取代這台裝置上的帳本。從舊網站或舊手機搬家，選完整可攜備份檔（.json）。</p>
     <label class="backup-file-label">選擇備份檔<input class="input file-input" type="file" accept="application/json,.json" data-backup-file ${busy ? raw("disabled") : ""}></label>
     ${busy === "inspect" ? html`<p class="setup-help">正在檢查備份內容…</p>` : ""}
     ${summary ? html`<div class="restore-summary">
@@ -176,6 +195,12 @@ function restoreForm() {
 export function mount(root, ctx) {
   root.addEventListener("click", (event) => {
     if (event.target.closest("[data-setup-cloud]")) { void pullCloud(ctx); return; }
+    if (event.target.closest("[data-tab-warning-ok]")) {
+      backupStatus.dismissTabWarning();
+      const card = root.querySelector("[data-tab-warning]");
+      if (card) card.remove();
+      return;
+    }
     const tab = event.target.closest("[data-mode]");
     if (!tab) return;
     mode = tab.getAttribute("data-mode");

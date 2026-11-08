@@ -21,7 +21,8 @@ import {
   normalize,
   validateBackupEnvelope,
 } from "./state.js";
-import { replaceState } from "./store.js";
+import { replaceState, getState, commit, STALE_LEDGER_ERROR } from "./store.js";
+import { isIosEnv, currentEnv } from "./backup-status.js";
 
 const PHOTO_MAX_EDGE = 256;
 const PHOTO_QUALITY = 0.82;
@@ -311,6 +312,56 @@ export async function shareOrDownload(json, filename, options = {}) {
     await navigator.clipboard.writeText(text);
     return "clipboard";
   }
+}
+
+// ---------- 備份到手機（稽核批 3 第 2 條） ----------
+// 只有分享表真的完成（"share"）或下載真的觸發（"download"）才算備份成功，才記下時間；
+// 使用者在分享表按取消（"cancelled"）、或只能退到剪貼簿（"clipboard"）都不算。
+// 記下的時間是匯出那一刻（exportedAt）：分享表開著的期間另一個分頁新增的紀錄不在檔案裡，不能算成已備份。
+// 匯出檔裡的 meta.lastFileBackupAt 也寫成這一份自己的匯出時間：還原到新手機之後，「上次備份」就是這一份檔案。
+// 注意：分享表之前不能 await 任何真的非同步工作，iOS 會認為不是使用者按的而拒絕開分享表。
+export const BACKUP_NOT_DONE_TEXT = "這次沒有存，備份還沒完成";
+export const BACKUP_CLIPBOARD_TEXT = "沒辦法存成檔案，內容先複製到剪貼簿了；這次不算備份完成";
+
+export function recordFileBackup(stamp) {
+  const mark = () => {
+    const current = getState();
+    if (!current) return false;
+    if (!current.meta) current.meta = {};
+    current.meta.lastFileBackupAt = stamp;
+    commit("記錄備份時間");
+    return true;
+  };
+  try {
+    return mark();
+  } catch (error) {
+    // 另一個分頁剛存過：store 已經重讀那一份，備份檔確實存好了，在新的那一份上再記一次
+    if (error && error.message === STALE_LEDGER_ERROR) return mark();
+    throw error;
+  }
+}
+
+// iOS（含主畫面 app）退到 <a download> 時，不一定真的存進「檔案」app（主畫面 app 沒有下載管理器）：
+// 先不記，回 needsConfirm，讓畫面問家長「檔案有存進『檔案』app 嗎？」，按「有」才呼叫 recordFileBackup。
+// 桌機與 Android 的下載照舊直接算成功。options.ios 只給自我測試用（不給就看這台裝置）。
+export const BACKUP_CONFIRM_QUESTION = "檔案有存進『檔案』app 嗎？";
+export const BACKUP_CONFIRM_NO_TEXT = "這次沒有存，請再按一次『備份到手機』";
+
+export async function backupToDevice(state, { portable = true, ios } = {}) {
+  const envelope = portable ? exportPortableEnvelope(state) : exportEnvelope(state);
+  if (envelope.state && envelope.state.meta) envelope.state.meta.lastFileBackupAt = envelope.exportedAt;
+  const filename = `${portable ? "小小理財島完整可攜備份" : "小小理財島帳本備份"}-${new Date().toISOString().slice(0, 10)}.json`;
+  const result = await shareOrDownload(JSON.stringify(envelope, null, 2), filename);
+  const onIos = typeof ios === "boolean" ? ios : isIosEnv(currentEnv());
+  if (result === "download" && onIos) {
+    return { result, done: false, needsConfirm: true, at: envelope.exportedAt, recordError: null };
+  }
+  const done = result === "share" || result === "download";
+  let recordError = null;
+  if (done) {
+    try { recordFileBackup(envelope.exportedAt); } catch (error) { recordError = error; }
+  }
+  return { result, done, needsConfirm: false, at: done ? envelope.exportedAt : null, recordError };
 }
 
 export function backupFileName(state, { portable = false } = {}) {

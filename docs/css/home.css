@@ -132,3 +132,21 @@
 /* 「選擇樹種」那顆膠囊：外觀不變，命中區往上下各補到 44 高 */
 .garden-picker summary { position: relative; }
 .garden-picker summary::before { content: ""; position: absolute; inset: -6px 0; }
+
+/* 稽核批 3：首頁頂端「該備份了」一行小提醒（不擋操作、不是彈窗），點下去到家長區的備份卡片 */
+.backup-reminder {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: 6px var(--space-3);
+  border: 1px solid #ecd9a6;
+  border-radius: var(--radius-s);
+  background: #fff7e2;
+  color: #765b19;
+  font-size: var(--fs-small);
+  font-weight: 900;
+  text-decoration: none;
+}
+.backup-reminder > span:nth-child(2) { flex: 1 1 auto; min-width: 0; }
+.backup-reminder > b { flex: 0 0 auto; font-size: 18px; }

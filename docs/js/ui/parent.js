@@ -15,6 +15,7 @@ import * as pin from "../pin.js";
 import * as backup from "../backup.js";
 import * as db from "../db.js";
 import * as gist from "../gist.js";
+import * as backupStatus from "../backup-status.js";
 
 // ---------- 頁面暫存（重繪後還原） ----------
 const ui = {
@@ -38,7 +39,7 @@ const ui = {
   legacyBroken: [],              // 驗收 B5：舊版留在 localStorage 的 .broken.*：{ key, at, raw }
   legacyDownloaded: new Set(),   // 這次開啟期間已經下載過的舊版留存（鑰匙名稱）；下載過才出「刪除這份」
   legacyArm: null,               // 「刪除這份」按了第一下：{ key, at, timer }
-  openDetails: new Set(),        // "guide" | "backup-file" | "snapshots" | "gist"（v2 只剩這四個抽屜）
+  openDetails: new Set(),        // "guide" | "backup-file" | "snapshots" | "gist"（v2 只剩這四個抽屜；"gist" 稽核批 3 搬進備份卡片）
   drafts: Object.create(null),
   piggyKey: "",
   identityKey: "",
@@ -54,6 +55,10 @@ const ui = {
   //   height＝原列處理前的實際高度，佔位維持一樣高，下面的列不會往上滑（驗收高-1）
   //   until ＝Infinity 表示還在處理中
   inboxGhosts: [],
+  // 稽核批 3：備份卡片上「這次備份的結果」那一行（{ text, tone }）；取消分享時講清楚沒有存
+  backupNote: null,
+  backupConfirm: null,           // iOS 退到下載後等家長確認：{ at }（匯出時間；按「有，存好了」才記）
+  backupFocused: "",             // 已經捲到備份卡片過的網址（#/parent?open=backup 只捲一次，背景重繪不再捲）
 };
 
 const INBOX_GHOST_MS = 1000;
@@ -66,6 +71,7 @@ const ERROR_ANCHORS = {
   inbox: { selector: ".parent-inbox", position: "beforeend" },
   projects: { selector: ".parent-project-panel", position: "beforeend" },
   backup: { selector: ".parent-device-panel", position: "beforeend" },
+  "backup-card": { selector: "[data-backup-actions]", position: "afterend" },
 };
 
 function draft(key, fallback = "") {
@@ -172,6 +178,8 @@ export function returnTargetOf(hash) {
   if (!query) return "";
   let target = "";
   try { target = new URLSearchParams(query).get("return") || ""; } catch (e) { return ""; }
+  // 稽核批 3：首頁「該備份了」提醒帶來的，解鎖後回到家長區的備份卡片（#/parent?open=backup）
+  if (target === backupStatus.BACKUP_TARGET) return target;
   return /^#\/parent\/investments(\?open=(purchase|harvest))?$/.test(target) ? target : "";
 }
 
@@ -225,7 +233,8 @@ function lockedBody(pinStatus) {
 
 // ---------- 已解鎖（規格 5.5：手機單欄，≥1100px 左 3 右 2 兩欄） ----------
 function unlockedBody(state, profile, holdings) {
-  return html`<div class="parent-grid grid-2">
+  return html`${backupCard(state)}
+    <div class="parent-grid grid-2">
       <div class="grid-2-col">
         ${inboxCard(state)}
         ${quickActionsCard()}
@@ -239,6 +248,39 @@ function unlockedBody(state, profile, holdings) {
         ${guideMarkup()}
       </div>
     </div>`;
+}
+
+// ---------- 稽核批 3：備份卡片（家長區最上方） ----------
+// 大字「上次備份」＋一顆「備份到手機」（完整可攜備份，含照片，走分享表）；GitHub 自動備份收在下面的摺疊區。
+function backupCard(state) {
+  const info = backupStatus.lastBackupOf(state, gist.cloudInfo().lastSyncAt);
+  const persist = backupStatus.persistText(backupStatus.persistStatus());
+  const inTab = backupStatus.needsTabWarning(backupStatus.currentEnv());
+  const note = ui.backupNote;
+  return html`<section class="card parent-backup-card" id="backup" aria-labelledby="backup-title">
+      <div class="card-head">
+        <div><span class="kicker">別讓帳本只存在一支手機</span><h2 class="card-title" id="backup-title">備份</h2></div>
+      </div>
+      <p class="backup-last">上次備份：<b data-backup-last>${backupStatus.lastBackupText(info)}</b>${info ? html`<small data-backup-kind>（${backupStatus.BACKUP_KIND_LABEL[info.kind]}）</small>` : ""}</p>
+      ${inTab ? html`<p class="backup-tab-note" data-backup-tab-note>${backupStatus.TAB_LEDGER_NOTE}</p>` : ""}
+      <div class="form-actions" data-backup-actions>
+        <button type="button" class="btn btn-primary btn-block" data-action="backup-to-phone" data-busy-label="準備中…">備份到手機</button>
+      </div>
+      ${ui.backupConfirm ? html`<div class="backup-confirm" role="group" aria-label="${backup.BACKUP_CONFIRM_QUESTION}" data-backup-confirm>
+        <p>${backup.BACKUP_CONFIRM_QUESTION}</p>
+        <div class="backup-confirm-actions">
+          <button type="button" class="btn btn-primary" data-action="backup-confirm-yes">有，存好了</button>
+          <button type="button" class="btn btn-secondary" data-action="backup-confirm-no">沒有</button>
+        </div>
+      </div>` : note ? html`<p class="${note.tone === "error" ? "form-error" : note.tone === "waiting" ? "backup-note is-waiting" : "backup-note"}" role="status" data-backup-note>${note.text}</p>` : ""}
+      <p class="backup-help">選「儲存到檔案」→ iCloud 雲碟，換手機或刪掉 app 也拿得回來</p>
+      <p class="backup-help" data-persist-line ${persist ? "" : raw("hidden")}>${persist}</p>
+      <p class="backup-foot">一台裝置一份帳本；換手機時，在舊手機按『備份到手機』，新手機第一次使用選『從備份還原』。兩支手機不會自動同步。</p>
+      <details class="subpanel" data-open-key="gist" ${isOpen("gist") ? raw("open") : ""}>
+        <summary><span>進階：GitHub 自動備份（需要 GitHub 帳號）</span><b data-gist-title-status>${gist.cloudTitleStatus()}</b></summary>
+        <div class="subpanel-body" data-gist-root>${raw(gist.renderGistPanel())}</div>
+      </details>
+    </section>`;
 }
 
 function inboxCard(state) {
@@ -632,10 +674,6 @@ function dataPanelMarkup(state, unlocked) {
           <p>每次記帳或修改，app 都會自動另外存一份完整快照，保留最近 20 份與每天最後一份（60 天）。誤刪、誤扣、資料出問題都可以從這裡救回來。</p>
           <div class="device-list" data-snapshot-list>${snapshotListMarkup(unlocked)}</div>
         </div>
-      </details>
-      <details class="subpanel" data-open-key="gist" ${isOpen("gist") ? raw("open") : ""}>
-        <summary>GitHub 雲端備份</summary>
-        <div class="subpanel-body" data-gist-root>${raw(gist.renderGistPanel())}</div>
       </details>
       <div data-broken-copies>${brokenCopiesMarkup(ui.brokenCopies, unlocked, ui.legacyBroken)}</div>
     </section>`;
@@ -1044,6 +1082,17 @@ export function mount(root, ctx) {
   const gistRoot = root.querySelector("[data-gist-root]");
   if (gistRoot) gist.mountGistPanel(gistRoot);
 
+  // 稽核批 3：首頁「該備份了」帶來的（解鎖後回到 #/parent?open=backup；已經解鎖就直接是 ?return= 那個網址）：
+  // 捲到備份卡片，同一個網址只捲一次，背景重繪不再捲
+  const hash = location.hash || "";
+  const wantsBackup = hash === backupStatus.BACKUP_TARGET || returnTargetOf(hash) === backupStatus.BACKUP_TARGET;
+  if (!wantsBackup) ui.backupFocused = "";
+  else if (ctx.pinStatus === "unlocked" && ui.backupFocused !== hash) {
+    ui.backupFocused = hash;
+    const card = root.querySelector("#backup");
+    if (card) window.setTimeout(() => card.scrollIntoView({ block: "start" }), 0);
+  }
+
   // 批 1 #8：以前整個 app 開著的期間只讀一次，之後的改動、還原前快照都看不到。抽屜開著就每次重讀。
   if (isOpen("snapshots")) void loadSnapshots(root, ctx);
   // 批 2 C：留存的原始內容只在帳本讀不出來（或開機搬舊版 .broken）時才會變，讀到一次就夠；讀不出來的話下次重繪再試
@@ -1340,20 +1389,64 @@ async function handleClick(root, ctx, button) {
       openCorrectionModal(ctx);
       return;
     }
+    case "backup-to-phone":
     case "download-backup": {
-      const portable = button.dataset.kind === "portable";
+      // 稽核批 3 第 2 條：以前不看 shareOrDownload 的回傳，分享表按取消也說「已經下載」。
+      // 現在只有分享完成或下載真的觸發才算備份、才記下時間；取消就照實講沒有存。
+      const fromCard = action === "backup-to-phone";
+      const portable = fromCard || button.dataset.kind === "portable";
+      const scope = fromCard ? "backup-card" : "backup";
       startBusy(root, button);
-      clearOperationError(root, "backup");
+      clearOperationError(root, scope);
       try {
-        const envelope = portable ? await backup.exportPortableEnvelope(state) : backup.exportEnvelope(state);
-        const filename = `${portable ? "小小理財島完整可攜備份" : "小小理財島帳本備份"}-${new Date().toISOString().slice(0, 10)}.json`;
-        await backup.shareOrDownload(JSON.stringify(envelope, null, 2), filename);
+        ui.backupConfirm = null;
+        const outcome = await backup.backupToDevice(state, { portable });
         endBusy();
-        common.showStatus(portable ? "完整可攜備份已經下載" : "帳本備份已經下載", "success");
+        if (outcome.needsConfirm) {
+          // iOS 退到下載：不知道有沒有真的存進「檔案」app，先問（不擋操作），按「有，存好了」才記
+          ui.backupConfirm = { at: outcome.at };
+          ui.backupNote = null;
+        } else if (outcome.result === "cancelled") {
+          ui.backupNote = { text: backup.BACKUP_NOT_DONE_TEXT, tone: "waiting" };
+          common.showStatus(backup.BACKUP_NOT_DONE_TEXT, "waiting");
+        } else if (outcome.result === "clipboard") {
+          ui.backupNote = { text: backup.BACKUP_CLIPBOARD_TEXT, tone: "waiting" };
+          common.showStatus(backup.BACKUP_CLIPBOARD_TEXT, "waiting");
+        } else if (outcome.recordError) {
+          ui.backupNote = { text: `備份檔存好了，但這台裝置沒記下備份時間（${errorMessage(outcome.recordError, "存不進去")}）`, tone: "error" };
+          common.showStatus(ui.backupNote.text, "error");
+        } else {
+          const text = outcome.result === "share" ? "備份好了" : (portable ? "完整可攜備份已經下載" : "帳本備份已經下載");
+          ui.backupNote = { text, tone: "success" };
+          common.showStatus(text, "success");
+        }
+        ctx.refresh();   // 備份卡片的「上次備份」與結果那一行跟著重畫（記下時間的那次存檔本來也會重繪）
       } catch (caught) {
         endBusy();
-        reportOperationError(root, "backup", caught, "備份下載失敗");
+        reportOperationError(root, scope, caught, "備份下載失敗");
       }
+      return;
+    }
+    case "backup-confirm-yes":
+    case "backup-confirm-no": {
+      const pending = ui.backupConfirm;
+      ui.backupConfirm = null;
+      if (!pending) return;
+      if (action === "backup-confirm-no") {
+        ui.backupNote = { text: backup.BACKUP_CONFIRM_NO_TEXT, tone: "waiting" };
+        common.showStatus(backup.BACKUP_CONFIRM_NO_TEXT, "waiting");
+        ctx.refresh();
+        return;
+      }
+      try {
+        backup.recordFileBackup(pending.at);
+        ui.backupNote = { text: "備份好了", tone: "success" };
+        common.showStatus("備份好了", "success");
+      } catch (caught) {
+        ui.backupNote = { text: `備份檔存好了，但這台裝置沒記下備份時間（${errorMessage(caught, "存不進去")}）`, tone: "error" };
+        common.showStatus(ui.backupNote.text, "error");
+      }
+      ctx.refresh();
       return;
     }
     case "download-raw": {

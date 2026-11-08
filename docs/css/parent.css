@@ -241,20 +241,22 @@
 .restore-summary button { margin-top: var(--space-2); }
 
 /* gist.renderGistPanel() 的內容：那一份 markup 不歸頁面模組管，這裡只補樣式 */
-.parent-device-panel .backup-download-actions {
+.parent-device-panel .backup-download-actions,
+.parent-backup-card .backup-download-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
-.parent-device-panel .backup-download-actions > * { flex: 1 1 auto; }
-.parent-device-panel [data-gist-root] label {
+.parent-device-panel .backup-download-actions > *,
+.parent-backup-card .backup-download-actions > * { flex: 1 1 auto; }
+.parent-backup-card [data-gist-root] label {
   display: block;
   margin-top: var(--space-3);
   font-size: var(--fs-small);
   font-weight: 900;
 }
-.parent-device-panel [data-gist-root] input {
+.parent-backup-card [data-gist-root] input {
   width: 100%;
   min-height: var(--tap);
   margin-top: var(--space-2);
@@ -264,7 +266,7 @@
   background: #fff;
   font-size: 16px;
 }
-.parent-device-panel [data-gist-root] button:not(.btn) {
+.parent-backup-card [data-gist-root] button:not(.btn) {
   min-height: var(--tap);
   padding: 0 18px;
   border: 1px solid var(--line);
@@ -273,9 +275,9 @@
   font-size: 14px;
   font-weight: 900;
 }
-.parent-device-panel [data-gist-root] button.is-danger { background: #8f3650; border-color: transparent; color: #fff; }
-.parent-device-panel [data-gist-root] details { margin-top: var(--space-3); }
-.parent-device-panel [data-gist-root] summary {
+.parent-backup-card [data-gist-root] button.is-danger { background: #8f3650; border-color: transparent; color: #fff; }
+.parent-backup-card [data-gist-root] details { margin-top: var(--space-3); }
+.parent-backup-card [data-gist-root] summary {
   min-height: 44px;
   display: flex;
   align-items: center;
@@ -283,7 +285,39 @@
   font-weight: 900;
   cursor: pointer;
 }
-.parent-device-panel [data-gist-root] [data-gist-status] { font-weight: 900; }
+.parent-backup-card [data-gist-root] [data-gist-status] { font-weight: 900; }
+
+/* 稽核批 3：備份卡片（家長區最上方；手機單欄時排第一） */
+@media (max-width: 1099px) { .parent-backup-card { order: 0; } }
+.parent-backup-card .backup-last {
+  margin-top: var(--space-2);
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+.parent-backup-card .backup-last small { margin-left: var(--space-1); color: var(--muted); font-size: var(--fs-small); font-weight: 900; }
+.parent-backup-card .backup-help,
+.parent-backup-card .backup-foot,
+.parent-backup-card .backup-tab-note { margin-top: var(--space-2); color: var(--muted); font-size: var(--fs-small); line-height: 1.65; }
+.parent-backup-card .backup-tab-note { color: #8a5a12; font-weight: 900; }
+.parent-backup-card .backup-help[hidden] { display: none; }
+.parent-backup-card .backup-note { margin-top: var(--space-2); color: var(--green); font-size: var(--fs-small); font-weight: 900; }
+.parent-backup-card .backup-note.is-waiting { color: #8a5a12; }
+.parent-backup-card .backup-foot { padding-bottom: var(--space-2); }
+/* iOS 退到下載後的確認列：不擋操作，就在按鈕下方 */
+.parent-backup-card .backup-confirm {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid #ecd9a6;
+  border-radius: var(--radius-s);
+  background: #fff7e2;
+  color: #765b19;
+  font-size: var(--fs-small);
+  font-weight: 900;
+}
+.parent-backup-card .backup-confirm-actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
+.parent-backup-card .backup-confirm-actions .btn { flex: 1 1 0; min-width: 0; }
+.parent-backup-card .subpanel > summary > b { flex: 0 1 auto; min-width: 5em; max-width: 45%; text-align: right; }
 
 /* ─────────────────────────────────────────────
    P3. 家長區的 modal（校正撲滿、變更操作碼）
@@ -680,6 +714,22 @@ details[open] > summary .summary-open-label { display: inline; }
 
 .setup-card { width: min(480px, 100%); }
 
+/* 稽核批 3：Safari 分頁說明卡、私密瀏覽警告（卡片最上方，不擋表單） */
+.setup-warning {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid #ecd9a6;
+  border-radius: var(--radius-s);
+  background: #fff7e2;
+  color: #765b19;
+  font-size: var(--fs-small);
+  font-weight: 900;
+  line-height: 1.65;
+}
+.setup-warning[hidden] { display: none; }
+.setup-warning .btn { margin-top: var(--space-2); }
+.setup-private-warning { border-color: #e7b9c5; background: #fbe9ee; color: #913e58; }
+
 .setup-brand {
   display: flex;
   align-items: center;
@@ -766,7 +816,7 @@ details[open] > summary .summary-open-label { display: inline; }
 .recovery-routes > p { margin-top: var(--space-1); font-size: var(--fs-small); }
 .recovery-routes .parent-row button { margin-top: 0; }
 /* 批 1 驗收 #10：兩段式確認剛武裝的「稍等…」與讀取中的按鈕，要看得出來現在不能按 */
-.parent-device-panel [data-gist-root] button:disabled,
+.parent-backup-card [data-gist-root] button:disabled,
 .money-state-gate-card button:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---------- 批 5 ---------- */

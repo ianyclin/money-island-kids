@@ -9,7 +9,7 @@
    帳本資料都在 localStorage 與 IndexedDB，不經過這裡。 */
 'use strict';
 
-const VERSION = 'v16';
+const VERSION = 'v17';
 const PREFIX = 'money-island-';
 const CACHE = `${PREFIX}${VERSION}`;
 /* 核心：缺一個就不准啟用新版——網路不穩時，寧可繼續用完整的舊版，
@@ -33,6 +33,7 @@ const CORE = [
   './js/store.js',
   './js/quotes.js',
   './js/backup.js',
+  './js/backup-status.js',
   './js/gist.js',
   './js/ui/common.js',
   './js/ui/home.js',

@@ -9,7 +9,7 @@ import { normalize } from "./state.js";
 import * as store from "./store.js";
 import * as pin from "./pin.js";
 import { setCloudBridge, KEY, INVALID_LEDGER_CLOUD_TEXT } from "./db.js";
-import { showStatus, closeModal, setCloudStatusProvider, setCloudCardProvider } from "./ui/common.js";
+import { showStatus, closeModal, setCloudStatusProvider, setCloudCardProvider, CLOUD_TOKEN_TEXT, CLOUD_OFFLINE_TEXT, CLOUD_RATE_TEXT } from "./ui/common.js";
 
 /* ───────── 雲端自動備份（GitHub Gist） ─────────
    iPhone 上的網頁 app 進不了 iCloud，這是 Apple 不開放的；
@@ -30,6 +30,7 @@ export function loadGist() {
   const raw = readGistRaw();
   gistRaw = raw;
   try { gist = JSON.parse(raw || "null"); } catch (e) { gist = null; }
+  if (gist && gist.lastError) gist.lastError = cleanError(gist.lastError);
 }
 /* 別的分頁改過雲端設定：採用那一份並回 true。換了金鑰／雲端那份、或被中斷時，這個分頁的待決卡與拿回武裝都作廢 */
 function adoptOtherTabGist() {
@@ -94,11 +95,39 @@ const goToBackupPanel = () => { location.hash = "#/parent"; };
 function gfetch(url, opts) {
   const ac = ("AbortController" in window) ? new AbortController() : null;
   if (ac) setTimeout(() => ac.abort(), 20000);      /* 全部讀完之後才開火的 abort 是無害的空包彈 */
-  return fetch(url, Object.assign({}, opts, ac ? { signal: ac.signal } : {}));
+  /* 稽核批 3：fetch 連不上時丟的是 TypeError，訊息各家不同（Chrome「Failed to fetch」、Safari「Load failed」），
+     依型別換成中文，不比對字串；逾時（AbortError）維持原本的說法 */
+  return fetch(url, Object.assign({}, opts, ac ? { signal: ac.signal } : {})).catch((e) => {
+    if (e && e.name === "TypeError") throw new Error(CLOUD_OFFLINE_TEXT);
+    throw e;
+  });
+}
+/* 稽核批 3 第 3 條：401／403＝金鑰失效或被撤銷，一律講同一句「請重新貼一組」，不講「GitHub 回應 401」或「稍後重試」 */
+/* 403 也可能是流量限制（x-ratelimit-remaining 為 "0"，或回應訊息寫 rate limit）：那不是金鑰的問題，晚點自己會好 */
+async function httpError(res) {
+  const status = res && res.status;
+  if (status === 403) {
+    let limited = false;
+    try { limited = res.headers && res.headers.get("x-ratelimit-remaining") === "0"; } catch (e) {}
+    if (!limited) {
+      try { limited = /rate limit/i.test(await res.text()); } catch (e) {}
+    }
+    if (limited) return new Error(CLOUD_RATE_TEXT);
+  }
+  return new Error(status === 401 || status === 403 ? CLOUD_TOKEN_TEXT : "GitHub 回應 " + status);
+}
+/* 舊版存在 localStorage 的錯誤訊息（英文的連線錯誤、「GitHub 回應 401」）顯示前再換一次 */
+function cleanError(text) {
+  if (!text) return text;
+  const value = String(text);
+  if (/failed to fetch|load failed|network\s?error|network request failed/i.test(value)) return CLOUD_OFFLINE_TEXT;
+  if (/GitHub 回應 40[13]\b|金鑰失效或被撤銷/.test(value)) return CLOUD_TOKEN_TEXT;
+  return value;
 }
 /* 逾時／斷網的錯誤訊息統一講中文 */
 const errMsg = (e, fallback) => (e && e.name === "AbortError") ? "連線逾時（可能網路不穩）"
-  : (e && e.message) ? e.message : fallback;
+  : (e && e.name === "TypeError") ? CLOUD_OFFLINE_TEXT
+  : (e && e.message) ? cleanError(e.message) : fallback;
 /* 內容指紋：辨認「雲端那份其實是這支手機自己傳的」。
    iOS 切背景會凍結 app——上傳常常成功了，但「成功」的回條沒被記下來，
    下次開 app 比對版本戳就誤判成別台裝置動過，狂跳「要用哪一份」的假警報。 */
@@ -109,7 +138,8 @@ function sameState(raw) {
   const strip = o => {
     const n = normalize(o);
     /* 驗收 B2：meta.rev 是這台裝置的存檔次數，兩份紀錄一樣時 rev 不同也算全等 */
-    if (n.meta) { n.meta.selectedProfileId = ""; n.meta.installHintDismissed = false; n.meta.updatedAt = null; delete n.meta.rev; }
+    /* 稽核批 3：「這台裝置上次存備份到手機的時間」也是單機的事，兩台紀錄一樣只差這個也算全等 */
+    if (n.meta) { n.meta.selectedProfileId = ""; n.meta.installHintDismissed = false; n.meta.updatedAt = null; delete n.meta.rev; delete n.meta.lastFileBackupAt; }
     n.latestBackup = null; n.backupHealth = null;
     return JSON.stringify(n);
   };
@@ -276,7 +306,7 @@ export async function syncCloud(force, _retried) {
         if (g.remoteStamp || g.swapSearch) { gone = true; }
         else { g.gistId = null; g.remoteStamp = null; }
       }
-      else if (!chk.ok) throw new Error("GitHub 回應 " + chk.status);
+      else if (!chk.ok) throw await httpError(chk);
       else {
         const meta = await chk.json();
         if (!g.remoteStamp || (meta.updated_at && meta.updated_at !== g.remoteStamp)) {
@@ -318,8 +348,7 @@ export async function syncCloud(force, _retried) {
         retry404 = true;
       }
     } else {
-      if (res.status === 401 || res.status === 403) throw new Error("金鑰失效或被撤銷，請重新連線");
-      if (!res.ok) throw new Error("GitHub 回應 " + res.status);
+      if (!res.ok) throw await httpError(res);
       const j = await res.json();
       g.gistId = j.id; g.remoteStamp = j.updated_at || null;
       g.lastPush = g.pendingPush; g.pendingPush = null;   /* 回條到手：這份內容確定在雲端了 */
@@ -329,8 +358,10 @@ export async function syncCloud(force, _retried) {
     }
   } catch (e) {
     if (!(e && e.conflict)) {
+      /* 稽核批 3：標頭回來後才斷線，TypeError 會在讀內容（res.json）時才丟，不經過 gfetch，這裡再換一次 */
       g.lastError = (e && e.name === "AbortError") ? "連線逾時（可能網路不穩）"
-        : (e && e.message) ? e.message : "連不上（可能沒網路）";
+        : (e && e.name === "TypeError") ? CLOUD_OFFLINE_TEXT
+        : (e && e.message) ? cleanError(e.message) : "連不上（可能沒網路）";
       if (gist === g) saveGist();
     }
   } finally {
@@ -364,8 +395,7 @@ async function findCloudBackup(token) {
     const res = await gfetch(`https://api.github.com/gists?per_page=100&page=${page}`, {
       headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" },
     });
-    if (res.status === 401 || res.status === 403) throw new Error("金鑰不對或沒有 gist 權限");
-    if (!res.ok) throw new Error("GitHub 回應 " + res.status);
+    if (!res.ok) throw await httpError(res);
     const list = await res.json();
     if (!Array.isArray(list) || !list.length) return null;
     const hit = list.find(g => g.files && g.files[FILE]);
@@ -385,7 +415,7 @@ async function fetchCloudContent() {
     headers: { Authorization: "Bearer " + gist.token, Accept: "application/vnd.github+json" },
   });
   if (res.status === 404) return { gone: true };   /* 那份 gist 不在了：讓呼叫端走「不見了」流程，別謊稱是網路問題 */
-  if (!res.ok) throw new Error("GitHub 回應 " + res.status);
+  if (!res.ok) throw await httpError(res);
   const j = await res.json();
   const stamp = j.updated_at || null;
   const f = j.files && j.files[FILE];
@@ -410,7 +440,7 @@ export function cloudInfo() {
     on: cloudOn(),
     gistId: gist ? gist.gistId || null : null,
     lastSyncAt: gist ? gist.lastSyncAt || null : null,
-    lastError: gist ? gist.lastError || null : null,
+    lastError: gist ? cleanError(gist.lastError) || null : null,
     pending: !!(gist && gist.pending),
     frozen: !!cloudFrozen(),
     pullFreeze,
@@ -428,6 +458,8 @@ function bridgeStatus() {
   if (pendingCloud) return "deciding";
   /* 批 1 驗收 #5：帳本驗證不過而暫停上傳，跟「網路失敗、稍後重試」是兩回事，畫面要講對 */
   if (gist.lastError === LOCAL_NOT_UPLOADABLE) return "invalid";
+  /* 稽核批 3 第 3 條：金鑰失效不是「稍後重試」會好的事 */
+  if (gist.lastError === CLOUD_TOKEN_TEXT) return "token";
   if (gist.lastError || (gist.pending && !pendingCloud && !gist.gistId)) return "failed";
   if (cloudFrozen()) return "pending";
   return gist.lastSyncAt ? "synced" : "pending";
@@ -717,12 +749,28 @@ export async function deleteCloudBackup() {
       refreshSettings();
       return { ok: true };
     }
-    throw new Error("GitHub 回應 " + res.status);
+    throw await httpError(res);
   } catch (e) {
     toast("刪除失敗：" + errMsg(e, "請稍後再試"), { ms: 3500, tone: "error" });
     refreshSettings();
     return { ok: false };
   }
+}
+
+/* 稽核批 3 第 3 條：金鑰失效時換上新金鑰。雲端那份的編號與指紋都不動，照一般同步的規則先比對再上傳——
+   新金鑰若是別的帳號的，PATCH 會 404，走「備份不見了」流程，不會自動蓋掉任何一份 */
+export async function replaceToken(token) {
+  token = String(token || "").trim();
+  if (!token) { toast("先貼上新的金鑰", { ms: 2000 }); return { ok: false }; }
+  adoptOtherTabGist();
+  if (!gist) return { ok: false };
+  gist.token = token; gist.lastError = null;
+  saveGist(true);
+  const ok = await syncCloud();
+  if (ok) toast("新金鑰可以用了，已經同步到雲端", { ms: 3500, tone: "success" });
+  else if (!cloudFrozen()) toast("同步失敗：" + ((gist && cleanError(gist.lastError)) || "請稍後再試"), { ms: 3500, tone: "error" });
+  refreshSettings();
+  return { ok };
 }
 
 /* 中斷連線：雲端從來沒建成的話，別謊稱那裡還有一份 */
@@ -791,6 +839,17 @@ function summaryHtml(label, s) {
   return `<small><b>${escapeHtml(label)}</b>：${s.activities} 筆紀錄，最後一筆 ${escapeHtml(s.lastEntryDate)}；${s.profiles.map((p) => `${escapeHtml(p.name)} ${p.activities} 筆`).join("、")}</small>`;
 }
 
+/* 稽核批 3：備份卡片裡「進階：GitHub 自動備份」摺疊區標題上的一句話狀態 */
+export function cloudTitleStatus() {
+  const info = cloudInfo();
+  if (!info.on) return "沒有使用";
+  if (info.lastError === CLOUD_TOKEN_TEXT) return CLOUD_TOKEN_TEXT;
+  if (info.pullFreeze || info.card) return "已連線，自動上傳暫停";
+  if (info.lastError === LOCAL_NOT_UPLOADABLE) return "已連線，暫停上傳";
+  if (info.lastError) return "已連線，上次同步失敗";
+  return info.lastSyncAt ? `已連線，上次同步 ${whenText(info.lastSyncAt)}` : "已連線，還沒同步過";
+}
+
 export function renderGistPanel() {
   const info = cloudInfo();
   if (!info.on) {
@@ -805,6 +864,7 @@ export function renderGistPanel() {
     : info.card === "gone" ? "雲端那份備份不見了，自動上傳暫停"
     : info.card === "stale" ? "還沒跟雲端比對完，自動上傳暫停"
     : info.lastError === LOCAL_NOT_UPLOADABLE ? INVALID_LEDGER_CLOUD_TEXT
+    : info.lastError === CLOUD_TOKEN_TEXT ? CLOUD_TOKEN_TEXT
     : info.lastError ? `上次同步失敗：${info.lastError}`
     : `上次同步 ${whenText(info.lastSyncAt)}`;
   let card = "";
@@ -822,8 +882,14 @@ export function renderGistPanel() {
     card = `<div class="restore-summary"><b>還沒跟雲端比對完</b><small>上次讀不到雲端內容；比對完成前不會上傳。</small>
       <div class="backup-download-actions"><button type="button" data-gist="compare">讀取雲端備份來比對</button></div></div>`;
   }
+  /* 稽核批 3 第 3 條：叫家長「重新貼一組」，就要有地方貼。只換金鑰、雲端那份與指紋照舊，換好立刻同步一次 */
+  const tokenFix = info.lastError === CLOUD_TOKEN_TEXT
+    ? `<label>新的 GitHub 金鑰<input type="password" data-gist-token autocomplete="off" placeholder="ghp_…" spellcheck="false"></label>
+      <div class="backup-download-actions"><button type="button" data-gist="replace-token">換上新金鑰並同步</button></div>`
+    : "";
   return `<p>已連線到你的 GitHub。每次改動 15 秒後、以及 app 切到背景時會自動上傳。</p>
     <p data-gist-status role="status">${escapeHtml(statusLine)}</p>
+    ${tokenFix}
     ${card}
     <div class="backup-download-actions">
       ${info.frozen ? "" : `<button type="button" data-gist="sync">立刻同步</button>`}
@@ -854,6 +920,12 @@ export function mountGistPanel(root) {
         say("正在連線…");
         const result = await connect(input ? input.value : "");
         if (!result.ok) { say(result.error || "連線失敗"); button.disabled = false; }
+        return;
+      }
+      if (action === "replace-token") {
+        const input = root.querySelector("[data-gist-token]");
+        say("換金鑰中…");
+        await replaceToken(input ? input.value : "");
         return;
       }
       if (action === "sync") { say("同步中…"); await syncNow(); return; }

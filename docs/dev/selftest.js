@@ -1847,6 +1847,266 @@ export async function runSelfTest(report) {
       }
     });
 
+    // ================= 稽核批 3 備份可靠性（2026-11-08）=================
+    await section("批 3 備份到手機：分享完成或下載才記時間，取消不記", async () => {
+      const nav = globalThis.navigator;
+      const ownShare = Object.getOwnPropertyDescriptor(nav, "share");
+      const ownCanShare = Object.getOwnPropertyDescriptor(nav, "canShare");
+      const ownClipboard = Object.getOwnPropertyDescriptor(nav, "clipboard");
+      const originalClick = HTMLAnchorElement.prototype.click;
+      let shared = [];
+      let clicks = 0;
+      let mode = "abort";            // "abort"｜"ok"｜"noshare"｜"broken"
+      let clipboardText = "";
+      Object.defineProperty(nav, "canShare", { configurable: true, value: () => mode === "abort" || mode === "ok" || mode === "notallowed" });
+      Object.defineProperty(nav, "share", { configurable: true, value: async (data) => {
+        if (mode === "abort") throw new DOMException("使用者取消（測試）", "AbortError");
+        if (mode === "notallowed") throw new DOMException("沒有使用者手勢（測試）", "NotAllowedError");
+        shared.push(await data.files[0].text());
+      } });
+      Object.defineProperty(nav, "clipboard", { configurable: true, value: { writeText: async (text) => { clipboardText = text; } } });
+      // 下載路線：不真的下載（這一頁可能在家長自己的瀏覽器裡跑）；"broken" 模擬連下載都做不了
+      HTMLAnchorElement.prototype.click = function fakeClick() {
+        if (mode === "broken") throw new Error("下載做不了（測試）");
+        clicks += 1;
+      };
+      try {
+        db.reset();
+        store.hydrate(twoKids());
+        const before = () => store.getState().meta.lastFileBackupAt;
+        assertEqual("批 3：一開始沒有備份時間", before(), undefined);
+
+        mode = "abort";
+        let outcome = await backup.backupToDevice(store.getState());
+        assertEqual("批 3：分享表按取消 → 回 cancelled", outcome.result, "cancelled");
+        assertEqual("批 3：取消不算備份完成", outcome.done, false);
+        assertEqual("批 3：取消不記時間", before(), undefined);
+        assertEqual("批 3：取消不存檔", db.reasons().includes("記錄備份時間"), false);
+        assertEqual("批 3：取消的那句話", backup.BACKUP_NOT_DONE_TEXT, "這次沒有存，備份還沒完成");
+
+        mode = "ok";
+        outcome = await backup.backupToDevice(store.getState());
+        assertEqual("批 3：分享完成 → 回 share", outcome.result, "share");
+        assertEqual("批 3：分享完成才記時間（記匯出那一刻）", before(), outcome.at);
+        assertEqual("批 3：記時間走一次存檔", db.lastReason(), "記錄備份時間");
+        const file = JSON.parse(shared[0]);
+        assertEqual("批 3：分享出去的是完整可攜備份", file.format, "money-island-portable-backup");
+        assertEqual("批 3：檔案裡的 meta.lastFileBackupAt＝這一份自己的匯出時間", file.state.meta.lastFileBackupAt, file.exportedAt);
+
+        mode = "noshare";
+        store.getState().meta.lastFileBackupAt = "2026-01-01T00:00:00.000Z";
+        outcome = await backup.backupToDevice(store.getState(), { ios: false });
+        assertEqual("批 3：不能分享 → 下載", outcome.result, "download");
+        assertEqual("批 3：下載有觸發", clicks, 1);
+        assertEqual("批 3：桌機／Android 下載觸發直接記時間（不用確認）", [outcome.needsConfirm, before()], [false, outcome.at]);
+
+        // iOS：分享丟 NotAllowedError 退到下載 → 先不記，等家長按「有，存好了」
+        mode = "notallowed";
+        let saves = db.calls.length;
+        store.getState().meta.lastFileBackupAt = "2026-01-01T00:00:00.000Z";
+        outcome = await backup.backupToDevice(store.getState(), { ios: true });
+        assertEqual("批 3 iOS：NotAllowedError 退到下載", outcome.result, "download");
+        assertEqual("批 3 iOS：退到下載要先問家長", outcome.needsConfirm, true);
+        assertEqual("批 3 iOS：還沒確認不算完成", outcome.done, false);
+        assertEqual("批 3 iOS：還沒確認不記時間、不存檔", [before(), db.calls.length], ["2026-01-01T00:00:00.000Z", saves]);
+        assertEqual("批 3 iOS：確認列的問題", backup.BACKUP_CONFIRM_QUESTION, "檔案有存進『檔案』app 嗎？");
+        assertEqual("批 3 iOS：按「沒有」的那句話", backup.BACKUP_CONFIRM_NO_TEXT, "這次沒有存，請再按一次『備份到手機』");
+        backup.recordFileBackup(outcome.at);   // 家長按「有，存好了」
+        assertEqual("批 3 iOS：按「有，存好了」才記時間（匯出那一刻）", before(), outcome.at);
+        // iOS 不能分享、直接下載也一樣要確認
+        mode = "noshare";
+        outcome = await backup.backupToDevice(store.getState(), { ios: true });
+        assertEqual("批 3 iOS：直接下載也要確認", [outcome.result, outcome.needsConfirm], ["download", true]);
+        // iOS 分享完成照樣直接記
+        mode = "ok";
+        outcome = await backup.backupToDevice(store.getState(), { ios: true });
+        assertEqual("批 3 iOS：分享完成不用確認、直接記", [outcome.result, outcome.needsConfirm, before()], ["share", false, outcome.at]);
+
+        mode = "broken";
+        const stamp = before();
+        outcome = await backup.backupToDevice(store.getState());
+        assertEqual("批 3：分享、下載都不行 → 剪貼簿", outcome.result, "clipboard");
+        assert("批 3：剪貼簿真的拿到內容", clipboardText.includes("money-island-portable-backup"));
+        assertEqual("批 3：剪貼簿不算備份、不記時間", before(), stamp);
+
+        // 匯出 → 還原：meta.lastFileBackupAt 留著
+        await backup.restore(JSON.parse(JSON.stringify(file)));
+        assertEqual("批 3：完整可攜備份還原後 meta.lastFileBackupAt 保留", store.getState().meta.lastFileBackupAt, file.exportedAt);
+        store.getState().meta.lastFileBackupAt = "2026-02-03T04:05:06.000Z";
+        const plain = backup.exportEnvelope(store.getState());
+        await backup.restore(JSON.parse(JSON.stringify(plain)));
+        assertEqual("批 3：帳本備份匯出 → 還原也保留", store.getState().meta.lastFileBackupAt, "2026-02-03T04:05:06.000Z");
+      } finally {
+        HTMLAnchorElement.prototype.click = originalClick;
+        for (const [key, own] of [["share", ownShare], ["canShare", ownCanShare], ["clipboard", ownClipboard]]) {
+          if (own) Object.defineProperty(nav, key, own); else delete nav[key];
+        }
+        db.reset();
+      }
+    });
+
+    await section("批 3 上次備份與「該備份了」提醒", async () => {
+      const status = await import("../js/backup-status.js");
+      const now = new Date("2026-11-08T04:00:00Z");          // 台北 11/8 中午
+      const day = (taipeiDay, hour = "12:00") => new Date(`${taipeiDay}T${hour}:00+08:00`).toISOString();
+      const ledger = (count, lastFileBackupAt, newest) => ({
+        activities: Array.from({ length: count }, (_, index) => ({ createdAt: index === 0 && newest ? newest : day("2026-10-01") })),
+        meta: lastFileBackupAt ? { lastFileBackupAt } : {},
+      });
+      assertEqual("提醒：沒備份過、2 筆紀錄 → 不提醒", status.backupReminder(ledger(2), null, now), null);
+      assertEqual("提醒：沒備份過、3 筆紀錄 → 提醒", status.backupReminder(ledger(3), null, now), { days: null, text: "該備份了（還沒備份過）" });
+      assertEqual("提醒：8 天前備份、之後有新紀錄 → 提醒",
+        status.backupReminder(ledger(1, day("2026-10-31"), day("2026-11-02")), null, now), { days: 8, text: "該備份了（上次 8 天前）" });
+      assertEqual("提醒：8 天前備份、之後沒有新紀錄 → 不提醒", status.backupReminder(ledger(5, day("2026-10-31")), null, now), null);
+      assertEqual("提醒：剛好 7 天前備份、有新紀錄 → 不提醒（超過 7 天才提醒）",
+        status.backupReminder(ledger(1, day("2026-11-01"), day("2026-11-05")), null, now), null);
+      assertEqual("提醒：3 天前備份 → 不提醒", status.backupReminder(ledger(9, day("2026-11-05"), day("2026-11-06")), null, now), null);
+      assertEqual("提醒：備份檔很舊但 GitHub 昨天同步過 → 不提醒",
+        status.backupReminder(ledger(1, day("2026-09-01"), day("2026-11-02")), day("2026-11-07"), now), null);
+      assertEqual("提醒：GitHub 同步 10 天前、之後有新紀錄 → 提醒且天數取兩者較新",
+        status.backupReminder(ledger(1, day("2026-09-01"), day("2026-11-02")), day("2026-10-29"), now), { days: 10, text: "該備份了（上次 10 天前）" });
+      assertEqual("上次備份：取較新的那一種並註明（GitHub）", status.lastBackupOf(ledger(0, day("2026-09-01")), day("2026-11-07")).kind, "cloud");
+      assertEqual("上次備份：取較新的那一種並註明（存到手機）", status.lastBackupOf(ledger(0, day("2026-11-07")), day("2026-09-01")).kind, "file");
+      assertEqual("上次備份：兩種都沒有", status.lastBackupOf(ledger(0), null), null);
+      assertEqual("上次備份文字：從沒備份過", status.lastBackupText(null, now), "還沒備份過");
+      assertEqual("上次備份文字：今天（台北凌晨也算今天）", status.lastBackupText({ at: day("2026-11-08", "00:30"), kind: "file" }, now), "今天");
+      assertEqual("上次備份文字：昨天深夜＝1 天前", status.lastBackupText({ at: day("2026-11-07", "23:50"), kind: "file" }, now), "1 天前");
+      assertEqual("提醒列的連結：到家長區、解鎖後回備份卡片", status.BACKUP_REMINDER_HREF, `#/parent?return=${encodeURIComponent("#/parent?open=backup")}`);
+      const parentPage = await import("../js/ui/parent.js");
+      assertEqual("家長區認得備份卡片這個回程目標", parentPage.returnTargetOf(status.BACKUP_REMINDER_HREF), "#/parent?open=backup");
+    });
+
+    await section("批 3 Safari 分頁、長期保存、私密瀏覽的判斷", async () => {
+      const status = await import("../js/backup-status.js");
+      const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1";
+      const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
+      const ANDROID = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36";
+      assertEqual("獨立模式：navigator.standalone＝true", status.isStandaloneEnv({ standalone: true }), true);
+      assertEqual("獨立模式：display-mode standalone", status.isStandaloneEnv({ standalone: undefined, displayModeStandalone: true }), true);
+      assertEqual("獨立模式：兩個都不成立", status.isStandaloneEnv({ standalone: false, displayModeStandalone: false }), false);
+      assertEqual("分頁警告：iPhone 的 Safari 分頁 → 顯示", status.needsTabWarning({ userAgent: IPHONE, platform: "iPhone", maxTouchPoints: 5, standalone: false }), true);
+      assertEqual("分頁警告：iPhone 主畫面 app → 不顯示", status.needsTabWarning({ userAgent: IPHONE, platform: "iPhone", maxTouchPoints: 5, standalone: true }), false);
+      assertEqual("分頁警告：iPad（桌面版 UA）分頁 → 顯示", status.needsTabWarning({ userAgent: MAC, platform: "MacIntel", maxTouchPoints: 5, standalone: false }), true);
+      assertEqual("分頁警告：桌機 Safari → 不顯示", status.needsTabWarning({ userAgent: MAC, platform: "MacIntel", maxTouchPoints: 0, standalone: undefined }), false);
+      assertEqual("分頁警告：Android（分頁與 app 共用資料）→ 不顯示", status.needsTabWarning({ userAgent: ANDROID, platform: "Linux armv8l", maxTouchPoints: 5 }), false);
+      assertEqual("長期保存：答應了", status.persistText("granted"), "這台裝置已允許長期保存");
+      assertEqual("長期保存：沒答應", status.persistText("denied"), "瀏覽器沒有答應長期保存，更要記得備份");
+      assertEqual("長期保存：瀏覽器不支援也照「沒答應」講", status.persistText("unsupported"), "瀏覽器沒有答應長期保存，更要記得備份");
+      assertEqual("長期保存：還在問就先不寫", status.persistText(null), "");
+      assertEqual("私密瀏覽：localStorage 寫不進去", status.looksPrivate({ localStorageOk: false, indexedDbOk: true, quota: 5e9 }), true);
+      assertEqual("私密瀏覽：IndexedDB 寫不進去", status.looksPrivate({ localStorageOk: true, indexedDbOk: false, quota: 5e9 }), true);
+      assertEqual("私密瀏覽：配額只有 100 MB", status.looksPrivate({ localStorageOk: true, indexedDbOk: true, quota: 100 * 1024 * 1024 }), true);
+      assertEqual("私密瀏覽：一般模式（幾 GB）", status.looksPrivate({ localStorageOk: true, indexedDbOk: true, quota: 5e9 }), false);
+      assertEqual("私密瀏覽：量不到配額不誤報", status.looksPrivate({ localStorageOk: true, indexedDbOk: true, quota: null }), false);
+    });
+
+    await section("批 3 GitHub 金鑰失效與連不上：講中文、不說稍後重試", async () => {
+      const TOKEN = "GitHub 金鑰失效，請重新貼一組";
+      const OFFLINE = "連不上 GitHub，晚點會再試";
+      const STAMP = "2026-01-01T00:00:00Z";
+      db.reset();
+      store.hydrate(twoKids());
+      for (const [label, status, method] of [["預檢 GET 回 401", 401, "GET"], ["預檢 GET 回 403", 403, "GET"], ["PATCH 回 401", 401, "PATCH"]]) {
+        connectGist({ remoteStamp: STAMP, lastSyncAt: "2026-01-01T00:00:00Z" });
+        const net = installFakeFetch((url, options) => {
+          const m = String(options.method || "GET").toUpperCase();
+          if (m === method) return jsonResponse(status, { message: "Bad credentials" });
+          return jsonResponse(200, { id: "selftest-gist", updated_at: STAMP, files: {} });
+        });
+        try {
+          assertEqual(`金鑰失效（${label}）：同步失敗`, await gist.syncCloud(), false);
+          assertEqual(`金鑰失效（${label}）：錯誤訊息`, gist.cloudInfo().lastError, TOKEN);
+          const panel = gist.renderGistPanel();
+          assert(`金鑰失效（${label}）：面板直接寫那一句`, panel.includes(TOKEN));
+          assert(`金鑰失效（${label}）：面板不寫「GitHub 回應 ${status}」`, !panel.includes(`GitHub 回應 ${status}`));
+          assert(`金鑰失效（${label}）：面板有地方貼新金鑰`, panel.includes('data-gist="replace-token"') && panel.includes("data-gist-token"));
+          const line = common.backupStatusText({ latestBackup: null });
+          assertEqual(`金鑰失效（${label}）：常駐狀態`, line, `等待第一次儲存 · ${TOKEN}`);
+          assertEqual(`金鑰失效（${label}）：記帳後的提示`, common.savedStatus({}, "記好了").message, `記好了；${TOKEN}`);
+          assertEqual(`金鑰失效（${label}）：摺疊區標題`, gist.cloudTitleStatus(), TOKEN);
+        } finally { net.restore(); }
+      }
+      // 403 但其實是流量限制：不准說金鑰失效
+      const RATE = "GitHub 暫時限制次數，晚點會再試";
+      const limited = [
+        ["標頭 x-ratelimit-remaining＝0", () => new Response(JSON.stringify({ message: "Forbidden" }), { status: 403, headers: { "content-type": "application/json", "x-ratelimit-remaining": "0" } })],
+        ["訊息寫 rate limit", () => new Response(JSON.stringify({ message: "API rate limit exceeded for user ID 1." }), { status: 403, headers: { "content-type": "application/json", "x-ratelimit-remaining": "12" } })],
+      ];
+      for (const [label, respond] of limited) {
+        connectGist({ remoteStamp: STAMP, lastSyncAt: "2026-01-01T00:00:00Z" });
+        const rateNet = installFakeFetch(() => respond());
+        try {
+          assertEqual(`流量限制（${label}）：同步失敗`, await gist.syncCloud(), false);
+          assertEqual(`流量限制（${label}）：講限制次數`, gist.cloudInfo().lastError, RATE);
+          assert(`流量限制（${label}）：面板不說金鑰失效`, !gist.renderGistPanel().includes(TOKEN) && gist.renderGistPanel().includes(RATE));
+          assert(`流量限制（${label}）：常駐狀態不說金鑰失效`, !common.backupStatusText({ latestBackup: null }).includes(TOKEN));
+          assert(`流量限制（${label}）：摺疊區標題不說金鑰失效`, gist.cloudTitleStatus() !== TOKEN);
+        } finally { rateNet.restore(); }
+      }
+      // 對照：403 沒有流量限制的跡象 → 金鑰失效（上面迴圈的 403 Bad credentials 也是這條）
+      connectGist({ remoteStamp: STAMP, lastSyncAt: "2026-01-01T00:00:00Z" });
+      const plainNet = installFakeFetch(() => new Response(JSON.stringify({ message: "Resource not accessible by personal access token" }), { status: 403, headers: { "content-type": "application/json", "x-ratelimit-remaining": "4999" } }));
+      try {
+        await gist.syncCloud();
+        assertEqual("對照：403 而且還有額度 → 金鑰失效", gist.cloudInfo().lastError, TOKEN);
+      } finally { plainNet.restore(); }
+      // 換上新金鑰：雲端那份與指紋照舊，照一般規則同步
+      const auths = [];
+      let net = installFakeFetch((url, options) => {
+        auths.push(options.headers && options.headers.Authorization);
+        return String(options.method || "GET").toUpperCase() === "PATCH"
+          ? jsonResponse(200, { id: "selftest-gist", updated_at: "2026-01-02T00:00:00Z" })
+          : jsonResponse(200, { id: "selftest-gist", updated_at: STAMP, files: {} });
+      });
+      try {
+        assertEqual("換新金鑰：同步成功", (await gist.replaceToken("selftest-new-token")).ok, true);
+        assertEqual("換新金鑰：錯誤清掉", gist.cloudInfo().lastError, null);
+        assertEqual("換新金鑰：每一支請求都用新金鑰", auths.length > 0 && auths.every((value) => value === "Bearer selftest-new-token"), true);
+        assertEqual("換新金鑰：雲端那份沒換", gist.cloudInfo().gistId, "selftest-gist");
+      } finally { net.restore(); gist.disconnect(); }
+
+      for (const message of ["Failed to fetch", "Load failed"]) {
+        connectGist({ remoteStamp: STAMP });
+        net = installFakeFetch(() => { throw new TypeError(message); });
+        try {
+          assertEqual(`連不上（${message}）：同步失敗`, await gist.syncCloud(), false);
+          assertEqual(`連不上（${message}）：錯誤訊息換成中文`, gist.cloudInfo().lastError, OFFLINE);
+          const panel = gist.renderGistPanel();
+          assert(`連不上（${message}）：面板不外露英文`, !panel.includes(message) && panel.includes(OFFLINE));
+          assert(`連不上（${message}）：常駐狀態不外露英文`, !common.backupStatusText({ latestBackup: null }).includes(message));
+        } finally { net.restore(); gist.disconnect(); }
+      }
+      // 標頭回來之後才斷線：TypeError 在讀內容時才丟（不經過 fetch 那一層）
+      connectGist({ remoteStamp: STAMP });
+      net = installFakeFetch(() => ({ ok: true, status: 200, json: async () => { throw new TypeError("network error"); } }));
+      try {
+        assertEqual("讀內容時斷線（network error）：同步失敗", await gist.syncCloud(), false);
+        assertEqual("讀內容時斷線（network error）：錯誤訊息換成中文", gist.cloudInfo().lastError, OFFLINE);
+        assert("讀內容時斷線（network error）：面板不外露英文", !gist.renderGistPanel().includes("network error"));
+      } finally { net.restore(); gist.disconnect(); }
+      // 舊版留在 localStorage 的英文錯誤：顯示前也換掉
+      connectGist({ remoteStamp: STAMP, lastError: "Failed to fetch" });
+      try {
+        assertEqual("舊版存的 Failed to fetch：讀出來就換成中文", gist.cloudInfo().lastError, OFFLINE);
+        assert("舊版存的 Failed to fetch：面板不外露", !gist.renderGistPanel().includes("Failed to fetch"));
+      } finally { gist.disconnect(); }
+      connectGist({ remoteStamp: STAMP, lastError: "GitHub 回應 401" });
+      try {
+        assertEqual("舊版存的「GitHub 回應 401」：讀出來就換成金鑰失效", gist.cloudInfo().lastError, TOKEN);
+      } finally { gist.disconnect(); }
+      // 只差「上次存備份到手機的時間」的兩份帳本：紀錄一樣，不准跳「要用哪一份」
+      const cloudCopy = clone(store.getState());
+      cloudCopy.meta.lastFileBackupAt = "2026-03-04T05:06:07.000Z";
+      store.getState().meta.lastFileBackupAt = "2026-10-10T10:10:10.000Z";
+      connectGist({ remoteStamp: null, pending: true });
+      net = installFakeFetch(() => jsonResponse(200, { id: "selftest-gist", updated_at: STAMP, files: { "money-island-backup.json": { content: JSON.stringify(cloudCopy) } } }));
+      try {
+        assertEqual("只差備份時間：比對結果是「一模一樣」", (await gist.compareCloud()).mode, "same");
+        assertEqual("只差備份時間：不出拍板卡", gist.cloudInfo().card, "");
+      } finally { net.restore(); gist.disconnect(); }
+      db.reset();
+    });
+
     // ---------- 20. 操作碼鎖定（放最後，會把操作碼鎖住 15 分鐘）----------
     pin.lock();
     assertEqual("操作碼：鎖上後狀態", pin.status(), "locked");
