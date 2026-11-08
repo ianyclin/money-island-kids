@@ -25,7 +25,10 @@
 *::before,
 *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-top: env(safe-area-inset-top, 0px);   /* v20：scrollIntoView 捲到的元素停在狀態列色帶下方 */
+}
 
 body {
   margin: 0;
@@ -135,6 +138,26 @@ img { height: auto; display: block; }
   background: var(--theme-page);
 }
 
+/* v20：狀態列底色。iPhone 主畫面 app（viewport-fit=cover）的狀態列下方是頁面本身，
+   捲動時內容會透到狀態列底下（新版 iOS 還會加模糊）；這條實心色帶把那一截蓋住。
+   高度＝頂端安全區，安全區 0 的裝置（桌機、舊 iPhone）高度 0、什麼都不畫。
+   兩層：body::before 用 --cream（第一次使用頁、開機與錯誤畫面沒有 .app）；
+   .app::before 用 .app 上的 --theme-page（body 拿不到這個變數），疊在上面。
+   z-index 45／46：高於 sticky（.filters 6）、分頁列與說明泡泡（40），低於彈窗遮罩（50）與吐司（10000）；不接點擊 */
+body::before,
+.app::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top, 0px);
+  z-index: 45;
+  background: var(--cream);
+  pointer-events: none;
+}
+.app::before { z-index: 46; background: var(--theme-page); }
+
 /* --- 側欄（≥768 才出現） --- */
 .sidebar { display: none; }
 
@@ -194,7 +217,9 @@ img { height: auto; display: block; }
 }
 
 /* --- 頁面欄 --- */
-.page { min-width: 0; }
+/* v20：頂端安全區（iPhone 主畫面 app 的狀態列）加在 .page 上，不加在 .page-head：
+   .page 的第一個子元素可能是存檔失敗旗（.save-error-flag），旗子和頁首都要讓出狀態列。安全區 0 的裝置不變 */
+.page { min-width: 0; padding-top: env(safe-area-inset-top, 0px); }
 
 .page-head {
   display: flex;
@@ -280,7 +305,7 @@ img { height: auto; display: block; }
     display: flex;
     flex-direction: column;
     gap: var(--space-5);
-    padding: var(--space-5) var(--space-4);
+    padding: calc(var(--space-5) + env(safe-area-inset-top, 0px)) var(--space-4) var(--space-5);
     background: var(--paper);
     border-right: 1px solid var(--line);
     overflow-y: auto;
@@ -722,7 +747,7 @@ img { height: auto; display: block; }
 .modal {
   position: relative;
   width: 100%;
-  max-height: calc(100dvh - 40px - var(--kb, 0px));
+  max-height: calc(100dvh - 40px - env(safe-area-inset-top, 0px) - var(--kb, 0px));   /* v20：最高的抽屜頂端也停在狀態列下方 */
   overflow-y: auto;
   padding: var(--space-5) var(--space-4) calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
   border-radius: 24px 24px 0 0;
@@ -760,7 +785,7 @@ img { height: auto; display: block; }
   .modal-backdrop { align-items: center; padding: var(--space-5); }
   .modal {
     max-width: 520px;
-    max-height: calc(100dvh - 48px - var(--kb, 0px));
+    max-height: calc(100dvh - 48px - env(safe-area-inset-top, 0px) - var(--kb, 0px));
     padding: var(--space-6);
     border-radius: var(--radius-l);
     box-shadow: 0 28px 80px rgba(8,33,28,.27);
@@ -865,7 +890,7 @@ img { height: auto; display: block; }
 /* --- 5.3 紀錄 --- */
 .filters {
   position: sticky;
-  top: 0;
+  top: env(safe-area-inset-top, 0px);   /* v20：黏在狀態列色帶下方，不鑽到狀態列底下 */
   z-index: 6;
   display: flex;
   gap: var(--space-2);
@@ -877,7 +902,7 @@ img { height: auto; display: block; }
 
 .month-head {
   position: sticky;
-  top: calc(var(--tap) + var(--space-4));
+  top: calc(var(--tap) + var(--space-4) + env(safe-area-inset-top, 0px));
   z-index: 5;
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--line);
@@ -890,7 +915,7 @@ img { height: auto; display: block; }
 
 @media (min-width: 768px) {
   .filters { position: static; }
-  .month-head { top: 0; }
+  .month-head { top: env(safe-area-inset-top, 0px); }
 }
 
 /* --- 5.5 家長區 --- */
@@ -1119,6 +1144,7 @@ img { height: auto; display: block; }
   display: grid;
   place-items: center;
   padding: var(--space-5);
+  padding-top: calc(var(--space-5) + env(safe-area-inset-top, 0px));   /* v20：出路畫面很長、從頂端排起，要讓出狀態列 */
   background: var(--cream);
 }
 .money-state-gate-card {
@@ -1202,7 +1228,7 @@ img { height: auto; display: block; }
 .lock-modal-parent-link:hover { text-decoration: underline; }
 
 /* 加到主畫面的提示（index.html #install-hint，在 #app 外面） */
-#install-hint { padding: 6px 12px 0; }
+#install-hint { padding: calc(6px + env(safe-area-inset-top, 0px)) 12px 0; }   /* v20：它在最頂端，也要讓出狀態列 */
 #install-hint[hidden] { display: none; }
 .install-hint-body {
   display: flex; align-items: center; gap: 6px;

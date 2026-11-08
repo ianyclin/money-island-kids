@@ -708,7 +708,7 @@ details[open] > summary .summary-open-label { display: inline; }
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: var(--space-5) var(--space-4) calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
+  padding: calc(var(--space-5) + env(safe-area-inset-top, 0px)) var(--space-4) calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
   background: var(--cream);
 }
 
