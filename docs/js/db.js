@@ -373,6 +373,8 @@ export function save(state, reason) {
   // copyStatus 反映的是「雲端那一份的狀態」：沒開雲端就是這台裝置存好了 = ready。
   const copyStatus = !cloud ? "ready" : cloud === "synced" ? "ready" : (cloud === "failed" || cloud === "invalid" || cloud === "token") ? "failed" : "pending";
   state.latestBackup = { id: uuid(), reason: reason || "資料異動", createdAt: stamp, copyStatus };
+  /* 批 3 驗收 B：這裡寫的雲端那幾種 failed 只是存檔當下的快照；畫面（common.backupStatusText／backupHealthFailed）
+     只在本機存檔失敗時採用 backupHealth，雲端那一段一律看現在的雲端狀態 */
   state.backupHealth = cloud === "invalid"
     ? { status: "failed", message: INVALID_LEDGER_CLOUD_TEXT }
     : cloud === "token"

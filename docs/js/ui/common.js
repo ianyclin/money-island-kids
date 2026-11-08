@@ -797,9 +797,27 @@ document.addEventListener("click", (event) => {
 // ---------- 儲存狀態文案 ----------
 // 原本的「等待第一次備份／剛剛已備份／…已備份」在單機版改講「儲存」；
 // 開了 Gist 才在後面加雲端狀態。
-export function backupStatusText(state) {
+//
+// 批 3 驗收 B：存著的 state.backupHealth 只在「這次存檔本身失敗」時才算數，雲端那一段一律看現在的雲端狀態。
+// 理由：db.save 只在存檔那一刻寫 backupHealth；之後換了新金鑰、同步成功、錯誤類型改了都不會再寫，
+// 常駐狀態就一直停在舊的「金鑰失效」。本機存檔失敗（序列化失敗、localStorage 寫不進去）的 backupHealth
+// 從來不會落進 localStorage 的帳本，而且一定伴隨 db 的 saveError（saveErrorText 非空），下一次存成功才清掉；
+// 所以 saveErrorText 是空的時候，帳本裡的 failed 一定是雲端當時留下的舊值，改看現在的雲端狀態。
+// （不選「同步成功時寫回 backupHealth」：寫回要走 db.save，而 db.save 會排下一次同步，成功又寫回，會變成每 15 秒打一次 GitHub。）
+function localSaveFailed(state) {
   const health = state && state.backupHealth;
-  if (health && health.status === "failed" && health.message) return health.message;
+  return Boolean(saveErrorText()) && Boolean(health && health.status === "failed" && health.message);
+}
+
+// 資料與備份面板上那顆狀態膠囊要不要畫成紅色：跟 backupStatusText 同一套判斷
+export function backupHealthFailed(state) {
+  if (localSaveFailed(state)) return true;
+  const cloud = cloudStatus();
+  return cloud === "failed" || cloud === "token" || cloud === "invalid";
+}
+
+export function backupStatusText(state) {
+  if (localSaveFailed(state)) return state.backupHealth.message;
   const value = state && state.latestBackup ? state.latestBackup.createdAt : "";
   let base;
   if (!value) base = "等待第一次儲存";

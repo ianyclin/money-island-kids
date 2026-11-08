@@ -9,12 +9,30 @@ import { taipeiDate } from "./util.js";
 
 // ---------- 上次備份 ----------
 // 兩種備份取較新的那一個：存到手機（帳本 meta.lastFileBackupAt）與 GitHub 自動備份（雲端設定的 lastSyncAt）。
+// 呼叫端傳的雲端時間一律先過 cloudBackupTime（雲端不正常時不算），不要直接傳 lastSyncAt。
 export const BACKUP_KIND_LABEL = { file: "存到手機", cloud: "GitHub 自動備份" };
 
 function validTime(value) {
   if (!value) return null;
   const time = new Date(value).getTime();
   return Number.isFinite(time) ? time : null;
+}
+
+// 批 3 驗收 C：GitHub 的「上次同步」只在雲端正常時才算這份帳本的備份時間。
+// 下面幾種狀態裡，lastSyncAt 記的是另一份帳本、或已經不在雲端的那一份，一律不算（回 null）：
+//   pending（凍結：等家長決定、備份不見了、還沒比對完都會落這個旗標）、card 有值（三張卡任一張掛著）、
+//   swapSearch（換帳本後還沒成功上傳過）、lastSyncAt 不晚於 swapAt（換帳本那一刻；之後成功上傳一次才又算數）。
+// 一般的同步錯誤（連不上、限制次數、金鑰失效）照算：那次同步確實發生過、雲端那份也還在。
+// 「從雲端拿回」武裝的那 5 秒（pullFreeze）不算凍結：那只是畫面上的確認期，雲端那份沒有變。
+// info＝gist.cloudInfo() 的樣子：{ on, lastSyncAt, pending, card, swapSearch, swapAt }
+export function cloudBackupTime(info) {
+  if (!info || !info.on) return null;
+  const synced = validTime(info.lastSyncAt);
+  if (synced === null) return null;
+  if (info.pending || info.card || info.swapSearch) return null;
+  const swapped = validTime(info.swapAt);
+  if (swapped !== null && synced <= swapped) return null;
+  return info.lastSyncAt;
 }
 
 export function lastBackupOf(state, cloudLastSyncAt) {
@@ -165,6 +183,7 @@ export async function requestPersist() {
 // ---------- 私密瀏覽 ----------
 export const PRIVATE_WARNING_TEXT = "私密瀏覽關掉就會清空，請改用一般模式";
 // 一般模式的配額通常是好幾 GB；私密／無痕模式常常只有一百多 MB 以下。門檻是經驗值，不是規格。
+// 配額這條判斷是盡力而為，真機未驗（各瀏覽器、各版本的私密模式配額不同；磁碟快滿的一般模式也可能被誤判）。
 export const PRIVATE_QUOTA_BYTES = 120 * 1024 * 1024;
 
 export function looksPrivate({ localStorageOk, indexedDbOk, quota } = {}) {
@@ -186,9 +205,17 @@ function probeLocalStorage() {
 function probeIndexedDb() {
   return new Promise((resolve) => {
     let done = false;
-    const finish = (value) => { if (!done) { done = true; resolve(value); } };
+    let idb = null;
+    // 批 3 驗收小項 5：測完把探測用的資料庫刪掉，不在使用者的瀏覽器裡留一個沒用的「money-island-probe」。
+    // 連線要先關（成功路徑在 finish 之前就 close 了）；逾時那條路連線若之後才打開，刪除會等到它關掉，不會出錯。
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+      try { if (idb && typeof idb.deleteDatabase === "function") idb.deleteDatabase("money-island-probe"); } catch (e) {}
+    };
     try {
-      const idb = globalThis.indexedDB;
+      idb = globalThis.indexedDB;
       if (!idb) { finish(false); return; }
       const request = idb.open("money-island-probe", 1);
       request.onerror = () => finish(false);

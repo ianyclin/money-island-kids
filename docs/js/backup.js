@@ -271,6 +271,17 @@ export async function restore(parsed) {
   }
 
   recomputeInvestmentTotals(source);
+  // 批 3 驗收小項 4：舊檔案沒有 meta.lastFileBackupAt 的話，用這份檔案自己的匯出時間補上：
+  // 還原之後「上次備份」顯示這份檔案的日期，不是「還沒備份過」。匯出時間不是合法日期才維持沒有
+  // （validateBackupEnvelope 已經要求 exportedAt 是時間，這條是保險）。
+  const hasMeta = source.meta && typeof source.meta === "object" && !Array.isArray(source.meta);
+  if (!(hasMeta && source.meta.lastFileBackupAt)) {
+    const exported = typeof parsed.exportedAt === "string" ? parsed.exportedAt : "";
+    if (exported && Number.isFinite(new Date(exported).getTime())) {
+      if (!hasMeta) source.meta = {};
+      source.meta.lastFileBackupAt = exported;
+    }
+  }
   source.latestBackup = null;
   source.backupHealth = { status: "pending", message: "等待還原後建立新的備份" };
   const state = normalize(source);
@@ -322,6 +333,10 @@ export async function shareOrDownload(json, filename, options = {}) {
 // 注意：分享表之前不能 await 任何真的非同步工作，iOS 會認為不是使用者按的而拒絕開分享表。
 export const BACKUP_NOT_DONE_TEXT = "這次沒有存，備份還沒完成";
 export const BACKUP_CLIPBOARD_TEXT = "沒辦法存成檔案，內容先複製到剪貼簿了；這次不算備份完成";
+// 批 3 驗收小項 2：分享、下載、剪貼簿都不行（瀏覽器丟的原文像「Write permission denied」不外露）
+export const BACKUP_SAVE_FAILED_TEXT = "沒辦法存成檔案，也沒辦法複製，這次沒有備份";
+// 批 3 驗收小項 3、6：備份檔存好了、但記時間那次存檔失敗（或沒有帳本可記）：不把存檔錯誤整句套進來
+export const BACKUP_TIME_NOT_RECORDED_TEXT = "備份檔存好了，但這台裝置沒記下備份時間（可能容量滿了）。備份檔本身沒問題。";
 
 export function recordFileBackup(stamp) {
   const mark = () => {
@@ -351,7 +366,11 @@ export async function backupToDevice(state, { portable = true, ios } = {}) {
   const envelope = portable ? exportPortableEnvelope(state) : exportEnvelope(state);
   if (envelope.state && envelope.state.meta) envelope.state.meta.lastFileBackupAt = envelope.exportedAt;
   const filename = `${portable ? "小小理財島完整可攜備份" : "小小理財島帳本備份"}-${new Date().toISOString().slice(0, 10)}.json`;
-  const result = await shareOrDownload(JSON.stringify(envelope, null, 2), filename);
+  let result;
+  // 只包住 shareOrDownload：走到這裡會丟錯只剩「下載也不行、剪貼簿也寫不進去（或沒有剪貼簿）」，換成中文。
+  // 上面匯出驗證的錯誤照原樣丟出去
+  try { result = await shareOrDownload(JSON.stringify(envelope, null, 2), filename); }
+  catch (error) { throw new Error(BACKUP_SAVE_FAILED_TEXT); }
   const onIos = typeof ios === "boolean" ? ios : isIosEnv(currentEnv());
   if (result === "download" && onIos) {
     return { result, done: false, needsConfirm: true, at: envelope.exportedAt, recordError: null };
@@ -359,7 +378,9 @@ export async function backupToDevice(state, { portable = true, ios } = {}) {
   const done = result === "share" || result === "download";
   let recordError = null;
   if (done) {
-    try { recordFileBackup(envelope.exportedAt); } catch (error) { recordError = error; }
+    // 回 false（沒有帳本可記）也一樣不能說「備份好了」
+    try { if (!recordFileBackup(envelope.exportedAt)) recordError = new Error(BACKUP_TIME_NOT_RECORDED_TEXT); }
+    catch (error) { recordError = error; }
   }
   return { result, done, needsConfirm: false, at: done ? envelope.exportedAt : null, recordError };
 }

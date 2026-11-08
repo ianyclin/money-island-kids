@@ -1415,7 +1415,7 @@ export async function runSelfTest(report) {
       assert("v18：index.html 的 module script 有 onerror", /<script type="module" src="\.\/js\/app\.js" onerror="[^"]*__bootFailed/.test(indexSrc));
       assert("v18：index.html 的保險計時器 15 秒、在 module script 之前", /setTimeout\(function \(\) \{ if \(!window\.__appBooted\) window\.__bootFailed\(\); \}, 15000\)/.test(indexSrc) && indexSrc.indexOf("window.__bootFailed = function") < indexSrc.indexOf('<script type="module"'));
       assert("v18：重試卡文案與按鈕", indexSrc.includes("小小理財島沒有載完整，可能是網路不穩。帳本還在這台裝置裡，不會不見。") && /data-boot-reload style="min-width:44px;min-height:44px/.test(indexSrc));
-      assertEqual("v18：sw.js 版本", (/const VERSION = '([^']+)'/.exec(swSrc) || [])[1], "v18");
+      assertEqual("v19：sw.js 版本", (/const VERSION = '([^']+)'/.exec(swSrc) || [])[1], "v19");
     });
 
     await section("v18 跨版守衛（build.js）：舊殼載到新頁面整頁重新整理一次、不會無限迴圈", async () => {
@@ -2386,6 +2386,250 @@ export async function runSelfTest(report) {
         assertEqual("只差備份時間：不出拍板卡", gist.cloudInfo().card, "");
       } finally { net.restore(); gist.disconnect(); }
       db.reset();
+    });
+
+    // ================= v19 批 3 驗收（87bb298 的發現）=================
+    const backupStatusModule = await import("../js/backup-status.js");
+    const homePageModule = await import("../js/ui/home.js");
+
+    await section("v19 B 常駐狀態跟著現在的雲端狀態（走真的 db.save）", async () => {
+      const TOKEN = "GitHub 金鑰失效，請重新貼一組";
+      const OFFLINE = "連不上 GitHub，晚點會再試";
+      const STAMP = "2026-01-01T00:00:00Z";
+      const okFetch = () => installFakeFetch((url, options) => (String(options.method || "GET").toUpperCase() === "PATCH"
+        ? jsonResponse(200, { id: "selftest-gist", updated_at: "2026-01-02T00:00:00Z" })
+        : jsonResponse(200, { id: "selftest-gist", updated_at: STAMP, files: {} })));
+      db.reset();
+      store.hydrate(twoKids());
+      // 真的 db.js 沒有人掛雲端橋（gist.js 掛到的是替身）：掛上 gist 的真判斷；排程換成空的，測試中不真的排同步
+      realDb.setCloudBridge({ status: gist.bridgeStatusForTest, schedule() {} });
+      fakes.storage.removeItem(realDb.KEY);
+      try {
+        // 1. 金鑰失效時存檔：帳本裡記下 failed
+        connectGist({ remoteStamp: STAMP, lastSyncAt: "2026-01-01T00:00:00Z" });
+        let net = installFakeFetch(() => jsonResponse(401, { message: "Bad credentials" }));
+        try { await gist.syncCloud(); } finally { net.restore(); }
+        const ledger = clone(store.getState());
+        assertEqual("v19 B：金鑰失效時真的 db.save 存得進去", realDb.save(ledger, "記一筆（測試）"), true);
+        assertEqual("v19 B：存下的 backupHealth 是雲端造成的 failed", [ledger.backupHealth.status, ledger.backupHealth.message.includes(TOKEN)], ["failed", true]);
+        assert("v19 B：當下常駐狀態寫金鑰失效", common.backupStatusText(ledger).includes(TOKEN), common.backupStatusText(ledger));
+        assertEqual("v19 B：當下膠囊是紅的", common.backupHealthFailed(ledger), true);
+        // 2. 換上新金鑰並同步成功：同一份帳本（backupHealth 還是舊的 failed）改講現在的狀態
+        net = okFetch();
+        try { assertEqual("v19 B：換新金鑰同步成功", (await gist.replaceToken("selftest-new-token")).ok, true); } finally { net.restore(); }
+        const afterSwap = common.backupStatusText(ledger);
+        assertEqual("v19 B：帳本裡的 backupHealth 沒被改寫（不另外存檔）", ledger.backupHealth.status, "failed");
+        assert("v19 B：換新金鑰後常駐狀態不再寫金鑰失效、寫雲端已同步", !afterSwap.includes(TOKEN) && afterSwap.endsWith("雲端已同步"), afterSwap);
+        assertEqual("v19 B：換新金鑰後膠囊不是紅的", common.backupHealthFailed(ledger), false);
+        assert("v19 B：四處一致——面板寫上次同步", gist.renderGistPanel().includes("上次同步") && !gist.renderGistPanel().includes(TOKEN));
+        assert("v19 B：四處一致——摺疊區標題", gist.cloudTitleStatus().startsWith("已連線，上次同步"), gist.cloudTitleStatus());
+        assertEqual("v19 B：四處一致——記帳提示", common.savedStatus(ledger, "記好了"), { message: "記好了", tone: "success" });
+        // 3. 重開 app：從 localStorage 讀回當時存的那一份
+        const reopened = JSON.parse(fakes.storage.getItem(realDb.KEY));
+        assertEqual("v19 B：重開 app——帳本裡存的還是當時的 failed", reopened.backupHealth.status, "failed");
+        assert("v19 B：重開 app——常駐狀態看現在的雲端", common.backupStatusText(reopened).endsWith("雲端已同步"), common.backupStatusText(reopened));
+        // 4. 錯誤類型改變：金鑰失效 → 連不上
+        connectGist({ remoteStamp: STAMP, lastSyncAt: "2026-01-01T00:00:00Z" });
+        net = installFakeFetch(() => jsonResponse(403, { message: "Bad credentials" }));
+        try { await gist.syncCloud(); } finally { net.restore(); }
+        const ledger2 = clone(store.getState());
+        realDb.save(ledger2, "記一筆（測試）");
+        assert("v19 B：錯誤改變前——常駐狀態寫金鑰失效", common.backupStatusText(ledger2).includes(TOKEN));
+        net = installFakeFetch(() => { throw new TypeError("Failed to fetch"); });
+        try { await gist.syncCloud(); } finally { net.restore(); }
+        const changed = common.backupStatusText(ledger2);
+        assert("v19 B：改成連不上——常駐狀態不再寫金鑰失效、寫雲端待同步", !changed.includes(TOKEN) && changed.endsWith("雲端待同步"), changed);
+        assertEqual("v19 B：改成連不上——膠囊仍是紅的（雲端失敗）", common.backupHealthFailed(ledger2), true);
+        assert("v19 B：改成連不上——面板", gist.renderGistPanel().includes(OFFLINE) && !gist.renderGistPanel().includes(TOKEN));
+        assertEqual("v19 B：改成連不上——摺疊區標題", gist.cloudTitleStatus(), "已連線，上次同步失敗");
+        assertEqual("v19 B：改成連不上——記帳提示", common.savedStatus(ledger2, "記好了").message, "記好了；雲端備份稍後重試");
+        // 5. 備份不見了：存檔當下寫的是「稍後重試」，常駐狀態要講不見了（v14 那句）
+        connectGist({ remoteStamp: STAMP, lastSyncAt: "2026-01-01T00:00:00Z" });
+        net = installFakeFetch((url) => (url.includes("/gists?") ? jsonResponse(200, []) : jsonResponse(404, { message: "Not Found" })));
+        try { await gist.syncCloud(); } finally { net.restore(); }
+        assertEqual("v19 B：雲端那份不見了——卡片", gist.cloudInfo().card, "gone");
+        const ledger3 = clone(store.getState());
+        realDb.save(ledger3, "記一筆（測試）");
+        assert("v19 B：不見了——常駐狀態講不見了，不講稍後重試", common.backupStatusText(ledger3).includes("雲端那份備份不見了") && !common.backupStatusText(ledger3).includes("稍後重試"), common.backupStatusText(ledger3));
+        // 6. 本機存檔失敗：照舊用帳本裡那句（優先於雲端）
+        fakes.storage.quota = 10;
+        const ledger4 = clone(store.getState());
+        assertEqual("v19 B：容量滿了 save 失敗", realDb.save(ledger4, "記一筆（測試）"), false);
+        assertEqual("v19 B：本機存檔失敗——常駐狀態用帳本裡那句", common.backupStatusText(ledger4), ledger4.backupHealth.message);
+        assert("v19 B：本機存檔失敗——那句講存不進去", ledger4.backupHealth.message.includes("存不進去"), ledger4.backupHealth.message);
+        assertEqual("v19 B：本機存檔失敗——膠囊是紅的", common.backupHealthFailed(ledger4), true);
+        fakes.storage.quota = Infinity;
+        fakes.storage.removeItem(realDb.KEY);
+        assertEqual("v19 B：容量回來再存一次（清掉存檔錯誤，後面的測試才不受影響）", realDb.save(clone(store.getState()), "記一筆（測試）"), true);
+        assertEqual("v19 B：存檔錯誤清掉了", common.saveErrorText(), "");
+      } finally {
+        fakes.storage.quota = Infinity;
+        realDb.setCloudBridge(null);
+        gist.disconnect();
+        db.reset();
+      }
+    });
+
+    await section("v19 C 雲端不正常時不採用 GitHub 的同步時間", async () => {
+      const status = backupStatusModule;
+      const T = "2026-11-08T03:00:00.000Z";
+      const base = { on: true, lastSyncAt: T, pending: false, card: "", swapSearch: false, swapAt: null };
+      assertEqual("v19 C：雲端正常 → 採用", status.cloudBackupTime(base), T);
+      assertEqual("v19 C：沒開雲端 → 不採用", status.cloudBackupTime({ ...base, on: false }), null);
+      assertEqual("v19 C：凍結（pending）→ 不採用", status.cloudBackupTime({ ...base, pending: true }), null);
+      assertEqual("v19 C：等家長決定（decide 卡）→ 不採用", status.cloudBackupTime({ ...base, card: "decide" }), null);
+      assertEqual("v19 C：備份不見了（gone 卡）→ 不採用", status.cloudBackupTime({ ...base, card: "gone" }), null);
+      assertEqual("v19 C：換帳本後還沒上傳（swapSearch）→ 不採用", status.cloudBackupTime({ ...base, swapSearch: true }), null);
+      assertEqual("v19 C：同步時間早於換帳本那一刻 → 不採用", status.cloudBackupTime({ ...base, swapAt: "2026-11-08T04:00:00.000Z" }), null);
+      assertEqual("v19 C：換帳本之後成功上傳過 → 採用", status.cloudBackupTime({ ...base, swapAt: "2026-11-08T02:00:00.000Z" }), T);
+      assertEqual("v19 C：一般同步錯誤照算（那次同步確實發生過）", status.cloudBackupTime({ ...base, lastError: "連不上 GitHub，晚點會再試" }), T);
+
+      const STAMP = "2026-01-01T00:00:00Z";
+      const DAY = 86400000;
+      // 已同步 → 家長區還原 38 天前的備份檔 → 記 3 筆
+      db.reset();
+      store.hydrate(twoKids());
+      await pin.assert(PARENT_PIN);
+      const today = new Date().toISOString();
+      connectGist({ remoteStamp: STAMP, lastSyncAt: today });
+      assertEqual("v19 C：已同步——採用今天的同步時間", status.cloudBackupTime(gist.cloudInfo()), today);
+      const old = clone(backup.exportEnvelope(store.getState()));
+      const oldAt = new Date(Date.now() - 38 * DAY).toISOString();
+      old.exportedAt = oldAt;
+      if (old.state.meta) delete old.state.meta.lastFileBackupAt;
+      gist.freezeForLedgerSwap();          // 家長區「還原」的順序：先凍結、再還原
+      assert("v19 C：換帳本凍結記下時間", Boolean(gist.cloudInfo().swapAt));
+      await backup.restore(old);
+      assertEqual("v19 小項 4：檔案沒有 lastFileBackupAt → 用檔案的匯出時間補上", store.getState().meta.lastFileBackupAt, oldAt);
+      const owner = store.getState().profiles[0];
+      for (let i = 0; i < 3; i += 1) {
+        await store.addTransaction({ profileId: owner.id, kind: "allowance", amount: 100, operationId: `selftest-v19-c-${i}` });
+      }
+      assertEqual("v19 C：還原後——不採用還原前的同步時間", status.cloudBackupTime(gist.cloudInfo()), null);
+      const info = status.lastBackupOf(store.getState(), status.cloudBackupTime(gist.cloudInfo()));
+      assertEqual("v19 C：還原後——上次備份是那份檔案（存到手機）", [info && info.kind, info && info.at], ["file", oldAt]);
+      assertEqual("v19 C：還原後記 3 筆——首頁提醒", status.backupReminder(store.getState(), status.cloudBackupTime(gist.cloudInfo())), { days: 38, text: "該備份了（上次 38 天前）" });
+      let page = mountPage(parentPageModule);
+      try {
+        const last = page.host.querySelector("[data-backup-last]");
+        const kind = page.host.querySelector("[data-backup-kind]");
+        assertEqual("v19 C：家長區卡片——38 天前（存到手機），不寫今天（GitHub）", [last && last.textContent, kind && kind.textContent], ["38 天前", "（存到手機）"]);
+        // 主線追加：還原後、自動同步前（swapSearch），狀態膠囊不可寫「已同步」
+        const chip = page.host.querySelector(".parent-device-panel .backup-status");
+        assert("v19 C 追加：還原後自動同步前——膠囊不寫已同步、寫雲端待同步", Boolean(chip) && !chip.textContent.includes("已同步") && chip.textContent.trim().endsWith("雲端待同步"), chip ? chip.textContent.trim() : "沒有膠囊");
+        assertEqual("v19 C 追加：還原後自動同步前——膠囊不是紅的", Boolean(chip) && chip.classList.contains("is-failed"), false);
+        assertEqual("v19 C 追加：還原後自動同步前——記帳提示不加雲端後綴", common.savedStatus(store.getState(), "記好了"), { message: "記好了", tone: "success" });
+      } finally { page.remove(); }
+      // 主線追加：真的 db.save 在 swapSearch 期間存下的是 pending（copyStatus 跟著變）
+      realDb.setCloudBridge({ status: gist.bridgeStatusForTest, schedule() {} });
+      fakes.storage.removeItem(realDb.KEY);
+      try {
+        const swappedLedger = clone(store.getState());
+        assertEqual("v19 C 追加：swapSearch 期間真的 db.save 存得進去", realDb.save(swappedLedger, "記一筆（測試）"), true);
+        assertEqual("v19 C 追加：swapSearch 期間 copyStatus 與 backupHealth 是 pending", [swappedLedger.latestBackup.copyStatus, swappedLedger.backupHealth.status], ["pending", "pending"]);
+        assert("v19 C 追加：swapSearch 期間常駐狀態寫雲端待同步", common.backupStatusText(swappedLedger).endsWith("雲端待同步"), common.backupStatusText(swappedLedger));
+      } finally { realDb.setCloudBridge(null); }
+      page = mountPage(homePageModule);
+      try {
+        const bar = page.host.querySelector("[data-backup-reminder]");
+        assert("v19 C：首頁有提醒", Boolean(bar) && bar.textContent.includes("該備份了（上次 38 天前）"));
+        const body = page.host.querySelector(".page-body");
+        assert("v19 A：提醒列是首頁最底的那一個（在所有按鈕與卡片之後）", Boolean(body) && body.lastElementChild === bar && body.querySelector(".grid-2-home").compareDocumentPosition(bar) === Node.DOCUMENT_POSITION_FOLLOWING);
+      } finally { page.remove(); }
+      // 之後自動同步發現雲端那份不一樣 → 拍板卡：一樣不採用
+      const cloudCopy = clone(store.getState());
+      cloudCopy.activities = [];
+      let net = installFakeFetch(() => jsonResponse(200, { id: "selftest-gist", updated_at: "2026-02-02T00:00:00Z", files: { "money-island-backup.json": { content: JSON.stringify(cloudCopy) } } }));
+      try { await gist.syncCloud(); } finally { net.restore(); }
+      assertEqual("v19 C：等家長決定——卡片", gist.cloudInfo().card, "decide");
+      assertEqual("v19 C：等家長決定——不採用", status.cloudBackupTime(gist.cloudInfo()), null);
+      gist.disconnect();
+
+      // 換成別的帳號的金鑰 → 「不見了」：一樣不採用
+      store.hydrate(twoKids());
+      connectGist({ remoteStamp: STAMP, lastSyncAt: today, lastError: "GitHub 金鑰失效，請重新貼一組" });
+      net = installFakeFetch((url) => (url.includes("/gists?") ? jsonResponse(200, []) : jsonResponse(404, { message: "Not Found" })));
+      try { await gist.replaceToken("selftest-other-account"); } finally { net.restore(); }
+      assertEqual("v19 C：別帳號金鑰——卡片是不見了", gist.cloudInfo().card, "gone");
+      assertEqual("v19 C：別帳號金鑰——不採用雲端時間", status.cloudBackupTime(gist.cloudInfo()), null);
+      assertEqual("v19 C：別帳號金鑰——卡片寫還沒備份過", status.lastBackupText(status.lastBackupOf(store.getState(), status.cloudBackupTime(gist.cloudInfo()))), "還沒備份過");
+      page = mountPage(parentPageModule);
+      try {
+        const last = page.host.querySelector("[data-backup-last]");
+        assertEqual("v19 C：別帳號金鑰——家長區卡片", last && last.textContent, "還沒備份過");
+      } finally { page.remove(); gist.disconnect(); db.reset(); }
+    });
+
+    await section("v19 小項 1：429 講限制次數", async () => {
+      connectGist({ remoteStamp: "2026-01-01T00:00:00Z", lastSyncAt: "2026-01-01T00:00:00Z" });
+      const net = installFakeFetch(() => jsonResponse(429, { message: "Too Many Requests" }));
+      try {
+        assertEqual("429：同步失敗", await gist.syncCloud(), false);
+        assertEqual("429：講限制次數", gist.cloudInfo().lastError, "GitHub 暫時限制次數，晚點會再試");
+        assert("429：不講「GitHub 回應 429」", !gist.renderGistPanel().includes("GitHub 回應 429"));
+      } finally { net.restore(); gist.disconnect(); }
+      connectGist({ remoteStamp: "2026-01-01T00:00:00Z", lastError: "GitHub 回應 429" });
+      try {
+        assertEqual("429：舊版存的「GitHub 回應 429」讀出來就換成限制次數", gist.cloudInfo().lastError, "GitHub 暫時限制次數，晚點會再試");
+        assert("429：舊版存的那句面板不外露", !gist.renderGistPanel().includes("GitHub 回應 429"));
+      } finally { gist.disconnect(); }
+    });
+
+    await section("v19 小項 2、3、6：備份到手機的結果那一行", async () => {
+      const nav = globalThis.navigator;
+      const ownShare = Object.getOwnPropertyDescriptor(nav, "share");
+      const ownCanShare = Object.getOwnPropertyDescriptor(nav, "canShare");
+      const ownClipboard = Object.getOwnPropertyDescriptor(nav, "clipboard");
+      const originalClick = HTMLAnchorElement.prototype.click;
+      let mode = "ok";              // "ok"＝分享完成｜"fail"＝分享不行、下載不行、剪貼簿也被拒
+      Object.defineProperty(nav, "canShare", { configurable: true, value: () => mode === "ok" });
+      Object.defineProperty(nav, "share", { configurable: true, value: async () => {} });
+      Object.defineProperty(nav, "clipboard", { configurable: true, value: { writeText: async () => { throw new DOMException("Write permission denied.", "NotAllowedError"); } } });
+      HTMLAnchorElement.prototype.click = function fakeClick() { throw new Error("下載做不了（測試）"); };
+      db.reset();
+      store.hydrate(twoKids());
+      await pin.assert(PARENT_PIN);
+      const page = mountPage(parentPageModule);
+      try {
+        const press = () => page.host.querySelector('[data-action="backup-to-phone"]').click();
+        const note = () => page.host.querySelector("[data-backup-note]");
+        mode = "ok";
+        press();
+        assert("小項 2：分享完成 → 備份好了", await waitFor(() => note() && note().textContent === "備份好了"));
+        mode = "fail";
+        press();
+        assertEqual("小項 2：一按下去就清掉上一次的結果", note(), null);
+        const cardError = () => page.host.querySelector('p.form-error[data-error-scope="backup-card"]');
+        assert("小項 2：剪貼簿也不行 → 錯誤寫中文", await waitFor(() => cardError() && cardError().textContent === backup.BACKUP_SAVE_FAILED_TEXT), cardError() ? cardError().textContent : "沒有錯誤");
+        assert("小項 2：錯誤路徑重繪後沒有殘留的「備份好了」", !note() && !page.host.textContent.includes("denied"));
+        assertEqual("小項 2：那一句", backup.BACKUP_SAVE_FAILED_TEXT, "沒辦法存成檔案，也沒辦法複製，這次沒有備份");
+        await assertThrows("小項 2：沒有剪貼簿也一樣講中文", backup.BACKUP_SAVE_FAILED_TEXT, async () => {
+          Object.defineProperty(nav, "clipboard", { configurable: true, value: undefined });
+          await backup.backupToDevice(store.getState(), { ios: false });
+        });
+        // 小項 3：記時間那次存檔失敗
+        mode = "ok";
+        db.control.failSave = true;
+        press();
+        assert("小項 3：記時間失敗的那一句", await waitFor(() => note() && note().textContent === backup.BACKUP_TIME_NOT_RECORDED_TEXT), note() ? note().textContent : "沒有結果那一行");
+        assert("小項 3：不套存檔錯誤原文", !note().textContent.includes("存不進去（測試）"));
+        db.control.failSave = false;
+        assertEqual("小項 3：那一句", backup.BACKUP_TIME_NOT_RECORDED_TEXT, "備份檔存好了，但這台裝置沒記下備份時間（可能容量滿了）。備份檔本身沒問題。");
+        // 小項 6：recordFileBackup 回 false（沒有帳本可記）
+        const snapshot = clone(store.getState());
+        store.hydrate(null);
+        assertEqual("小項 6：沒有帳本時 recordFileBackup 回 false", backup.recordFileBackup("2026-11-08T00:00:00.000Z"), false);
+        const outcome = await backup.backupToDevice(snapshot, { ios: false });
+        assertEqual("小項 6：回 false 不算記好（帶記時間失敗那一句）", outcome.recordError && outcome.recordError.message, backup.BACKUP_TIME_NOT_RECORDED_TEXT);
+        store.hydrate(snapshot);
+      } finally {
+        page.remove();
+        HTMLAnchorElement.prototype.click = originalClick;
+        for (const [key, own] of [["share", ownShare], ["canShare", ownCanShare], ["clipboard", ownClipboard]]) {
+          if (own) Object.defineProperty(nav, key, own); else delete nav[key];
+        }
+        db.reset();
+      }
     });
 
     // ---------- 20. 操作碼鎖定（放最後，會把操作碼鎖住 15 分鐘）----------

@@ -114,6 +114,8 @@ async function httpError(res) {
     }
     if (limited) return new Error(CLOUD_RATE_TEXT);
   }
+  /* 批 3 驗收小項 1：429（Too Many Requests）一樣是流量限制 */
+  if (status === 429) return new Error(CLOUD_RATE_TEXT);
   return new Error(status === 401 || status === 403 ? CLOUD_TOKEN_TEXT : "GitHub 回應 " + status);
 }
 /* 舊版存在 localStorage 的錯誤訊息（英文的連線錯誤、「GitHub 回應 401」）顯示前再換一次 */
@@ -122,6 +124,8 @@ function cleanError(text) {
   const value = String(text);
   if (/failed to fetch|load failed|network\s?error|network request failed/i.test(value)) return CLOUD_OFFLINE_TEXT;
   if (/GitHub 回應 40[13]\b|金鑰失效或被撤銷/.test(value)) return CLOUD_TOKEN_TEXT;
+  /* 批 3 驗收追加：舊版把 429 存成「GitHub 回應 429」 */
+  if (/GitHub 回應 429\b/.test(value)) return CLOUD_RATE_TEXT;
   return value;
 }
 /* 逾時／斷網的錯誤訊息統一講中文 */
@@ -251,6 +255,9 @@ export function freezeForLedgerSwap() {
   if (!cloudOn()) return false;
   clearTimeout(cloudTimer);
   gist.swapSearch = true;
+  /* 批 3 驗收 C：換帳本這一刻記下來。lastSyncAt 不晚於它的話，記的是換掉之前那一份帳本的同步，
+     家長區「上次備份」與首頁提醒都不採用（backup-status.cloudBackupTime）；之後成功上傳一次才又算數 */
+  gist.swapAt = new Date().toISOString();
   if (gist.lastError === LOCAL_NOT_UPLOADABLE) gist.lastError = null;
   gist.remoteStamp = null;
   gist.lastPush = null;
@@ -442,6 +449,9 @@ export function cloudInfo() {
     lastSyncAt: gist ? gist.lastSyncAt || null : null,
     lastError: gist ? cleanError(gist.lastError) || null : null,
     pending: !!(gist && gist.pending),
+    // 批 3 驗收 C：給 backup-status.cloudBackupTime 判斷 lastSyncAt 算不算數
+    swapSearch: !!(gist && gist.swapSearch),
+    swapAt: gist ? gist.swapAt || null : null,
     frozen: !!cloudFrozen(),
     pullFreeze,
     pullArmed: !!pullCache,
@@ -462,10 +472,15 @@ function bridgeStatus() {
   if (gist.lastError === CLOUD_TOKEN_TEXT) return "token";
   if (gist.lastError || (gist.pending && !pendingCloud && !gist.gistId)) return "failed";
   if (cloudFrozen()) return "pending";
+  /* 批 3 驗收 C 追加：換帳本後還沒成功上傳過（swapSearch）＝雲端那份不是這台裝置現在這一份，不能說「雲端已同步」。
+     錯誤與三張卡照上面先判斷；上傳成功一次 swapSearch 清掉才回 synced。db.save 的 copyStatus 跟著是 pending */
+  if (gist.swapSearch) return "pending";
   return gist.lastSyncAt ? "synced" : "pending";
 }
 setCloudBridge({ schedule: scheduleCloudSync, status: bridgeStatus });
 setCloudStatusProvider(bridgeStatus);
+/* 只給 selftest：selftest 的 db.js 是替身，要拿這支掛到真的 db.js 上，走真實的 db.save 路徑 */
+export const bridgeStatusForTest = bridgeStatus;
 // v14：三張卡的判斷抽出來，家長區面板（cloudInfo）與儲存狀態文字（common.backupStatusText）共用同一個
 function cloudCard() {
   return pendingCloud ? "decide" : (gist && gist.pending && !gist.gistId) ? "gone" : (gist && gist.pending) ? "stale" : "";

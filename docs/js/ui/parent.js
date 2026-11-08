@@ -262,7 +262,8 @@ function unlockedBody(state, profile, holdings) {
 // ---------- 稽核批 3：備份卡片（家長區最上方） ----------
 // 大字「上次備份」＋一顆「備份到手機」（完整可攜備份，含照片，走分享表）；GitHub 自動備份收在下面的摺疊區。
 function backupCard(state) {
-  const info = backupStatus.lastBackupOf(state, gist.cloudInfo().lastSyncAt);
+  // 批 3 驗收 C：雲端凍結、等家長決定、不見了、換帳本後還沒上傳過時，GitHub 的同步時間不算
+  const info = backupStatus.lastBackupOf(state, backupStatus.cloudBackupTime(gist.cloudInfo()));
   const persist = backupStatus.persistText(backupStatus.persistStatus());
   const inTab = backupStatus.needsTabWarning(backupStatus.currentEnv());
   const note = ui.backupNote;
@@ -653,7 +654,8 @@ function profileEditorMarkup(state, profile) {
 
 // ---------- 資料與備份（取代 DeviceTrustPanel） ----------
 function dataPanelMarkup(state, unlocked) {
-  const healthy = state.backupHealth?.status !== "failed";
+  // 批 3 驗收 B：跟 backupStatusText 同一套判斷（本機存檔失敗看帳本、雲端看現在的狀態），不會紅膠囊配「雲端已同步」
+  const healthy = !common.backupHealthFailed(state);
   // 批 1 驗收 #5：帳本畫得出來但驗證不過時，正式備份會被匯出前驗證擋下；給一顆「下載原始內容」，不讓家長卡在死路
   const restorable = db.isRestorable(state);
   return html`<section class="card parent-device-panel" id="devices">
@@ -1406,6 +1408,9 @@ async function handleClick(root, ctx, button) {
       const fromCard = action === "backup-to-phone";
       const portable = fromCard || button.dataset.kind === "portable";
       const scope = fromCard ? "backup-card" : "backup";
+      // 批 3 驗收小項 2：上一次的結果那一行先拿掉（不整頁重繪，忙碌中的按鈕要維持「準備中…」）
+      ui.backupNote = null;
+      root.querySelectorAll("[data-backup-note]").forEach((node) => node.remove());
       startBusy(root, button);
       clearOperationError(root, scope);
       try {
@@ -1423,7 +1428,8 @@ async function handleClick(root, ctx, button) {
           ui.backupNote = { text: backup.BACKUP_CLIPBOARD_TEXT, tone: "waiting" };
           common.showStatus(backup.BACKUP_CLIPBOARD_TEXT, "waiting");
         } else if (outcome.recordError) {
-          ui.backupNote = { text: `備份檔存好了，但這台裝置沒記下備份時間（${errorMessage(outcome.recordError, "存不進去")}）`, tone: "error" };
+          // 批 3 驗收小項 3：不把存檔錯誤那一長句套進來
+          ui.backupNote = { text: backup.BACKUP_TIME_NOT_RECORDED_TEXT, tone: "error" };
           common.showStatus(ui.backupNote.text, "error");
         } else {
           const text = outcome.result === "share" ? "備份好了" : (portable ? "完整可攜備份已經下載" : "帳本備份已經下載");
@@ -1433,6 +1439,9 @@ async function handleClick(root, ctx, button) {
         ctx.refresh();   // 備份卡片的「上次備份」與結果那一行跟著重畫（記下時間的那次存檔本來也會重繪）
       } catch (caught) {
         endBusy();
+        // 批 3 驗收小項 2：錯誤路徑也重繪（備份卡片的結果那一行跟著清掉）；錯誤由 mount 依 ui.operationError 畫回來
+        ui.backupNote = null;
+        ctx.refresh();
         reportOperationError(root, scope, caught, "備份下載失敗");
       }
       return;
@@ -1449,11 +1458,16 @@ async function handleClick(root, ctx, button) {
         return;
       }
       try {
-        backup.recordFileBackup(pending.at);
-        ui.backupNote = { text: "備份好了", tone: "success" };
-        common.showStatus("備份好了", "success");
+        // 批 3 驗收小項 6：回 false（沒有帳本可記）不能說「備份好了」
+        if (backup.recordFileBackup(pending.at)) {
+          ui.backupNote = { text: "備份好了", tone: "success" };
+          common.showStatus("備份好了", "success");
+        } else {
+          ui.backupNote = { text: backup.BACKUP_TIME_NOT_RECORDED_TEXT, tone: "error" };
+          common.showStatus(ui.backupNote.text, "error");
+        }
       } catch (caught) {
-        ui.backupNote = { text: `備份檔存好了，但這台裝置沒記下備份時間（${errorMessage(caught, "存不進去")}）`, tone: "error" };
+        ui.backupNote = { text: backup.BACKUP_TIME_NOT_RECORDED_TEXT, tone: "error" };
         common.showStatus(ui.backupNote.text, "error");
       }
       ctx.refresh();

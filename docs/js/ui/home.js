@@ -21,13 +21,13 @@ import {
 import * as store from "../store.js";
 import { totalAssets, assetTimeline } from "./common.js";
 import * as gist from "../gist.js";
-import { backupReminder, BACKUP_REMINDER_HREF } from "../backup-status.js";
+import { backupReminder, cloudBackupTime, BACKUP_REMINDER_HREF } from "../backup-status.js";
 
 // 稽核批 3：「該備份了」一行小提醒（不擋操作、不是彈窗）。點下去到家長區（要操作碼），解鎖後回到備份卡片；
 // 孩子看得到，但沒有操作碼什麼都動不了。
 function backupReminderBar(state) {
   let reminder = null;
-  try { reminder = backupReminder(state, gist.cloudInfo().lastSyncAt); } catch (e) { reminder = null; }
+  try { reminder = backupReminder(state, cloudBackupTime(gist.cloudInfo())); } catch (e) { reminder = null; }
   if (!reminder) return "";
   return html`<a class="backup-reminder" href="${BACKUP_REMINDER_HREF}" data-backup-reminder><span aria-hidden="true">💾</span><span>${reminder.text}</span><b aria-hidden="true">›</b></a>`;
 }
@@ -203,8 +203,9 @@ export function render(ctx) {
     ? ((profile.marketValue - profile.stockCost) / profile.stockCost) * 100
     : 0;
 
+  // 批 3 驗收 A：「該備份了」放在整頁最底（.grid-2-home 之後、.page-body 的最後一個子元素），
+  // 出現或消失都不推動上面任何按鈕；不放進 grid（≥1100 小島卡靠 grid-row 排）。
   const body = html`
-      ${backupReminderBar(state)}
       <div class="grid-2 grid-2-home">
         <section class="greeting" aria-label="${profile.name}的錢，正在慢慢長大">
           <h1>${profile.name}的錢，正在慢慢長大。</h1>
@@ -285,7 +286,8 @@ export function render(ctx) {
             </div>`)}
           </div>`}
         </section>
-      </div>`;
+      </div>
+      ${backupReminderBar(state)}`;
 
   // 規格 3.1：首頁的 title 傳空字串，頁首自動變成孩子切換列；右插槽留空。
   return appShell({ page: "home", title: "", ctx, body });

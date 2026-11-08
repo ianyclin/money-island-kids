@@ -133,7 +133,8 @@
 .garden-picker summary { position: relative; }
 .garden-picker summary::before { content: ""; position: absolute; inset: -6px 0; }
 
-/* 稽核批 3：首頁頂端「該備份了」一行小提醒（不擋操作、不是彈窗），點下去到家長區的備份卡片 */
+/* 稽核批 3：首頁最底部「該備份了」一行小提醒（不擋操作、不是彈窗），點下去到家長區的備份卡片。
+   批 3 驗收 A：放在所有按鈕與卡片之後，出現或消失都不推動既有按鈕 */
 .backup-reminder {
   display: flex;
   align-items: center;
