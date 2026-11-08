@@ -17,7 +17,7 @@
 // 之後才載入的新版頁面 import 到的仍是記憶體裡那一份舊的 BUILD，兩邊相等，守衛不會觸發——
 // v18 以後的升級靠 app.js 的「新版已接管」（controllerchange）整理；這支守衛主要救 v14 這類沒有那段的舊殼。
 
-export const BUILD = "v20";
+export const BUILD = "v21";
 
 const RELOADED_KEY = "money-island.build-reloaded";
 let reloading = false;

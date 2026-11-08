@@ -1415,7 +1415,7 @@ export async function runSelfTest(report) {
       assert("v18：index.html 的 module script 有 onerror", /<script type="module" src="\.\/js\/app\.js" onerror="[^"]*__bootFailed/.test(indexSrc));
       assert("v18：index.html 的保險計時器 15 秒、在 module script 之前", /setTimeout\(function \(\) \{ if \(!window\.__appBooted\) window\.__bootFailed\(\); \}, 15000\)/.test(indexSrc) && indexSrc.indexOf("window.__bootFailed = function") < indexSrc.indexOf('<script type="module"'));
       assert("v18：重試卡文案與按鈕", indexSrc.includes("小小理財島沒有載完整，可能是網路不穩。帳本還在這台裝置裡，不會不見。") && /data-boot-reload style="min-width:44px;min-height:44px/.test(indexSrc));
-      assertEqual("v20：sw.js 版本", (/const VERSION = '([^']+)'/.exec(swSrc) || [])[1], "v20");
+      assertEqual("v21：sw.js 版本", (/const VERSION = '([^']+)'/.exec(swSrc) || [])[1], "v21");
     });
 
     await section("v18 跨版守衛（build.js）：舊殼載到新頁面整頁重新整理一次、不會無限迴圈", async () => {

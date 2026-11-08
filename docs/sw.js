@@ -10,7 +10,7 @@
 'use strict';
 
 /* ↓ 改這裡一定要同步改 js/build.js 的 BUILD（兩邊同一個字串）：頁面模組靠它發現「舊版殼載到新版頁面」 */
-const VERSION = 'v20';
+const VERSION = 'v21';
 const PREFIX = 'money-island-';
 const CACHE = `${PREFIX}${VERSION}`;
 /* 核心：缺一個就不准啟用新版——網路不穩時，寧可繼續用完整的舊版，
