@@ -1036,6 +1036,153 @@ export async function runSelfTest(report) {
       }
     });
 
+    await section("v16 第一次使用頁：操作碼欄位不給鑰匙圈當密碼、出錯不清空已輸入的值", async () => {
+      const setup = await import("../js/ui/setup.js");
+      const host = document.createElement("div");
+      document.body.append(host);
+      const ctx = { refresh() { host.innerHTML = String(setup.render()); } };
+      setup.mount(host, ctx);
+      const hashBefore = location.hash;
+      const SECURITY = "money-island.v1.security";
+      const securityBefore = globalThis.localStorage.getItem(SECURITY);
+      const unlockedBefore = pin.isUnlocked();
+      const stateBefore = store.getState();
+      const form = (kind = "create") => host.querySelector(`form[data-form="${kind}"]`);
+      const typeInto = (input, value) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+      const submit = (kind = "create") => form(kind).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      const values = () => {
+        const f = form();
+        return [f.elements.familyName.value, ...Array.from(f.querySelectorAll('input[name="kid"]')).map((input) => input.value), f.elements.savingsRate.value, f.elements.createPin.value, f.elements.createPinAgain.value];
+      };
+      const errorText = () => { const node = host.querySelector("[data-setup-error] .form-error"); return node ? node.textContent.trim() : ""; };
+      const hintText = () => { const node = host.querySelector("[data-setup-error-hint]"); return node ? node.textContent.trim() : ""; };
+      try {
+        // 這一段開頭：這台裝置已經有操作碼（第 1 段設的 PARENT_PIN），帳本不在
+        db.reset();
+        store.hydrate(null);
+        setup.presetMode("create");
+        ctx.refresh();
+        assert("v16：這台裝置已經有操作碼（測試前提）", pin.status() !== "setup", pin.status());
+
+        // 一、操作碼欄位的屬性：不是 password、不是 new-password，遮字靠 CSS
+        const pinInputs = Array.from(form().querySelectorAll('input[name="createPin"], input[name="createPinAgain"]'));
+        assertEqual("v16：建立表單有兩個操作碼欄", pinInputs.length, 2);
+        assertEqual("v16：操作碼欄位的屬性（type／inputmode／autocomplete／autocorrect／autocapitalize／spellcheck／遮字掛勾）",
+          pinInputs.map((input) => [input.getAttribute("type"), input.getAttribute("inputmode"), input.getAttribute("autocomplete"), input.getAttribute("autocorrect"), input.getAttribute("autocapitalize"), input.getAttribute("spellcheck"), input.hasAttribute("data-pin-input")]),
+          [["text", "numeric", "off", "off", "off", "false", true], ["text", "numeric", "off", "off", "off", "false", true]]);
+        assertEqual("v16：建立表單裡沒有任何 type=password／autocomplete=new-password 的欄位", form().querySelectorAll('input[type="password"], [autocomplete="new-password"]').length, 0);
+        assertEqual("v16：建立表單關掉瀏覽器原生驗證（錯誤一律走自己的提示）", form().hasAttribute("novalidate"), true);
+        // 原始碼層級：家長區解鎖、變更操作碼、情境解鎖彈窗都用同一份屬性
+        const sources = {};
+        for (const file of ["../js/ui/setup.js", "../js/ui/common.js", "../js/ui/parent.js", "../js/gist.js"]) {
+          sources[file] = await (await fetch(new URL(file, import.meta.url), { cache: "no-store" })).text();
+        }
+        assertEqual("v16：setup／common／parent 原始碼沒有 type=\"password\"",
+          ["../js/ui/setup.js", "../js/ui/common.js", "../js/ui/parent.js"].filter((file) => sources[file].includes('type="password"')), []);
+        assertEqual("v16：四個檔都沒有 autocomplete=\"new-password\"", Object.keys(sources).filter((file) => sources[file].includes("new-password")), []);
+        assertEqual("v16：操作碼欄位都掛共用屬性（解鎖彈窗 1、家長區解鎖 1、變更操作碼 1、第一次使用 2）",
+          [(sources["../js/ui/common.js"].match(/id="lock-modal-pin" \$\{PIN_INPUT_ATTRS\}/g) || []).length,
+            (sources["../js/ui/parent.js"].match(/\$\{common\.PIN_INPUT_ATTRS\}/g) || []).length,
+            (sources["../js/ui/setup.js"].match(/\$\{PIN_INPUT_ATTRS\}/g) || []).length],
+          [1, 2, 2]);
+        assert("v16：GitHub 金鑰欄維持 autocomplete=\"off\"（不是 new-password）", /data-gist-token autocomplete="off"/.test(sources["../js/gist.js"]));
+
+        // 二、打字之後背景重繪（另一分頁 storage 事件、雲端同步都走整頁重繪）：值還在
+        const f0 = form();
+        typeInto(f0.elements.familyName, "防清空測試家");
+        const kids0 = Array.from(f0.querySelectorAll('input[name="kid"]'));
+        typeInto(kids0[0], "小甲");
+        typeInto(kids0[1], "小乙");
+        typeInto(f0.elements.savingsRate, "20");
+        typeInto(f0.elements.createPin, "24");
+        ctx.refresh();
+        assertEqual("v16：打到一半背景重繪，家庭名稱、孩子、比例、打到一半的操作碼都還在", values(), ["防清空測試家", "小甲", "小乙", "", "20", "24", ""]);
+
+        // 三、模擬鑰匙圈自動填入英數密碼（只改 value、不發 input 事件）後按建立
+        form().elements.createPin.value = "Xk3p-9Qwe-r2Tz";
+        form().elements.createPinAgain.value = "Xk3p-9Qwe-r2Tz";
+        submit();
+        await waitFor(() => Boolean(errorText()));
+        assertEqual("v16：自動填入英數密碼：帳本沒建", store.getState(), null);
+        assertEqual("v16：自動填入英數密碼：錯誤說得出是數字以外的字", errorText(), "家長操作碼只能用 4 到 8 位數字；如果手機自動填入了一串密碼，請清掉後自己打數字");
+        assertEqual("v16：自動填入英數密碼：重繪後全部欄位值都還在（含自動填入的兩欄）", values(), ["防清空測試家", "小甲", "小乙", "", "20", "Xk3p-9Qwe-r2Tz", "Xk3p-9Qwe-r2Tz"]);
+        const errorNode = host.querySelector("[data-setup-error]");
+        assertEqual("v16：錯誤在建立表單裡、送出鈕下面，role=alert", [Boolean(errorNode && errorNode.closest('form[data-form="create"]')), Boolean(errorNode && errorNode.previousElementSibling && errorNode.previousElementSibling.classList.contains("form-actions")), errorNode ? errorNode.getAttribute("role") : ""], [true, true, "alert"]);
+        assertEqual("v16：錯誤只畫一次", host.querySelectorAll(".form-error").length, 1);
+        const button = form().querySelector(".form-actions button");
+        assertEqual("v16：出錯後送出鈕恢復可按", [button.disabled, button.textContent.trim()], [false, "建立帳本"]);
+
+        // 四、驗證錯誤（家庭名稱太短）不先畫成忙碌，值也還在
+        typeInto(form().elements.familyName, "家");
+        let busyPainted = false;
+        const observer = new MutationObserver(() => { if (host.textContent.includes("建立中…")) busyPainted = true; });
+        observer.observe(host, { subtree: true, childList: true, characterData: true });
+        submit();
+        await waitFor(() => errorText() === "請輸入家庭名稱");
+        observer.disconnect();
+        assertEqual("v16：家庭名稱太短：錯誤", errorText(), "請輸入家庭名稱");
+        assertEqual("v16：驗證錯誤沒有先畫成「建立中…」", busyPainted, false);
+        assertEqual("v16：家庭名稱太短：其他欄位都還在", values().slice(1), ["小甲", "小乙", "", "20", "Xk3p-9Qwe-r2Tz", "Xk3p-9Qwe-r2Tz"]);
+        typeInto(form().elements.familyName, "防清空測試家");
+
+        // 五、這台裝置已經有操作碼，卻打了新的一組
+        typeInto(form().elements.createPin, "9999");
+        typeInto(form().elements.createPinAgain, "9999");
+        submit();
+        await waitFor(() => errorText() === setup.EXISTING_PIN_TEXT);
+        assertEqual("v16：已有操作碼時打新的一組：錯誤字樣", errorText(), "這台裝置之前設定過家長操作碼，請輸入原本那組。");
+        assertEqual("v16：已有操作碼時打新的一組：第二行提示", hintText(), "這通常表示這台裝置以前用過小小理財島，資料可能還在：可以改用上面的「從備份還原」，或聯絡家長確認。");
+        assertEqual("v16：已有操作碼時打新的一組：帳本沒建、欄位都還在", [store.getState(), values()], [null, ["防清空測試家", "小甲", "小乙", "", "20", "9999", "9999"]]);
+
+        // 六、手打原本那組數字：建立成功，草稿清空
+        typeInto(form().elements.createPin, PARENT_PIN);
+        typeInto(form().elements.createPinAgain, PARENT_PIN);
+        submit();
+        const created = await waitFor(() => Boolean(store.getState()) && store.getState().family.name === "防清空測試家");
+        assert("v16：手打正確的操作碼後建立成功", created, errorText());
+        assertEqual("v16：建立成功的帳本：孩子與比例照表單", created ? [store.getState().profiles.map((profile) => profile.name), store.getState().savingsRate] : null, [["小甲", "小乙"], 20]);
+        store.hydrate(null);
+        setup.presetMode("create");
+        ctx.refresh();
+        assertEqual("v16：建立成功後草稿清空（比例回到預設 30）", values(), ["", "", "", "", "30", "", ""]);
+
+        // 七、還原表單（沒有操作碼的裝置才有操作碼欄）：兩次不一樣時錯誤在還原鈕下、值還在
+        globalThis.localStorage.removeItem(SECURITY);
+        pin.lock();
+        setup.presetMode("restore");
+        ctx.refresh();
+        const file = backup.exportEnvelope(normalize(clone(freshState({ familyName: "v16還原家", kidNames: ["阿戊"], savingsRate: 30 }))));
+        const fileInput = host.querySelector("[data-backup-file]");
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([JSON.stringify(file)], "selftest.json", { type: "application/json" }));
+        fileInput.files = transfer.files;
+        fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(() => Boolean(form("restore")));
+        const restorePins = Array.from(form("restore").querySelectorAll('input[name="restorePin"], input[name="restorePinAgain"]'));
+        assertEqual("v16：還原表單的操作碼欄也不是 password", restorePins.map((input) => [input.getAttribute("type"), input.getAttribute("autocomplete")]), [["text", "off"], ["text", "off"]]);
+        typeInto(form("restore").elements.restorePin, "1234");
+        form("restore").elements.restorePinAgain.value = "1243";   // 自動填入：不發 input 事件
+        submit("restore");
+        await waitFor(() => errorText() === "兩次輸入的家長操作碼不一樣");
+        assertEqual("v16：還原兩次不一樣：錯誤", errorText(), "兩次輸入的家長操作碼不一樣");
+        assertEqual("v16：還原兩次不一樣：兩欄的值都還在、帳本沒換", [form("restore").elements.restorePin.value, form("restore").elements.restorePinAgain.value, store.getState()], ["1234", "1243", null]);
+        const restoreError = host.querySelector("[data-setup-error]");
+        assertEqual("v16：還原的錯誤在還原表單裡、還原鈕下面", [Boolean(restoreError && restoreError.closest('form[data-form="restore"]')), Boolean(restoreError && restoreError.previousElementSibling && restoreError.previousElementSibling.classList.contains("form-actions"))], [true, true]);
+        ctx.refresh();
+        assertEqual("v16：還原表單背景重繪後值還在", [form("restore").elements.restorePin.value, form("restore").elements.restorePinAgain.value], ["1234", "1243"]);
+      } finally {
+        // 還原進這一段之前的樣子：操作碼紀錄（含輸錯次數）、解鎖狀態、帳本
+        if (securityBefore === null) globalThis.localStorage.removeItem(SECURITY); else globalThis.localStorage.setItem(SECURITY, securityBefore);
+        pin.lock();
+        if (unlockedBefore) await pin.assert(PARENT_PIN);
+        setup.presetMode("create");
+        host.remove();
+        if (location.hash !== hashBefore) history.replaceState(null, "", location.pathname + location.search + hashBefore);
+        store.hydrate(stateBefore);
+        db.reset();
+      }
+    });
+
     await section("批 2 B 舊版 localStorage 的 .broken 搬進 IndexedDB", async () => {
       const LEGACY = "money-island.v1.broken";
       const copies = () => fakes.idb.dump("money_island_broken", "ledgers").map((record) => record.raw);

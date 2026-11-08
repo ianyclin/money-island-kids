@@ -491,6 +491,12 @@ img { height: auto; display: block; }
   font-size: var(--fs-caption);
 }
 
+/* v16：家長操作碼欄位是一般文字欄（iOS 才不會當成帳號密碼、跳存密碼），遮字靠這兩行 */
+[data-pin-input] {
+  -webkit-text-security: disc;
+  text-security: disc;
+}
+
 /* --- 孩子切換（橫排 .profile-chips／直排 .sidebar-kids） --- */
 .profile-chips {
   display: flex;

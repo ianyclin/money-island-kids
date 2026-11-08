@@ -117,6 +117,14 @@ export function lockIconButton({ href, pinStatus } = {}) {
   >${icon}</button>`;
 }
 
+// ---------- 家長操作碼欄位共用的屬性（v16） ----------
+// 作者 iPhone 實測：密碼型欄位（尤其標成「新密碼」的 autocomplete）會被 iOS 鑰匙圈當成「設定新密碼」，
+// 一直跳「要不要儲存密碼」，還會自動填入英數混合的高強度密碼，4–8 位數字的檢查就過不了。
+// 改成一般文字欄＋數字鍵盤，遮字交給 CSS 的 -webkit-text-security（app.css [data-pin-input]）；
+// autocomplete 用 "off" 而不是 "one-time-code"：後者會讓 iOS 在鍵盤上方建議簡訊驗證碼，
+// 那是純數字、驗得過，一點就會設下一組家長沒選過的操作碼。所有操作碼欄位都用這一份，行為一致。
+export const PIN_INPUT_ATTRS = raw('type="text" inputmode="numeric" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-pin-input');
+
 // ---------- 情境式解鎖 modal ----------
 // createLockModal({ getPinStatus, onUnlocked, parentHref })：規格 1.2（回應手機裁判擋下：
 // 新 modal 沒有重繪存活機制）。回傳 { open(), mountCheck(ctx), reset() }，供 dreams.js／history.js
@@ -156,7 +164,7 @@ export function createLockModal({ getPinStatus, onUnlocked, parentHref } = {}) {
       <div><b id="lock-modal-title">${heading}</b><small>${hint}</small></div>
       ${!unlocked ? html`<form data-lock-form>
         <label class="sr-only" for="lock-modal-pin">家長操作碼</label>
-        <input id="lock-modal-pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" value="${value}" placeholder="4–8 位數字" required />
+        <input id="lock-modal-pin" ${PIN_INPUT_ATTRS} pattern="[0-9]{4,8}" minlength="4" maxlength="8" value="${value}" placeholder="4–8 位數字" required />
         <button data-busy-label="驗證中…">${pinStatus === "setup" ? "設定並解鎖" : "解鎖"}</button>
       </form>` : ""}
       ${error ? html`<p class="form-error" role="alert">${error}</p>` : ""}

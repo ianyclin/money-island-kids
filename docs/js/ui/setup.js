@@ -11,7 +11,7 @@ import * as store from "../store.js";
 import * as pin from "../pin.js";
 import * as backup from "../backup.js";
 import * as gist from "../gist.js";
-import { field, infoTip, showStatus, timestampText } from "./common.js";
+import { field, infoTip, showStatus, timestampText, PIN_INPUT_ATTRS } from "./common.js";
 
 // 頁面自己的 UI 狀態放模組層級：重繪之後 render 讀回來，使用者不會被踢出流程。
 let mode = "create";          // "create" | "restore" | "cloud"（"cloud" 只在這台裝置還留著雲端設定時出現）
@@ -20,6 +20,13 @@ let busy = "";                // ""｜"create"｜"inspect"｜"restore"｜"cloud"
 let summary = null;           // backup.inspect() 的結果
 let parsed = null;            // 選到的備份檔內容
 let cloudNote = "";           // 「從雲端拿回」第一按之後的說明（雲端那份有幾筆）
+// v16（作者 iPhone 回報：按「建立帳本」後打的字全被清空）：表單草稿照家長區「新增小朋友」的做法記在模組層級，
+// 任何重繪（出錯、忙碌、另一分頁的 storage 事件、雲端同步）之後 render 讀回來。建立或還原成功才清空。
+const EMPTY_DRAFTS = { familyName: "", kid1: "", kid2: "", kid3: "", savingsRate: "30", createPin: "", createPinAgain: "", restorePin: "", restorePinAgain: "" };
+let drafts = { ...EMPTY_DRAFTS };
+let errorAt = "";             // ""｜"create"｜"restore"：錯誤要畫在哪一張表單的送出鈕旁邊（"" 畫在卡片最下面）
+let errorHint = "";           // 錯誤下面的第二行說明
+let scrollToError = false;    // 送出出錯後的那一次重繪捲到錯誤；背景重繪不捲
 
 // 批 2 A：帳本不在了、雲端設定（money-island.v1.gist）卻還在——這台裝置之前接過雲端備份。
 // 這時候建立新帳本或從備份檔還原，雲端那份不准被自動覆蓋；另外多給一條「從 GitHub 雲端拿回」。
@@ -38,25 +45,51 @@ function needsPinSetup() {
 // 帳本讀不出來的出路畫面（app.js）帶家長來這裡時，直接切到對應的那一條路。
 export function presetMode(next) {
   mode = next === "restore" ? "restore" : "create";
-  error = "";
+  clearError();
   summary = null;
   parsed = null;
+}
+
+function clearError() {
+  error = "";
+  errorAt = "";
+  errorHint = "";
+}
+
+// 錯誤畫在送出鈕下面（role="alert"）；errorHint 是第二行說明
+function errorBlock(spot) {
+  if (!error || (spot !== null && errorAt !== spot)) return "";
+  return html`<div class="setup-error" role="alert" data-setup-error>
+      <p class="form-error">${error}</p>
+      ${errorHint ? html`<p class="setup-help" data-setup-error-hint>${errorHint}</p>` : ""}
+    </div>`;
+}
+
+// 送出當下先把表單上看得到的值全部記進草稿：瀏覽器自動填入不一定會發 input 事件
+function captureDrafts(form) {
+  if (!form) return;
+  for (const element of Array.from(form.elements)) {
+    const key = element.getAttribute && element.getAttribute("data-setup-draft");
+    if (key && Object.prototype.hasOwnProperty.call(drafts, key)) drafts[key] = String(element.value ?? "");
+  }
 }
 
 function pinFields(prefix) {
   return html`${field({
       label: "家長操作碼",
-      input: html`<input class="input" type="password" inputmode="numeric" pattern="[0-9]{4,8}" name="${prefix}Pin" placeholder="4–8 位數字" autocomplete="new-password" required>`,
+      input: html`<input class="input" ${PIN_INPUT_ATTRS} pattern="[0-9]{4,8}" name="${prefix}Pin" data-setup-draft="${prefix}Pin" value="${drafts[`${prefix}Pin`]}" placeholder="4–8 位數字" required>`,
     })}
     ${field({
       label: "再輸入一次",
-      input: html`<input class="input" type="password" inputmode="numeric" pattern="[0-9]{4,8}" name="${prefix}PinAgain" placeholder="再打一次同樣的數字" autocomplete="new-password" required>`,
+      input: html`<input class="input" ${PIN_INPUT_ATTRS} pattern="[0-9]{4,8}" name="${prefix}PinAgain" data-setup-draft="${prefix}PinAgain" value="${drafts[`${prefix}PinAgain`]}" placeholder="再打一次同樣的數字" required>`,
     })}`;
 }
 
 export function render() {
   const shown = currentMode();
   const cloud = cloudLeft();
+  // 表單送出的錯誤畫在那張表單的送出鈕旁邊；表單沒畫出來（換了分頁、還沒選檔）或其他錯誤畫在卡片最下面
+  const placed = (errorAt === "create" && shown === "create") || (errorAt === "restore" && shown === "restore" && Boolean(summary));
   return html`<main class="setup-page">
     <section class="card setup-card">
       <div class="setup-brand">
@@ -77,7 +110,7 @@ export function render() {
         ${cloud ? html`<button type="button" data-mode="cloud" aria-pressed="${shown === "cloud" ? "true" : "false"}">從雲端拿回</button>` : ""}
       </div>
       ${shown === "create" ? createForm(cloud) : shown === "restore" ? restoreForm() : cloudForm()}
-      ${error ? html`<p class="form-error" role="alert">${error}</p>` : ""}
+      ${placed ? "" : errorBlock(null)}
     </section>
   </main>`;
 }
@@ -85,23 +118,24 @@ export function render() {
 function createForm(cloud) {
   return html`<h2 class="setup-subtitle">建立新帳本</h2>
     <p class="setup-copy">填好之後就可以開始記帳。之後在家長區都能改：孩子的名字、照片、預先儲蓄比例、還可以再加或移除小朋友。</p>
-    <form data-form="create">
-      ${field({ label: "家庭名稱", input: html`<input class="input" name="familyName" placeholder="例如：小樹家" maxlength="30" required>` })}
+    <form data-form="create" novalidate>
+      ${field({ label: "家庭名稱", input: html`<input class="input" name="familyName" data-setup-draft="familyName" value="${drafts.familyName}" placeholder="例如：小樹家" maxlength="30" required>` })}
       <div class="field">
         <span class="field-label">小朋友的名字（至少一位，空白的會略過）</span>
         <div class="setup-kid-grid">
-          <label class="sr-only" for="setup-kid-1">小朋友 1</label><input class="input" id="setup-kid-1" name="kid" placeholder="小朋友 1" maxlength="12">
-          <label class="sr-only" for="setup-kid-2">小朋友 2</label><input class="input" id="setup-kid-2" name="kid" placeholder="小朋友 2" maxlength="12">
-          <label class="sr-only" for="setup-kid-3">小朋友 3</label><input class="input" id="setup-kid-3" name="kid" placeholder="小朋友 3" maxlength="12">
+          <label class="sr-only" for="setup-kid-1">小朋友 1</label><input class="input" id="setup-kid-1" name="kid" data-setup-draft="kid1" value="${drafts.kid1}" placeholder="小朋友 1" maxlength="12">
+          <label class="sr-only" for="setup-kid-2">小朋友 2</label><input class="input" id="setup-kid-2" name="kid" data-setup-draft="kid2" value="${drafts.kid2}" placeholder="小朋友 2" maxlength="12">
+          <label class="sr-only" for="setup-kid-3">小朋友 3</label><input class="input" id="setup-kid-3" name="kid" data-setup-draft="kid3" value="${drafts.kid3}" placeholder="小朋友 3" maxlength="12">
         </div>
       </div>
       ${needsPinSetup() ? "" : html`<p class="setup-help">這台裝置已經設定過家長操作碼，請輸入原本那一組。</p>`}
       ${pinFields("create")}
-      ${field({ label: "預先儲蓄比例", input: html`<input class="input" type="number" name="savingsRate" value="30" min="0" max="100" step="5" inputmode="numeric" required>` })}
+      ${field({ label: "預先儲蓄比例", input: html`<input class="input" type="number" name="savingsRate" data-setup-draft="savingsRate" value="${drafts.savingsRate}" min="0" max="100" step="5" inputmode="numeric" required>` })}
       <p class="setup-help">零用錢進來時，這個比例會先留給未來（存進爸媽銀行），其餘由孩子自己安排。預設 30%，以 5% 為單位。</p>
       <div class="form-actions">
         <button class="btn btn-primary btn-block" ${busy === "create" ? raw("disabled") : ""}>${busy === "create" ? "建立中…" : "建立帳本"}</button>
       </div>
+      ${errorBlock("create")}
       ${cloud ? html`<p class="setup-help" data-setup-cloud-note>這台裝置之前接過雲端備份；建立新帳本不會動到雲端那份，之後會問你要用哪一份</p>` : ""}
     </form>`;
 }
@@ -129,11 +163,12 @@ function restoreForm() {
       <b>${summary.family && summary.family.name ? summary.family.name : "（沒有家庭名稱）"} · ${timestampText(summary.exportedAt)}</b>
       <small>${summary.portable ? `完整可攜備份${summary.photoCount ? `，包含 ${summary.photoCount} 張照片` : ""}` : "帳本備份"}</small>
       <small>${summary.counts.profiles} 位孩子、${summary.counts.activities} 筆紀錄、${summary.counts.dreams} 個夢想、${summary.counts.holdings} 個投資標的</small>
-      <form data-form="restore">
+      <form data-form="restore" novalidate>
         ${needsPinSetup() ? html`<p class="setup-help">備份檔裡不含家長操作碼（它從來不會被匯出）。先設定一組，還原完就能用它解鎖家長區。</p>${pinFields("restore")}` : ""}
         <div class="form-actions">
           <button class="btn btn-primary btn-block restore-button" ${busy === "restore" ? raw("disabled") : ""}>${busy === "restore" ? "還原中…" : "確認覆蓋並還原"}</button>
         </div>
+        ${errorBlock("restore")}
       </form>
     </div>` : ""}`;
 }
@@ -144,9 +179,27 @@ export function mount(root, ctx) {
     const tab = event.target.closest("[data-mode]");
     if (!tab) return;
     mode = tab.getAttribute("data-mode");
-    error = "";
+    clearError();
     ctx.refresh();
   });
+
+  // 草稿：打一個字記一次（背景重繪靠它）；change 再補一次（自動填入有時只發 change）
+  const recordDraft = (event) => {
+    const target = event.target;
+    const key = target && target.getAttribute ? target.getAttribute("data-setup-draft") : "";
+    if (key && Object.prototype.hasOwnProperty.call(drafts, key)) drafts[key] = String(target.value ?? "");
+  };
+  root.addEventListener("input", recordDraft);
+  root.addEventListener("change", recordDraft);
+
+  // 送出出錯後的那一次重繪：捲到錯誤（只捲一次，背景重繪不捲）
+  if (scrollToError) {
+    scrollToError = false;
+    const node = root.querySelector("[data-setup-error]");
+    if (node && typeof node.scrollIntoView === "function") {
+      try { node.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) { node.scrollIntoView(); }
+    }
+  }
 
   root.addEventListener("change", (event) => {
     const input = event.target.closest("[data-backup-file]");
@@ -163,17 +216,33 @@ export function mount(root, ctx) {
   });
 }
 
+// 這台裝置已經有操作碼、第一次使用頁卻打了另一組（作者 iPhone 回報）：說清楚要打原本那一組，並指出資料可能還在
+export const EXISTING_PIN_TEXT = "這台裝置之前設定過家長操作碼，請輸入原本那組。";
+export const EXISTING_PIN_HINT = "這通常表示這台裝置以前用過小小理財島，資料可能還在：可以改用上面的「從備份還原」，或聯絡家長確認。";
+
 function readPin(form, prefix) {
   const value = String(form.elements[`${prefix}Pin`].value || "").trim();
   const again = String(form.elements[`${prefix}PinAgain`].value || "").trim();
+  // 欄位裡有數字以外的字：多半是手機自動填入了一串密碼（欄位遮著字，家長看不出來）
+  if (/\D/.test(value)) throw new Error("家長操作碼只能用 4 到 8 位數字；如果手機自動填入了一串密碼，請清掉後自己打數字");
   if (!/^\d{4,8}$/.test(value)) throw new Error("家長操作碼請使用 4 到 8 位數字");
   if (value !== again) throw new Error("兩次輸入的家長操作碼不一樣");
   return value;
 }
 
+// 原地停用送出鈕（不整頁重繪）：驗證還沒過完之前不要先畫成忙碌狀態
+function markBusy(form, label) {
+  const button = form.querySelector(".form-actions button");
+  if (button) { button.disabled = true; button.textContent = label; }
+}
+
 async function createLedger(form, ctx) {
   if (busy) return;
-  error = "";
+  captureDrafts(form);
+  clearError();
+  // 帳本讀不出來後另建時，這台裝置早就有操作碼了：驗原本那一組，不重設（pin.setup 會擋「已經設定」）
+  const firstPin = needsPinSetup();
+  let asserting = false;
   try {
     const familyName = String(form.elements.familyName.value || "").trim().slice(0, 30);
     if (familyName.length < 2) throw new Error("請輸入家庭名稱");
@@ -188,11 +257,13 @@ async function createLedger(form, ctx) {
     const parentPin = readPin(form, "create");
 
     busy = "create";
-    ctx.refresh();
+    markBusy(form, "建立中…");
     const next = freshState({ familyName, kidNames, savingsRate });
-    // 帳本讀不出來後另建時，這台裝置早就有操作碼了：驗原本那一組，不重設（pin.setup 會擋「已經設定」）
-    const firstPin = needsPinSetup();
-    if (!firstPin) await pin.assert(parentPin);
+    if (!firstPin) {
+      asserting = true;
+      await pin.assert(parentPin);
+      asserting = false;
+    }
     // 批 2 A：雲端設定還在的話，換上新帳本之前先凍結——下一次同步一定先讀雲端、出「要用哪一份」，不會自動覆蓋
     gist.freezeForLedgerSwap();
     // 讀不出來的那份會在 replaceState 裡先留存，留存不了就丟錯、不另建
@@ -200,11 +271,21 @@ async function createLedger(form, ctx) {
     // 批 1 驗收 #3：新的操作碼等帳本真的換好了才設——以前先設，換帳本失敗時操作碼已經變了、帳本卻沒建
     if (firstPin) await pin.setup(parentPin);
     busy = "";
+    drafts = { ...EMPTY_DRAFTS };
     showStatus(`${familyName}的帳本建好了，開始記第一筆吧`, "success");
     location.hash = "#/";
   } catch (caught) {
     busy = "";
-    error = caught instanceof Error && caught.message ? caught.message : "建立失敗";
+    const message = caught instanceof Error && caught.message ? caught.message : "建立失敗";
+    // 「嘗試次數過多」照原本的話講，不蓋掉
+    if (asserting && (message === "家長操作碼不正確" || message === "請輸入家長操作碼")) {
+      error = EXISTING_PIN_TEXT;
+      errorHint = EXISTING_PIN_HINT;
+    } else {
+      error = message;
+    }
+    errorAt = "create";
+    scrollToError = true;
     ctx.refresh();
   }
 }
@@ -214,7 +295,7 @@ async function createLedger(form, ctx) {
 async function pullCloud(ctx) {
   if (busy) return;
   const first = gist.armState("pull") === "idle";
-  error = "";
+  clearError();
   if (first) { busy = "cloud"; ctx.refresh(); }
   let result = null;
   try { result = await gist.pullFromCloud(); } catch (caught) { error = caught && caught.message ? caught.message : "讀取失敗"; }
@@ -232,7 +313,7 @@ async function pullCloud(ctx) {
 
 async function inspectFile(file, ctx) {
   busy = "inspect";
-  error = "";
+  clearError();
   summary = null;
   parsed = null;
   ctx.refresh();
@@ -252,9 +333,11 @@ async function inspectFile(file, ctx) {
 
 async function restoreLedger(form, ctx) {
   if (busy || !parsed) return;
-  error = "";
+  captureDrafts(form);
+  clearError();
   try {
     const parentPin = needsPinSetup() ? readPin(form, "restore") : "";
+    // 驗證過了才畫成忙碌狀態（這次重繪也會停用選檔欄）；欄位值在草稿裡，重繪不會清掉
     busy = "restore";
     ctx.refresh();
     // 批 2 A：同上，雲端設定還在就先凍結，還原上來的這份不會被自動傳上去蓋掉雲端那份
@@ -266,11 +349,14 @@ async function restoreLedger(form, ctx) {
     busy = "";
     summary = null;
     parsed = null;
+    drafts = { ...EMPTY_DRAFTS };
     showStatus("備份已經還原到這台裝置", "success");
     location.hash = "#/";
   } catch (caught) {
     busy = "";
     error = caught instanceof Error && caught.message ? caught.message : "還原失敗";
+    errorAt = "restore";
+    scrollToError = true;
     ctx.refresh();
   }
 }

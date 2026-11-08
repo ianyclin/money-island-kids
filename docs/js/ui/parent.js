@@ -146,7 +146,7 @@ function piggyCorrectionModalBody(profile) {
 function pinChangeField(label, key) {
   return common.field({
     label,
-    input: html`<input class="input" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits data-field="${key}" value="${ui.pinChangeDrafts[key] || ""}" required />`,
+    input: html`<input class="input" ${common.PIN_INPUT_ATTRS} pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits data-field="${key}" value="${ui.pinChangeDrafts[key] || ""}" required />`,
   });
 }
 
@@ -213,7 +213,7 @@ function lockedBody(pinStatus) {
         ${common.field({
           label: "家長操作碼",
           id: "parent-pin",
-          input: html`<input id="parent-pin" class="input" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits placeholder="4–8 位數字" required />`,
+          input: html`<input id="parent-pin" class="input" ${common.PIN_INPUT_ATTRS} pattern="[0-9]{4,8}" minlength="4" maxlength="8" data-digits placeholder="4–8 位數字" required />`,
         })}
         <div class="form-actions">
           <button class="btn btn-primary btn-block" data-busy-label="驗證中…">${setupMode ? "設定並解鎖" : "解鎖"}</button>
@@ -1132,7 +1132,7 @@ async function handleSubmit(root, ctx, form) {
   const kind = form.dataset.form;
 
   if (kind === "pin") {
-    const input = form.querySelector('input[type="password"]');
+    const input = form.querySelector("#parent-pin");
     const value = input ? input.value : "";
     ui.pinError = "";
     paintOperationError(root);
